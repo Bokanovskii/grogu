@@ -87,12 +87,8 @@ def _tracked_files(root: Path) -> Iterable[str]:
         for path in output.stdout.decode("utf8", "surrogateescape").split("\0"):
             if path:
                 yield path
-        return
-    for path in root.rglob("*"):
-        if path.is_file():
-            relative = path.relative_to(root).as_posix()
-            if not any(relative == skip or relative.startswith(skip + "/") for skip in SKIP_DIRS):
-                yield relative
+    # A non-repository launch must not recursively scan the user's home
+    # directory or another arbitrary working directory.
 
 
 def _role(path: str) -> str:
@@ -137,6 +133,7 @@ class MemoryStore:
 
     def __init__(self, root: Optional[Path] = None) -> None:
         self.root = repository_root(root)
+        self.is_repository = bool(_run(self.root, ["rev-parse", "--show-toplevel"]))
         self.directory = self.root / INTELLIGENCE_DIRNAME
         self.manifest_path = self.directory / "manifest.json"
         self.index_path = self.directory / "index.json"
@@ -160,6 +157,27 @@ class MemoryStore:
         return manifest
 
     def index(self) -> dict:
+        if not self.is_repository:
+            return {
+                "manifest": {},
+                "index": {
+                    "schema_version": SCHEMA_VERSION,
+                    "kind": "grogu.repository_inventory",
+                    "summary": {"file_count": 0, "changed": 0, "removed": 0},
+                    "files": {},
+                    "derivation": "grogu-inventory-v2",
+                },
+                "graph": {
+                    "schema_version": SCHEMA_VERSION,
+                    "kind": "grogu.knowledge_graph",
+                    "repository_id": "",
+                    "nodes": {},
+                    "edges": [],
+                    "derivation": "grogu-knowledge-graph-v2",
+                },
+                "changed": [],
+                "removed": [],
+            }
         manifest = self.initialize()
         previous = _read_json(self.inventory_path)
         if not previous:
@@ -295,6 +313,13 @@ class MemoryStore:
         }
 
     def status(self) -> dict:
+        if not self.is_repository:
+            return {
+                "root": str(self.root),
+                "initialized": False,
+                "repository": False,
+                "reason": "current directory is not inside a Git repository",
+            }
         manifest = _read_json(self.manifest_path)
         inventory = _read_json(self.inventory_path)
         graph = self._load_graph()
@@ -335,6 +360,8 @@ class MemoryStore:
         confidence: float = 0.8,
         provenance: Optional[dict] = None,
     ) -> dict:
+        if not self.is_repository:
+            raise ValueError("memory can only be stored inside a Git repository")
         if not node_type.strip() or not name.strip() or not summary.strip():
             raise ValueError("node type, name, and summary are required")
         graph = self._load_graph()
@@ -363,6 +390,8 @@ class MemoryStore:
         confidence: float = 0.8,
         provenance: Optional[dict] = None,
     ) -> dict:
+        if not self.is_repository:
+            raise ValueError("memory can only be stored inside a Git repository")
         graph = self._load_graph()
         if source not in graph["nodes"] or target not in graph["nodes"]:
             raise ValueError("source and target nodes must exist before linking")
@@ -395,6 +424,16 @@ class MemoryStore:
         node_id: str = "",
         depth: int = 1,
     ) -> dict:
+        if not self.is_repository:
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "kind": "grogu.repository_context",
+                "repository_id": "",
+                "repository": {},
+                "nodes": [],
+                "edges": [],
+                "derivation": "grogu-context-traversal-v2",
+            }
         manifest = _read_json(self.manifest_path)
         graph = self._load_graph()
         nodes = graph["nodes"]

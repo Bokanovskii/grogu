@@ -195,6 +195,15 @@ class GroguCliTests(unittest.TestCase):
             )
             self.assertNotIn("git", context)
 
+    def test_non_repository_memory_does_not_scan_or_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = grogu_memory.MemoryStore(root)
+            result = store.index()
+            self.assertEqual(result["index"]["summary"]["file_count"], 0)
+            self.assertFalse((root / ".grogu").exists())
+            self.assertFalse(store.status()["initialized"])
+
     def test_telemetry_redacts_secret_values(self):
         with tempfile.TemporaryDirectory() as home:
             database = grogu_cli.connect(Path(home) / "traces.db")
