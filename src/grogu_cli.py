@@ -14,10 +14,12 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import grogu_banner
+import grogu_codemode
 import grogu_memory
 import grogu_personal_memory
 import grogu_telemetry
@@ -479,6 +481,76 @@ def memory_link(args: argparse.Namespace) -> int:
         provenance={"kind": args.provenance},
     )
     print_json(edge)
+    return 0
+
+
+def codemode_repo(args: argparse.Namespace) -> Optional[Path]:
+    return Path(args.repo).expanduser() if getattr(args, "repo", None) else None
+
+
+def codemode_git(args: argparse.Namespace) -> int:
+    print_json(grogu_codemode.aggregate("git", codemode_repo(args)))
+    return 0
+
+
+def codemode_graph(args: argparse.Namespace) -> int:
+    print_json(
+        grogu_codemode.aggregate(
+            "graph",
+            codemode_repo(args),
+            query=args.query,
+            node_id=args.node,
+            depth=args.depth,
+            limit=args.limit,
+        )
+    )
+    return 0
+
+
+def codemode_tasks(args: argparse.Namespace) -> int:
+    print_json(grogu_codemode.aggregate("tasks", codemode_repo(args), limit=args.limit))
+    return 0
+
+
+def codemode_service(args: argparse.Namespace) -> int:
+    print_json(grogu_codemode.aggregate("service", codemode_repo(args)))
+    return 0
+
+
+def codemode_traces(args: argparse.Namespace) -> int:
+    root = grogu_memory.repository_root(codemode_repo(args))
+    store = grogu_memory.MemoryStore(root)
+    repository_id = store.status().get("manifest", {}).get("repository_id", "")
+    initialize_trace_db()
+    with connect(TRACE_DB) as database:
+        grogu_telemetry.initialize(database)
+        data = grogu_codemode.traces_summary(database)
+    print_json(grogu_codemode._envelope("traces", repository_id, data))
+    return 0
+
+
+def codemode_relationships(args: argparse.Namespace) -> int:
+    root = grogu_memory.repository_root(codemode_repo(args))
+    store = grogu_memory.MemoryStore(root)
+    repository_id = store.status().get("manifest", {}).get("repository_id", "")
+    initialize_catalog_db()
+    with connect(CATALOG_DB) as database:
+        rows = database.execute(
+            """
+            SELECT source_id, target_id, kind, evidence_json, updated_at
+            FROM project_relationships
+            WHERE source_id = ? OR target_id = ?
+            ORDER BY source_id, target_id, kind
+            """,
+            (repository_id, repository_id),
+        ).fetchall()
+    edges = []
+    for row in rows:
+        value = dict(row)
+        value["evidence"] = json.loads(value.pop("evidence_json"))
+        edges.append(value)
+    data = grogu_codemode.relationships_summary(edges, limit=args.limit)
+    print_json(grogu_codemode._envelope("relationships", repository_id, data))
     return 0
 
 
@@ -1009,6 +1081,49 @@ def build_parser() -> argparse.ArgumentParser:
     link.add_argument("--provenance", default="user")
     link.set_defaults(handler=memory_link)
 
+    codemode = subparsers.add_parser(
+        "codemode",
+        help="bounded, cacheable context aggregations for Git, the knowledge "
+        "graph, tasks, telemetry, relationships, and service metadata",
+    )
+    codemode_subparsers = codemode.add_subparsers(
+        dest="codemode_command", required=True
+    )
+    codemode_common = argparse.ArgumentParser(add_help=False)
+    codemode_common.add_argument(
+        "--repo", help="repository root (default: the enclosing Git work tree)"
+    )
+    codemode_git_parser = codemode_subparsers.add_parser(
+        "git", parents=[codemode_common]
+    )
+    codemode_git_parser.set_defaults(handler=codemode_git)
+    codemode_graph_parser = codemode_subparsers.add_parser(
+        "graph", parents=[codemode_common]
+    )
+    codemode_graph_parser.add_argument("--limit", type=int, default=40)
+    codemode_graph_parser.add_argument("--query", default="")
+    codemode_graph_parser.add_argument("--node", default="")
+    codemode_graph_parser.add_argument("--depth", type=int, default=1)
+    codemode_graph_parser.set_defaults(handler=codemode_graph)
+    codemode_tasks_parser = codemode_subparsers.add_parser(
+        "tasks", parents=[codemode_common]
+    )
+    codemode_tasks_parser.add_argument("--limit", type=int, default=20)
+    codemode_tasks_parser.set_defaults(handler=codemode_tasks)
+    codemode_traces_parser = codemode_subparsers.add_parser(
+        "traces", parents=[codemode_common]
+    )
+    codemode_traces_parser.set_defaults(handler=codemode_traces)
+    codemode_relationships_parser = codemode_subparsers.add_parser(
+        "relationships", parents=[codemode_common]
+    )
+    codemode_relationships_parser.add_argument("--limit", type=int, default=40)
+    codemode_relationships_parser.set_defaults(handler=codemode_relationships)
+    codemode_service_parser = codemode_subparsers.add_parser(
+        "service", parents=[codemode_common]
+    )
+    codemode_service_parser.set_defaults(handler=codemode_service)
+
     personal = subparsers.add_parser(
         "personal",
         help="build and inspect user-scoped personal memory (never repository state)",
@@ -1349,6 +1464,7 @@ GROGU_COMMANDS = frozenset(
         "telemetry",
         "project",
         "memory",
+        "codemode",
         "personal",
         "banner",
         "task",
