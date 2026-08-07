@@ -617,10 +617,6 @@ def wants_autopilot_default(arguments: list[str]) -> bool:
     """
     if not autopilot_default_enabled():
         return False
-    # Copilot's autopilot mode requires a prompt or another explicit
-    # non-interactive launch. A bare invocation must remain the interactive TUI.
-    if not arguments:
-        return False
     if any(argument in COPILOT_SUBCOMMANDS for argument in arguments):
         return False
     names = _flags(arguments)

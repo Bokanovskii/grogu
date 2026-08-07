@@ -53,7 +53,7 @@ local session and you have not already chosen a mode, because Copilot rejects
 
 | Invocation | What Grogu passes |
 | --- | --- |
-| `grogu` | Copilot's normal interactive TUI; no incompatible autopilot flag |
+| `grogu` | `copilot --autopilot` |
 | `grogu --model …`, `grogu --banner` | `--autopilot` prepended |
 | `grogu --autopilot`, `--mode …`, `--plan` | unchanged, never duplicated |
 | `grogu -i "…"`, `grogu -p "…"` | unchanged; you chose the launch mode |
@@ -62,11 +62,8 @@ local session and you have not already chosen a mode, because Copilot rejects
 | `grogu --help`, `--version`, `--acp`, `--cloud` | unchanged |
 | `grogu --plain …` | Copilot as it ships: no autopilot, no instructions, no banner |
 
-Set `GROGU_AUTOPILOT=0` to turn the default off everywhere. The bare command
-intentionally remains Copilot's interactive TUI because Copilot's autopilot
-mode requires a prompt; use an explicit `--autopilot` when you want that mode
-for an interactive invocation. Autopilot changes the agent's *mode*, not its
-permissions; it never implies `--allow-all-tools`.
+Set `GROGU_AUTOPILOT=0` to turn the default off everywhere. Autopilot changes
+the agent's *mode*, not its permissions; it never implies `--allow-all-tools`.
 
 ## Configuration boundaries
 

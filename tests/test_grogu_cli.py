@@ -39,8 +39,8 @@ class GroguCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("grogu 0.1.0", result.stdout)
 
-    def test_bare_launch_preserves_interactive_copilot_mode(self):
-        self.assertEqual(grogu_cli.copilot_arguments([]), [])
+    def test_bare_launch_defaults_to_autopilot(self):
+        self.assertEqual(grogu_cli.copilot_arguments([]), ["--autopilot"])
         self.assertEqual(
             grogu_cli.copilot_arguments(["--model", "gpt-5.4"]),
             ["--autopilot", "--model", "gpt-5.4"],
