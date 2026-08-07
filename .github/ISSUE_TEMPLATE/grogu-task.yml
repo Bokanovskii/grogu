@@ -1,0 +1,56 @@
+name: Grogu task
+description: A unit of work several people or Grogu sessions may pick up.
+title: "[task] "
+labels: ["grogu-task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues are the shared source of truth across people and machines.
+        Run `grogu task adopt <issue-number>` to mirror this issue into the
+        repository task store, then `grogu task claim <id>` before working on
+        it so concurrent sessions do not collide.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: What is true when this is done, in one or two sentences.
+      placeholder: Bare `grogu` launches Copilot in autopilot mode.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Files, commands, prior findings and constraints.
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance checks
+      description: The commands or observations that prove the outcome.
+      placeholder: |
+        - python3 -m unittest discover -s tests
+        - grogu doctor reports "autopilot_default": true
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - low
+        - normal
+        - high
+    validations:
+      required: true
+  - type: input
+    id: coordination
+    attributes:
+      label: Coordination
+      description: >
+        Branch, worktree or other tasks this one touches. Leave empty when the
+        work is self contained.
+    validations:
+      required: false
