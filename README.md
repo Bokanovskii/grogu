@@ -71,16 +71,20 @@ Grogu touches four places, and nothing else.
 
 | Location | Owner | Lifetime |
 | --- | --- | --- |
-| `~/.grogu/` (or `$GROGU_HOME`) | Grogu | traces and the project catalog, per user |
+| `~/.grogu/` (or `$GROGU_HOME`) | Grogu | traces, the project catalog, and personal memory (`memory/`), per user |
 | `~/.copilot/settings.json` | Copilot | Grogu adds `banner`, `companyAnnouncements` and — only if you have none — `statusLine`, and restores them on exit |
 | `<repo>/.grogu/tasks/` | the repository | committed task records, shared through Git |
 | `<repo>/.grogu/state/` | the machine | leases, inbox, lock file; ignored by Git, and self-ignoring in any repository |
+
+`~/.grogu/memory/` (see `docs/personal-memory.md`) holds durable, user-scoped
+memory about the person Grogu assists — never repository content, and never
+written under any `<repo>/.grogu/` path.
 
 Environment variables:
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `GROGU_HOME` | `~/.grogu` | Where traces and the catalog live |
+| `GROGU_HOME` | `~/.grogu` | Where traces, the catalog, and personal memory live |
 | `GROGU_AUTOPILOT` | `1` | `0` stops Grogu adding `--autopilot` |
 | `GROGU_BANNER` | `1` | `0` leaves `~/.copilot/settings.json` untouched |
 | `GROGU_STATUS_LINE` | `1` | `0` installs the mark without the animated status line |
@@ -88,9 +92,10 @@ Environment variables:
 | `GROGU_ACTOR` | `$USER@$HOSTNAME` | Identity recorded on tasks and leases |
 | `GROGU_AZURE` | `0` | Reserved; no provider is ever chosen for you |
 
-Grogu also exports `GROGU_SESSION_ID` and `GROGU_SESSION_PID` into the Copilot
-environment, and appends its `.github` directory to
-`COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Existing values are preserved.
+Grogu also exports `GROGU_SESSION_ID`, `GROGU_SESSION_PID`, and
+`GROGU_PERSONAL_MEMORY_DIR` into the Copilot environment, and appends its
+`.github` directory to `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Existing values are
+preserved.
 
 ## Remote sessions
 
@@ -215,6 +220,28 @@ provenance-backed architecture knowledge and relationships. Use
 `grogu memory context --node ... --depth ...` to traverse a bounded
 neighborhood, or `--related` to pull bounded context from repositories that
 are explicitly connected in the project relationship catalog.
+
+## Personal memory
+
+Separate from repository intelligence, `grogu personal` holds durable,
+user-scoped memory about the person Grogu assists — relationships,
+preferences, goals, events, facts, and interests — under
+`GROGU_HOME/memory/`, never inside a repository:
+
+```sh
+grogu personal remember --type person --name "Jamie" --summary "Sister, lives in Denver"
+grogu personal recall --query denver --limit 20
+grogu personal suggest --type event --name "jamie-birthday" \
+  --summary "Mentioned Jamie's birthday is in March" --source gmail --confidence 0.5
+grogu personal review
+grogu personal confirm <candidate-id>
+```
+
+Explicit `remember` writes are confirmed immediately. Passively observed
+`suggest` candidates are queued separately and only join confirmed memory
+after an explicit `confirm`; nothing is inferred and persisted silently. The
+schema lives in `schemas/personal-memory.schema.json`. See
+[docs/personal-memory.md](docs/personal-memory.md).
 
 ## Telemetry and self-improvement
 

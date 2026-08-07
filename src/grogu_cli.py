@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import grogu_banner
 import grogu_memory
+import grogu_personal_memory
 import grogu_telemetry
 import grogu_tasks
 
@@ -141,6 +142,7 @@ def doctor(_: argparse.Namespace) -> int:
         "instructions_available": instructions.is_file(),
         "trace_db": str(TRACE_DB),
         "catalog_db": str(CATALOG_DB),
+        "personal_memory_dir": str(grogu_personal_memory.PersonalMemoryStore(GROGU_HOME).directory),
         "azure_enabled": os.environ.get("GROGU_AZURE", "0") == "1",
         "autopilot_default": autopilot_default_enabled(),
         "banner_enabled": banner_enabled(),
@@ -477,6 +479,101 @@ def memory_link(args: argparse.Namespace) -> int:
         provenance={"kind": args.provenance},
     )
     print_json(edge)
+    return 0
+
+
+def personal_store(_: argparse.Namespace) -> grogu_personal_memory.PersonalMemoryStore:
+    return grogu_personal_memory.PersonalMemoryStore(GROGU_HOME)
+
+
+def personal_status(args: argparse.Namespace) -> int:
+    print_json(personal_store(args).status())
+    return 0
+
+
+def personal_remember(args: argparse.Namespace) -> int:
+    node = personal_store(args).remember(
+        args.type,
+        args.name,
+        args.summary,
+        tags=args.tag,
+        confidence=args.confidence,
+        provenance={"kind": args.provenance},
+    )
+    print_json(node)
+    return 0
+
+
+def personal_link(args: argparse.Namespace) -> int:
+    edge = personal_store(args).link(
+        args.source,
+        args.target,
+        args.kind,
+        confidence=args.confidence,
+        provenance={"kind": args.provenance},
+    )
+    print_json(edge)
+    return 0
+
+
+def personal_forget(args: argparse.Namespace) -> int:
+    removed = personal_store(args).forget(args.node)
+    if not removed:
+        print(f"grogu: no personal memory node {args.node!r}", file=sys.stderr)
+        return 2
+    print_json({"forgotten": args.node})
+    return 0
+
+
+def personal_list(args: argparse.Namespace) -> int:
+    for node in personal_store(args).list(node_type=args.type, limit=args.limit):
+        print(json.dumps(node, sort_keys=True))
+    return 0
+
+
+def personal_recall(args: argparse.Namespace) -> int:
+    result = personal_store(args).recall(
+        args.limit, query=args.query, node_id=args.node, depth=args.depth
+    )
+    print_json(result)
+    return 0
+
+
+def personal_suggest(args: argparse.Namespace) -> int:
+    candidate = personal_store(args).suggest(
+        args.type,
+        args.name,
+        args.summary,
+        args.source,
+        tags=args.tag,
+        confidence=args.confidence,
+    )
+    print_json(candidate)
+    return 0
+
+
+def personal_review(args: argparse.Namespace) -> int:
+    for candidate in personal_store(args).review(limit=args.limit):
+        print(json.dumps(candidate, sort_keys=True))
+    return 0
+
+
+def personal_confirm(args: argparse.Namespace) -> int:
+    try:
+        node = personal_store(args).confirm(args.candidate)
+    except ValueError as error:
+        print(f"grogu: {error}", file=sys.stderr)
+        return 2
+    print_json(node)
+    return 0
+
+
+def personal_reject(args: argparse.Namespace) -> int:
+    removed = personal_store(args).reject(args.candidate)
+    if not removed:
+        print(f"grogu: no pending candidate {args.candidate!r}", file=sys.stderr)
+        return 2
+    print_json({"rejected": args.candidate})
     return 0
 
 
@@ -912,6 +1009,84 @@ def build_parser() -> argparse.ArgumentParser:
     link.add_argument("--provenance", default="user")
     link.set_defaults(handler=memory_link)
 
+    personal = subparsers.add_parser(
+        "personal",
+        help="build and inspect user-scoped personal memory (never repository state)",
+    )
+    personal_subparsers = personal.add_subparsers(
+        dest="personal_command", required=True
+    )
+    personal_status_parser = personal_subparsers.add_parser("status")
+    personal_status_parser.set_defaults(handler=personal_status)
+    personal_remember_parser = personal_subparsers.add_parser(
+        "remember", help="explicitly record a confirmed personal memory"
+    )
+    personal_remember_parser.add_argument(
+        "--type", required=True, choices=sorted(grogu_personal_memory.NODE_TYPES)
+    )
+    personal_remember_parser.add_argument("--name", required=True)
+    personal_remember_parser.add_argument("--summary", required=True)
+    personal_remember_parser.add_argument("--tag", action="append")
+    personal_remember_parser.add_argument("--confidence", type=float, default=0.8)
+    personal_remember_parser.add_argument("--provenance", default="user")
+    personal_remember_parser.set_defaults(handler=personal_remember)
+    personal_link_parser = personal_subparsers.add_parser("link")
+    personal_link_parser.add_argument("source")
+    personal_link_parser.add_argument("target")
+    personal_link_parser.add_argument("--kind", required=True)
+    personal_link_parser.add_argument("--confidence", type=float, default=0.8)
+    personal_link_parser.add_argument("--provenance", default="user")
+    personal_link_parser.set_defaults(handler=personal_link)
+    personal_forget_parser = personal_subparsers.add_parser(
+        "forget", help="delete a confirmed personal memory node and its edges"
+    )
+    personal_forget_parser.add_argument("node")
+    personal_forget_parser.set_defaults(handler=personal_forget)
+    personal_list_parser = personal_subparsers.add_parser("list")
+    personal_list_parser.add_argument(
+        "--type", default="", choices=[""] + sorted(grogu_personal_memory.NODE_TYPES)
+    )
+    personal_list_parser.add_argument("--limit", type=int, default=100)
+    personal_list_parser.set_defaults(handler=personal_list)
+    personal_recall_parser = personal_subparsers.add_parser(
+        "recall", help="bounded, machine-readable personal context"
+    )
+    personal_recall_parser.add_argument("--limit", type=int, default=40)
+    personal_recall_parser.add_argument("--query", default="")
+    personal_recall_parser.add_argument("--node", default="")
+    personal_recall_parser.add_argument("--depth", type=int, default=1)
+    personal_recall_parser.set_defaults(handler=personal_recall)
+    personal_suggest_parser = personal_subparsers.add_parser(
+        "suggest",
+        help="queue a passively observed candidate fact; never persisted without confirm",
+    )
+    personal_suggest_parser.add_argument(
+        "--type", required=True, choices=sorted(grogu_personal_memory.NODE_TYPES)
+    )
+    personal_suggest_parser.add_argument("--name", required=True)
+    personal_suggest_parser.add_argument("--summary", required=True)
+    personal_suggest_parser.add_argument(
+        "--source", required=True, help="where this candidate was observed, e.g. gmail, imessage"
+    )
+    personal_suggest_parser.add_argument("--tag", action="append")
+    personal_suggest_parser.add_argument("--confidence", type=float, default=0.5)
+    personal_suggest_parser.set_defaults(handler=personal_suggest)
+    personal_review_parser = personal_subparsers.add_parser(
+        "review", help="list candidate facts awaiting confirmation"
+    )
+    personal_review_parser.add_argument("--limit", type=int, default=50)
+    personal_review_parser.set_defaults(handler=personal_review)
+    personal_confirm_parser = personal_subparsers.add_parser(
+        "confirm", help="persist a pending candidate into confirmed personal memory"
+    )
+    personal_confirm_parser.add_argument("candidate")
+    personal_confirm_parser.set_defaults(handler=personal_confirm)
+    personal_reject_parser = personal_subparsers.add_parser(
+        "reject", help="discard a pending candidate without persisting it"
+    )
+    personal_reject_parser.add_argument("candidate")
+    personal_reject_parser.set_defaults(handler=personal_reject)
+
     banner = subparsers.add_parser("banner")
     banner_subparsers = banner.add_subparsers(dest="banner_command", required=True)
     show = banner_subparsers.add_parser("show")
@@ -1124,6 +1299,9 @@ def launch_copilot(arguments: list[str]) -> int:
     environment["GROGU_MEMORY_DIR"] = str(memory.directory)
     if memory_result.get("manifest", {}).get("repository_id"):
         environment["GROGU_REPOSITORY_ID"] = memory_result["manifest"]["repository_id"]
+    environment["GROGU_PERSONAL_MEMORY_DIR"] = str(
+        grogu_personal_memory.PersonalMemoryStore(GROGU_HOME).directory
+    )
     initialize_trace_db()
     with connect(TRACE_DB) as database:
         grogu_telemetry.record(
@@ -1165,7 +1343,17 @@ def launch_copilot(arguments: list[str]) -> int:
 
 
 GROGU_COMMANDS = frozenset(
-    {"doctor", "trace", "telemetry", "project", "memory", "banner", "task", "session"}
+    {
+        "doctor",
+        "trace",
+        "telemetry",
+        "project",
+        "memory",
+        "personal",
+        "banner",
+        "task",
+        "session",
+    }
 )
 
 

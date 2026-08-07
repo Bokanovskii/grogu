@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import grogu_banner  # noqa: E402
 import grogu_cli  # noqa: E402
 import grogu_memory  # noqa: E402
+import grogu_personal_memory  # noqa: E402
 import grogu_telemetry  # noqa: E402
 
 
@@ -475,6 +476,134 @@ class BannerCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("grogu", result.stdout)
         self.assertEqual(result.stdout.count("\n"), 1)
+
+
+class PersonalMemoryTests(unittest.TestCase):
+    def test_remember_is_confirmed_immediately_and_recall_is_bounded(self):
+        with tempfile.TemporaryDirectory() as home:
+            store = grogu_personal_memory.PersonalMemoryStore(Path(home))
+            person = store.remember(
+                "person", "Jamie", "Sister, lives in Denver", tags=["family"]
+            )
+            self.assertEqual(person["id"], "person:jamie")
+            event = store.remember("event", "Denver Trip", "Visiting in March")
+            store.link(person["id"], event["id"], "relates-to")
+            context = store.recall(node_id=person["id"], depth=1, limit=10)
+            self.assertEqual(
+                {node["id"] for node in context["nodes"]},
+                {"person:jamie", "event:denver-trip"},
+            )
+            listed = store.list(node_type="person")
+            self.assertEqual([node["id"] for node in listed], ["person:jamie"])
+            self.assertTrue(store.forget(person["id"]))
+            self.assertEqual(store.list(node_type="person"), [])
+
+    def test_unknown_node_type_is_rejected(self):
+        with tempfile.TemporaryDirectory() as home:
+            store = grogu_personal_memory.PersonalMemoryStore(Path(home))
+            with self.assertRaises(ValueError):
+                store.remember("secret", "x", "y")
+
+    def test_suggestions_require_explicit_confirmation(self):
+        with tempfile.TemporaryDirectory() as home:
+            store = grogu_personal_memory.PersonalMemoryStore(Path(home))
+            candidate = store.suggest(
+                "event",
+                "Jamie Birthday",
+                "Mentioned in an email thread",
+                source="gmail",
+                confidence=0.4,
+            )
+            # A suggestion must never appear in the confirmed graph on its own.
+            self.assertEqual(store.list(), [])
+            pending = store.review()
+            self.assertEqual([entry["id"] for entry in pending], [candidate["id"]])
+            node = store.confirm(candidate["id"])
+            self.assertEqual(node["id"], "event:jamie-birthday")
+            self.assertEqual(node["provenance"][-1]["kind"], "confirmed-suggestion")
+            self.assertEqual(store.review(), [])
+
+    def test_reject_discards_without_persisting(self):
+        with tempfile.TemporaryDirectory() as home:
+            store = grogu_personal_memory.PersonalMemoryStore(Path(home))
+            candidate = store.suggest(
+                "fact", "Likes Coffee", "Mentioned liking coffee", source="conversation"
+            )
+            self.assertTrue(store.reject(candidate["id"]))
+            self.assertEqual(store.review(), [])
+            self.assertEqual(store.list(), [])
+            self.assertFalse(store.reject(candidate["id"]))
+
+
+class PersonalMemoryCommandTests(unittest.TestCase):
+    def run_cli(self, *arguments):
+        environment = os.environ.copy()
+        with tempfile.TemporaryDirectory() as home:
+            environment["GROGU_HOME"] = home
+            return subprocess.run(
+                [sys.executable, str(CLI), *arguments],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+    def test_personal_remember_and_recall_round_trip(self):
+        with tempfile.TemporaryDirectory() as home:
+            environment = os.environ.copy()
+            environment["GROGU_HOME"] = home
+
+            def run(*arguments):
+                return subprocess.run(
+                    [sys.executable, str(CLI), *arguments],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                )
+
+            remembered = run(
+                "personal", "remember", "--type", "person",
+                "--name", "Jamie", "--summary", "Sister, lives in Denver",
+            )
+            self.assertEqual(remembered.returncode, 0)
+            self.assertIn("person:jamie", remembered.stdout)
+
+            recalled = run("personal", "recall", "--query", "denver")
+            self.assertEqual(recalled.returncode, 0)
+            self.assertIn("person:jamie", recalled.stdout)
+
+    def test_personal_suggest_is_not_recalled_until_confirmed(self):
+        with tempfile.TemporaryDirectory() as home:
+            environment = os.environ.copy()
+            environment["GROGU_HOME"] = home
+
+            def run(*arguments):
+                return subprocess.run(
+                    [sys.executable, str(CLI), *arguments],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                )
+
+            suggested = run(
+                "personal", "suggest", "--type", "event", "--name", "Jamie Birthday",
+                "--summary", "Mentioned in email", "--source", "gmail",
+            )
+            self.assertEqual(suggested.returncode, 0)
+            candidate_id = json.loads(suggested.stdout)["id"]
+
+            recalled = run("personal", "recall")
+            self.assertEqual(recalled.returncode, 0)
+            self.assertNotIn("jamie-birthday", recalled.stdout)
+
+            confirmed = run("personal", "confirm", candidate_id)
+            self.assertEqual(confirmed.returncode, 0)
+            self.assertIn("event:jamie-birthday", confirmed.stdout)
+
+            recalled_after = run("personal", "recall")
+            self.assertIn("event:jamie-birthday", recalled_after.stdout)
 
 
 if __name__ == "__main__":
