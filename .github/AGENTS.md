@@ -13,7 +13,38 @@ target-repository context in the Grogu source checkout or in global user state.
 Prefer `grogu aggregate <git|graph|tasks|traces|relationships|service>` over
 raw `git status`/`git log`, listing every task, or dumping the whole
 knowledge graph — it returns one bounded, cacheable summary per call instead
-of an unbounded dump.
+of an unbounded dump. When a question needs combining or filtering more than
+one of those sources, or filtering a large collection down to a few matching
+items (e.g. "which open tasks are labeled urgent"), use
+`grogu codemode exec` instead: write a short script that calls the same
+tools as plain functions (`git_summary`, `graph_context`, `tasks_summary`,
+`service_metadata`, `task_create`, `memory_remember`), filter/combine in the
+script, and only `print()` the bounded answer — run `grogu codemode tools`
+or `grogu codemode search <term>` first to see what's callable. This keeps
+large intermediate results out of context; only the printed output and a
+sampled run log return to the session.
+
+Before claiming or editing a task, follow the repository task-store working
+agreement (`docs/tasks.md`): `grogu task gc` to forget dead leases, `grogu
+task list` to see what's open and unheld, `grogu task claim <id>` to take
+exactly one, `grogu task heartbeat <id>` during long work so the lease
+survives, `grogu task update <id> --note "…"` to record progress, and `grogu
+task release <id> --status review --note "…"` when done. `grogu task tell
+<id> <text>` queues a message for whichever session holds a task; check
+`grogu task inbox` at each checkpoint for messages queued for the current
+session, and relay anything relevant to a running background subagent with
+the in-session `write_agent` tool — that is the only way to reach a
+subagent, and only the session itself can take it. This is how a second
+session started in another terminal or without a worktree picks a different
+task instead of racing or silently overwriting the first one.
+
+Record and query the cross-project relationship catalog with `grogu project
+{init, list, relate, graph}`, not by hand-tracking which repositories depend
+on each other.
+
+Run `grogu doctor` when the environment seems misconfigured (missing Copilot
+binary, missing or unreadable `.github/AGENTS.md`, trace/catalog database
+paths) before assuming a code change is required.
 
 For coding work, explore narrowly: inspect Git state and project instructions, locate the relevant implementation and tests, trace the smallest useful call chain, edit minimally, and run targeted validation. Do not claim success without evidence.
 
@@ -43,7 +74,7 @@ Use read-only operations by default. Ask for confirmation before destructive cha
 
 When a web interface or browser behavior needs validation, use the configured Playwright MCP capability when available. Prefer isolated/headless checks and targeted assertions; browser access does not authorize external side effects.
 
-When multiple sessions are active, detect related branches, worktrees, and leases before editing. Shared Grogu behavior changes belong in a branch and pull request.
+Shared Grogu behavior changes belong in a branch and pull request.
 
 To start another Grogu session that can be opened from GitHub web or mobile,
 run `grogu session new`. Pass Copilot options after `--`, for example
