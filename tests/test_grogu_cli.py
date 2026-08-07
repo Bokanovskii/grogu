@@ -388,6 +388,245 @@ class CodemodeTests(unittest.TestCase):
             written = grogu_codemode.generate_tool_tree(root)
             files = {path.stem for path in written.glob("*.py")}
             self.assertEqual(files, set(grogu_codemode.TOOLS))
+            content = (written / "git_summary.py").read_text()
+            self.assertIn("git_summary() -> dict", content)
+            self.assertIn("Branch, upstream drift", content)
+        finally:
+            directory.cleanup()
+
+    def test_execute_surfaces_exceptions_as_nonzero_returncode(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(root, "raise ValueError('boom')")
+            self.assertNotEqual(result["returncode"], 0)
+            self.assertFalse(result["timed_out"])
+            self.assertIn("ValueError: boom", result["stderr"])
+        finally:
+            directory.cleanup()
+
+    def test_execute_reports_unknown_tool_as_name_error(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(root, "not_a_real_tool()")
+            self.assertNotEqual(result["returncode"], 0)
+            self.assertIn("NameError", result["stderr"])
+        finally:
+            directory.cleanup()
+
+    def test_execute_truncates_large_stderr_but_keeps_full_log(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(
+                root, "import sys; sys.stderr.write('e' * 20000)"
+            )
+            self.assertTrue(result["stderr_truncated"])
+            self.assertLessEqual(
+                len(result["stderr"].encode("utf8")), grogu_codemode.MAX_OUTPUT_BYTES
+            )
+            logged = json.loads(Path(result["log_path"]).read_text())
+            self.assertEqual(len(logged["stderr"]), 20000)
+        finally:
+            directory.cleanup()
+
+    def test_execute_clamps_timeout_to_configured_bounds(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(root, "print('ok')", timeout=0)
+            self.assertEqual(result["returncode"], 0)
+            result = grogu_codemode.execute(
+                root, "print('ok')", timeout=10_000
+            )
+            self.assertEqual(result["returncode"], 0)
+        finally:
+            directory.cleanup()
+
+    def test_task_create_persists_across_separate_executions(self):
+        directory, root = self.make_repository()
+        try:
+            grogu_codemode.execute(
+                root, "task_create(title='Persisted task')"
+            )
+            result = grogu_codemode.execute(root, "print(tasks_summary()['total'])")
+            self.assertEqual(result["stdout"].strip(), "1")
+        finally:
+            directory.cleanup()
+
+    def test_execute_accepts_positional_arguments_matching_documented_signature(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(
+                root,
+                "print(task_create('Positional title', 'body text')['title'])",
+            )
+            self.assertEqual(result["returncode"], 0)
+            self.assertEqual(result["stdout"].strip(), "Positional title")
+        finally:
+            directory.cleanup()
+
+    def test_memory_remember_persists_a_graph_node(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(
+                root,
+                "memory_remember('doc', 'README', 'top-level readme')",
+            )
+            self.assertEqual(result["returncode"], 0, result["stderr"])
+            store = grogu_memory.MemoryStore(root)
+            result = grogu_context.graph_context(store, query="README")
+            names = [node["name"] for node in result["nodes"]]
+            self.assertIn("README", names)
+        finally:
+            directory.cleanup()
+
+
+class CodemodeCliTests(unittest.TestCase):
+    def make_repository(self):
+        directory = tempfile.TemporaryDirectory()
+        root = Path(directory.name)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.email", "a@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.name", "a"], check=True
+        )
+        (root / "app.py").write_text("print('one')\n")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-q", "-m", "init"], check=True
+        )
+        return directory, root
+
+    def run_cli(self, *arguments, home, input=None):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = home
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            input=input,
+            env=environment,
+        )
+
+    def test_tools_and_search_subcommands(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_cli("codemode", "tools", home=home)
+            self.assertEqual(result.returncode, 0)
+            names = {tool["name"] for tool in json.loads(result.stdout)["tools"]}
+            self.assertIn("git_summary", names)
+
+            result = self.run_cli("codemode", "search", "task", home=home)
+            self.assertEqual(result.returncode, 0)
+            names = {tool["name"] for tool in json.loads(result.stdout)["tools"]}
+            self.assertEqual(names, {"task_create", "tasks_summary"})
+
+    def test_exec_with_inline_code_flag(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    "--code",
+                    "print(git_summary()['branch'])",
+                    home=home,
+                )
+                self.assertEqual(result.returncode, 0)
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["stdout"].strip(), "main")
+        finally:
+            directory.cleanup()
+
+    def test_exec_with_file_flag(self):
+        directory, root = self.make_repository()
+        try:
+            script = root / "script.py"
+            script.write_text("print(service_metadata())")
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    "--file",
+                    str(script),
+                    home=home,
+                )
+                self.assertEqual(result.returncode, 0)
+                self.assertIn("manifests", json.loads(result.stdout)["stdout"])
+        finally:
+            directory.cleanup()
+
+    def test_exec_reads_code_from_stdin_by_default(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    home=home,
+                    input="print(tasks_summary()['total'])",
+                )
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(json.loads(result.stdout)["stdout"].strip(), "0")
+        finally:
+            directory.cleanup()
+
+    def test_exec_cli_exit_code_is_nonzero_on_script_failure(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    "--code",
+                    "raise RuntimeError('nope')",
+                    home=home,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("RuntimeError", json.loads(result.stdout)["stderr"])
+        finally:
+            directory.cleanup()
+
+    def test_exec_cli_exit_code_is_nonzero_on_timeout(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    "--timeout",
+                    "1",
+                    "--code",
+                    "import time; time.sleep(5)",
+                    home=home,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(json.loads(result.stdout)["timed_out"])
+        finally:
+            directory.cleanup()
+
+    def test_generate_subcommand_writes_tool_tree(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode", "generate", "--repo", str(root), home=home
+                )
+                self.assertEqual(result.returncode, 0)
+                directory_path = Path(json.loads(result.stdout)["tools_directory"])
+                self.assertTrue(directory_path.is_dir())
+                self.assertTrue((directory_path / "git_summary.py").is_file())
         finally:
             directory.cleanup()
 

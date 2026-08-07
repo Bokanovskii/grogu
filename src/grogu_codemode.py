@@ -209,8 +209,8 @@ def _limit_resources() -> None:
 
 def _bootstrap_source(root: Path, src_dir: Path) -> str:
     tool_calls = "\n".join(
-        f"def {name}(**kwargs):\n"
-        f"    return _TOOLS[{name!r}][\"function\"](_ROOT, **kwargs)\n"
+        f"def {name}(*args, **kwargs):\n"
+        f"    return _TOOLS[{name!r}][\"function\"](_ROOT, *args, **kwargs)\n"
         for name in TOOLS
     )
     template = textwrap.dedent(
