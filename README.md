@@ -195,18 +195,25 @@ that repository's `.grogu/intelligence/` directory:
 grogu memory index
 grogu memory status
 grogu memory context --limit 40
+grogu memory context --related --limit 20
 ```
 
-The directory contains a stable repository manifest, a deterministic file and
-Git index, and a reserved append-only insights stream. Normal Grogu launches
-refresh the index and expose its location and Git cursor to Copilot. Indexing
-uses relative paths, content digests, file roles, and Git cursors; it excludes
-dependencies, build output, secrets by default, and volatile session state.
-Unchanged files are reused, so opening a repository does not repeatedly scan
-all of its history. The machine-readable contracts live in
+The directory contains a stable repository manifest, a deterministic file
+inventory, and a knowledge graph of architecture, decisions, conventions,
+workflows, services, and evidence-backed learnings. Normal Grogu launches
+refresh the inventory and expose the intelligence location and stable
+repository identity to Copilot. Git remains Git's responsibility; Grogu does
+not copy branch, commit, or history data into the repository-local index. The
+machine-readable contracts live in
 `schemas/repository-intelligence.schema.json`,
 `schemas/project-relationship.schema.json`, and
 `schemas/telemetry-event.schema.json`. See [docs/memory.md](docs/memory.md).
+
+Use `grogu memory remember` and `grogu memory link` to add compact,
+provenance-backed architecture knowledge and relationships. Use
+`grogu memory context --node ... --depth ...` to traverse a bounded
+neighborhood, or `--related` to pull bounded context from repositories that
+are explicitly connected in the project relationship catalog.
 
 ## Telemetry and self-improvement
 

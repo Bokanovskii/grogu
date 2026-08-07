@@ -9,28 +9,41 @@ contains only the implementation and schemas, never another project's context.
 
 | File | Audience | Meaning |
 | --- | --- | --- |
-| `manifest.json` | Git and sessions | Stable repository identity, remote, schema, and derivation version |
-| `index.json` | Sessions and tools | Incremental file inventory, roles, Git cursor, and summary counts |
-| `insights.jsonl` | Sessions and reviewers | Future model-derived facts with explicit provenance and derivation |
+| `manifest.json` | Sessions and tools | Stable repository identity, schema, and derivation version |
+| `inventory.json` | Local indexer | Content digests and file roles used for incremental updates |
+| `index.json` | Sessions and tools | Knowledge graph nodes, edges, confidence, and provenance |
+| `insights.jsonl` | Sessions and reviewers | Reserved stream for future derived observations |
 
-The index is deterministic. It records relative paths, SHA-256 digests, sizes,
-roles, and file timestamps, plus the current branch, commit, remote, and recent
-commits. Build output, dependencies, virtual environments, Git internals, and
-Grogu volatile state are excluded. Unchanged files are reused from the previous
-index, and changed or removed files are reported.
+Git remains the source of truth for repository history. Grogu's inventory only
+uses relative paths, SHA-256 digests, sizes, and file roles to update the
+knowledge graph incrementally. File timestamps used to avoid re-hashing are
+kept only in ignored local state. Build output, dependencies, virtual
+environments, Git internals, and Grogu volatile state are excluded.
+
+The graph stores typed nodes such as `architecture`, `component`, `decision`,
+`convention`, `workflow`, `service`, and `file`. Each node has a compact
+summary, paths, tags, confidence, and provenance. Edges express relationships
+such as `contains`, `depends-on`, `calls`, `implements`, `constrains`, and
+`verified-by`.
 
 ## Commands
 
 ```sh
 grogu memory index
 grogu memory status
-grogu memory context --limit 40
+grogu memory remember --type architecture --name api --summary "HTTP handlers live under src/api" --path src/api
+grogu memory link architecture:api file:src/api/routes.py --kind implemented-by
+grogu memory context --node architecture:api --depth 2 --limit 40
+grogu memory context --query authentication --limit 20
+grogu memory context --related --limit 20
 ```
 
 Normal Grogu launches refresh this index incrementally and export
-`GROGU_MEMORY_DIR`, `GROGU_REPOSITORY_ID`, and `GROGU_REPOSITORY_HEAD` to
-Copilot. The context command returns a bounded, machine-readable summary rather
-than injecting an unbounded repository dump into every prompt.
+`GROGU_MEMORY_DIR` and `GROGU_REPOSITORY_ID` to Copilot. The context command
+returns bounded, machine-readable graph neighborhoods rather than injecting an
+unbounded repository dump into every prompt. `--related` follows the explicit
+cross-repository catalog edges and loads bounded contexts from locally known
+related repositories without merging their full indexes into the current one.
 
 ## Cross-project relationships
 

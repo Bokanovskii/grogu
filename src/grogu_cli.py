@@ -105,6 +105,14 @@ def initialize_catalog_db() -> None:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (source_id, target_id, kind)
             );
+            CREATE TABLE IF NOT EXISTS repositories (
+                repository_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS repositories_path_idx ON repositories(path);
             """
         )
 
@@ -232,14 +240,13 @@ def project_init(args: argparse.Namespace) -> int:
     if manifest_path.exists() and not args.force:
         print(f"refusing to overwrite {manifest_path}; use --force", file=sys.stderr)
         return 2
+    repository_manifest = grogu_memory.MemoryStore(path).initialize(args.name)
     manifest = {
         "schema_version": 1,
         "project_id": str(uuid.uuid4()),
         "name": args.name,
         "slug": slug,
-        "repository_id": grogu_memory.MemoryStore(path).initialize(args.name)[
-            "repository_id"
-        ],
+        "repository_id": repository_manifest["repository_id"],
         "created_at": now(),
     }
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -263,6 +270,7 @@ def project_init(args: argparse.Namespace) -> int:
                 json.dumps(manifest, sort_keys=True),
             ),
         )
+    register_repository(repository_manifest, path)
     print(manifest_path)
     return 0
 
@@ -329,6 +337,71 @@ def project_graph(_: argparse.Namespace) -> int:
     return 0
 
 
+def register_repository(manifest: dict, path: Path) -> None:
+    initialize_catalog_db()
+    with connect(CATALOG_DB) as database:
+        database.execute(
+            """
+            INSERT INTO repositories(repository_id, name, path, updated_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(repository_id) DO UPDATE SET
+                name=excluded.name, path=excluded.path,
+                updated_at=excluded.updated_at, metadata_json=excluded.metadata_json
+            """,
+            (
+                manifest["repository_id"],
+                manifest["name"],
+                str(path),
+                now(),
+                json.dumps(manifest, sort_keys=True),
+            ),
+        )
+
+
+def related_repository_context(repository_id: str, limit: int) -> list:
+    initialize_catalog_db()
+    with connect(CATALOG_DB) as database:
+        relationships = database.execute(
+            """
+            SELECT source_id, target_id, kind
+            FROM project_relationships
+            WHERE source_id = ? OR target_id = ?
+            ORDER BY source_id, target_id, kind
+            """,
+            (repository_id, repository_id),
+        ).fetchall()
+        related_ids = {
+            row["target_id"] if row["source_id"] == repository_id else row["source_id"]
+            for row in relationships
+        }
+        result = []
+        for related_id in sorted(related_ids):
+            row = database.execute(
+                "SELECT path, name FROM repositories WHERE repository_id = ?",
+                (related_id,),
+            ).fetchone()
+            if not row:
+                continue
+            store = grogu_memory.MemoryStore(Path(row["path"]))
+            result.append(
+                {
+                    "repository_id": related_id,
+                    "name": row["name"],
+                    "context": store.context(limit=limit),
+                    "relationships": [
+                        {
+                            "source": item["source_id"],
+                            "target": item["target_id"],
+                            "kind": item["kind"],
+                        }
+                        for item in relationships
+                        if item["source_id"] == related_id or item["target_id"] == related_id
+                    ],
+                }
+            )
+        return result
+
+
 def memory_store(args: argparse.Namespace) -> grogu_memory.MemoryStore:
     return grogu_memory.MemoryStore(
         Path(args.repo).expanduser() if getattr(args, "repo", None) else None
@@ -336,7 +409,9 @@ def memory_store(args: argparse.Namespace) -> grogu_memory.MemoryStore:
 
 
 def memory_index(args: argparse.Namespace) -> int:
-    result = memory_store(args).index()
+    store = memory_store(args)
+    result = store.index()
+    register_repository(result["manifest"], store.root)
     initialize_trace_db()
     with connect(TRACE_DB) as database:
         grogu_telemetry.record(
@@ -367,7 +442,41 @@ def memory_status(args: argparse.Namespace) -> int:
 
 
 def memory_context(args: argparse.Namespace) -> int:
-    print_json(memory_store(args).context(args.limit))
+    store = memory_store(args)
+    result = store.context(
+        args.limit, query=args.query, node_id=args.node, depth=args.depth
+    )
+    if args.related:
+        result["related_repositories"] = related_repository_context(
+            result["repository"]["repository_id"], args.limit
+        )
+    print_json(result)
+    return 0
+
+
+def memory_remember(args: argparse.Namespace) -> int:
+    node = memory_store(args).remember(
+        args.type,
+        args.name,
+        args.summary,
+        paths=args.path,
+        tags=args.tag,
+        confidence=args.confidence,
+        provenance={"kind": args.provenance},
+    )
+    print_json(node)
+    return 0
+
+
+def memory_link(args: argparse.Namespace) -> int:
+    edge = memory_store(args).link(
+        args.source,
+        args.target,
+        args.kind,
+        confidence=args.confidence,
+        provenance={"kind": args.provenance},
+    )
+    print_json(edge)
     return 0
 
 
@@ -781,7 +890,27 @@ def build_parser() -> argparse.ArgumentParser:
     memory_status_parser.set_defaults(handler=memory_status)
     context = memory_subparsers.add_parser("context", parents=[memory_common])
     context.add_argument("--limit", type=int, default=40)
+    context.add_argument("--query", default="")
+    context.add_argument("--node", default="")
+    context.add_argument("--depth", type=int, default=1)
+    context.add_argument("--related", action="store_true")
     context.set_defaults(handler=memory_context)
+    remember = memory_subparsers.add_parser("remember", parents=[memory_common])
+    remember.add_argument("--type", required=True)
+    remember.add_argument("--name", required=True)
+    remember.add_argument("--summary", required=True)
+    remember.add_argument("--path", action="append")
+    remember.add_argument("--tag", action="append")
+    remember.add_argument("--confidence", type=float, default=0.8)
+    remember.add_argument("--provenance", default="user")
+    remember.set_defaults(handler=memory_remember)
+    link = memory_subparsers.add_parser("link", parents=[memory_common])
+    link.add_argument("source")
+    link.add_argument("target")
+    link.add_argument("--kind", required=True)
+    link.add_argument("--confidence", type=float, default=0.8)
+    link.add_argument("--provenance", default="user")
+    link.set_defaults(handler=memory_link)
 
     banner = subparsers.add_parser("banner")
     banner_subparsers = banner.add_subparsers(dest="banner_command", required=True)
@@ -970,12 +1099,12 @@ def launch_copilot(arguments: list[str]) -> int:
         memory_result = memory.index()
     except (OSError, ValueError) as error:
         print(f"grogu: repository intelligence update failed: {error}", file=sys.stderr)
-        memory_result = {"manifest": {}, "index": {"git": {}}}
+        memory_result = {"manifest": {}, "index": {}}
+    if memory_result.get("manifest"):
+        register_repository(memory_result["manifest"], memory.root)
     environment["GROGU_MEMORY_DIR"] = str(memory.directory)
     if memory_result.get("manifest", {}).get("repository_id"):
         environment["GROGU_REPOSITORY_ID"] = memory_result["manifest"]["repository_id"]
-    if memory_result.get("index", {}).get("git", {}).get("head"):
-        environment["GROGU_REPOSITORY_HEAD"] = memory_result["index"]["git"]["head"]
     initialize_trace_db()
     with connect(TRACE_DB) as database:
         grogu_telemetry.record(
@@ -984,10 +1113,7 @@ def launch_copilot(arguments: list[str]) -> int:
             outcome="ok",
             repository_id=memory_result.get("manifest", {}).get("repository_id", ""),
             session_id=environment["GROGU_SESSION_ID"],
-            payload={
-                "head": memory_result.get("index", {}).get("git", {}).get("head", ""),
-                "grogu_version": VERSION,
-            },
+            payload={"grogu_version": VERSION},
         )
     instruction_dirs = environment.get("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", "")
     additions = str(ROOT / ".github")

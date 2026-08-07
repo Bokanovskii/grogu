@@ -133,17 +133,60 @@ class GroguCliTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", str(root)], check=True)
             (root / "README.md").write_text("# Demo\n")
             (root / "app.py").write_text("print('one')\n")
+            task_dir = root / ".grogu/tasks"
+            task_dir.mkdir(parents=True)
+            (task_dir / "t-demo.json").write_text(
+                json.dumps(
+                    {
+                        "id": "t-demo",
+                        "title": "Map the API",
+                        "body": "Record the handler boundaries",
+                        "status": "done",
+                        "labels": ["architecture"],
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                    }
+                )
+            )
             store = grogu_memory.MemoryStore(root)
             first = store.index()
-            self.assertEqual(first["index"]["summary"]["file_count"], 2)
+            self.assertEqual(first["index"]["summary"]["file_count"], 3)
             self.assertIn("app.py", first["changed"])
             self.assertNotIn("mtime_ns", first["index"]["files"]["app.py"])
+            self.assertIn("work:t-demo", first["graph"]["nodes"])
             second = store.index()
             self.assertEqual(second["changed"], [])
             (root / "app.py").write_text("print('two')\n")
             third = store.index()
             self.assertEqual(third["changed"], ["app.py"])
             self.assertTrue((root / ".grogu/state/memory-cache.json").is_file())
+
+    def test_memory_graph_traversal_returns_bounded_learning_context(self):
+        with tempfile.TemporaryDirectory() as project:
+            root = Path(project)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "README.md").write_text("# Demo\n")
+            store = grogu_memory.MemoryStore(root)
+            store.index()
+            store.remember(
+                "architecture",
+                "api",
+                "HTTP handlers",
+                paths=["src/api"],
+                provenance={"kind": "verification"},
+            )
+            store.remember(
+                "component",
+                "routes",
+                "Route definitions",
+                paths=["src/api/routes.py"],
+            )
+            store.link("architecture:api", "component:routes", "contains")
+            context = store.context(node_id="architecture:api", depth=1, limit=10)
+            self.assertEqual(
+                {node["id"] for node in context["nodes"]},
+                {"architecture:api", "component:routes"},
+            )
+            self.assertNotIn("git", context)
 
     def test_telemetry_redacts_secret_values(self):
         with tempfile.TemporaryDirectory() as home:

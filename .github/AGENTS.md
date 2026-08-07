@@ -18,6 +18,11 @@ evidence such as test results rather than secrets or full conversation text.
 Improvement proposals should be backed by repeated telemetry or evaluation
 evidence and land through a branch and pull request.
 
+After verified work, preserve durable repository knowledge with
+`grogu memory remember` and connect it to implementation files or related
+concepts with `grogu memory link`. Prefer short architecture, decision,
+convention, workflow, and service summaries over copied source or transcripts.
+
 Use read-only operations by default. Ask for confirmation before destructive changes, external messages, sending email, deployment, spending money, or other irreversible side effects. Never expose secrets or personal data in traces.
 
 When a web interface or browser behavior needs validation, use the configured Playwright MCP capability when available. Prefer isolated/headless checks and targeted assertions; browser access does not authorize external side effects.
