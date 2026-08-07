@@ -617,6 +617,10 @@ def wants_autopilot_default(arguments: list[str]) -> bool:
     """
     if not autopilot_default_enabled():
         return False
+    # Copilot's autopilot mode requires a prompt or another explicit
+    # non-interactive launch. A bare invocation must remain the interactive TUI.
+    if not arguments:
+        return False
     if any(argument in COPILOT_SUBCOMMANDS for argument in arguments):
         return False
     names = _flags(arguments)
@@ -1053,8 +1057,25 @@ def _run_copilot(copilot: str, arguments: list[str], environment: dict[str, str]
         for number in (signal.SIGINT, signal.SIGQUIT)
     }
     process = None
+    terminal_fd = None
+    parent_pgrp = None
+    if sys.stdin.isatty():
+        terminal_fd = sys.stdin.fileno()
+        parent_pgrp = os.getpgrp()
+
+    def prepare_child() -> None:
+        os.setpgrp()
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+
     try:
-        process = subprocess.Popen([copilot, *arguments], env=environment)
+        process = subprocess.Popen(
+            [copilot, *arguments],
+            env=environment,
+            preexec_fn=prepare_child if terminal_fd is not None else None,
+        )
+        if terminal_fd is not None:
+            os.tcsetpgrp(terminal_fd, process.pid)
 
         def forward(signal_number: int, _frame: object) -> None:
             try:
@@ -1071,6 +1092,8 @@ def _run_copilot(copilot: str, arguments: list[str], environment: dict[str, str]
             except KeyboardInterrupt:  # pragma: no cover - parent ignores SIGINT
                 continue
     finally:
+        if terminal_fd is not None and parent_pgrp is not None:
+            os.tcsetpgrp(terminal_fd, parent_pgrp)
         for number, handler in previous.items():
             signal.signal(number, handler)
     return 128 - status if status < 0 else status
