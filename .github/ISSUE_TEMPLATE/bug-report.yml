@@ -1,0 +1,36 @@
+name: Bug report
+description: Grogu or its Copilot CLI integration behaves incorrectly.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the exact command and the observed output.
+      placeholder: |
+        $ grogu --plan
+        ... started in autopilot mode instead of plan mode
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Paste `grogu doctor` output, with any local paths you would rather not share removed.
+      render: json
+    validations:
+      required: true
+  - type: input
+    id: copilot
+    attributes:
+      label: Copilot CLI version
+      placeholder: copilot --version
+    validations:
+      required: true

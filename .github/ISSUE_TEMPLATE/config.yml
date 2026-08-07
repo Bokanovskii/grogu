@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Task tracking contract
+    url: https://github.com/Bokanovskii/grogu/blob/main/docs/tasks.md
+    about: How tasks, leases and concurrent Grogu sessions fit together.
+  - name: Handoff protocol
+    url: https://github.com/Bokanovskii/grogu/blob/main/docs/handoff.md
+    about: How to send a late update to a session that is already running.

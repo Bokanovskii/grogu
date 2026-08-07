@@ -1,0 +1,14 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Scratch space for local investigation; never shared
+.scratch/
+.scratch_strings.txt
+.sandbox/
+
+# Per-machine Grogu session state: leases, inbox, lock files
+.grogu/state/
+
+# Local editor and OS noise
+.DS_Store

@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+SOURCE=$0
+while [ -L "$SOURCE" ]; do
+    DIRECTORY=$(CDPATH= cd -P -- "$(dirname -- "$SOURCE")" && pwd)
+    SOURCE=$(readlink "$SOURCE")
+    case "$SOURCE" in
+        /*) ;;
+        *) SOURCE="$DIRECTORY/$SOURCE" ;;
+    esac
+done
+ROOT=$(CDPATH= cd -P -- "$(dirname -- "$SOURCE")/.." && pwd)
+exec python3 "$ROOT/src/grogu_cli.py" "$@"
