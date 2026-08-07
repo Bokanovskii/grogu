@@ -173,10 +173,58 @@ path, and timestamps in `$GROGU_HOME/catalog.db`. `grogu project list` lists
 those registrations. The catalog is user-local and is not committed to any
 repository.
 
-The current catalog is a registry, not yet a relationship graph: it does not
-automatically index repository history, discover related repositories, or
-inject cross-project summaries into a new session. Those are planned
-incremental-memory capabilities.
+Stable repository identities can be related without copying repository context
+into Grogu:
+
+```sh
+grogu project relate frontend backend depends-on \
+  --evidence '{"source":"service configuration"}'
+grogu project graph
+```
+
+Relationships are explicit, timestamped catalog records. Automatic discovery
+and cross-project summary generation remain future capabilities.
+
+## Repository intelligence
+
+Grogu never stores another repository's context in the Grogu source checkout.
+When it works in a target repository, it creates and incrementally maintains
+that repository's `.grogu/intelligence/` directory:
+
+```sh
+grogu memory index
+grogu memory status
+grogu memory context --limit 40
+```
+
+The directory contains a stable repository manifest, a deterministic file and
+Git index, and a reserved append-only insights stream. Normal Grogu launches
+refresh the index and expose its location and Git cursor to Copilot. Indexing
+uses relative paths, content digests, file roles, and Git cursors; it excludes
+dependencies, build output, secrets by default, and volatile session state.
+Unchanged files are reused, so opening a repository does not repeatedly scan
+all of its history. The machine-readable contracts live in
+`schemas/repository-intelligence.schema.json`,
+`schemas/project-relationship.schema.json`, and
+`schemas/telemetry-event.schema.json`. See [docs/memory.md](docs/memory.md).
+
+## Telemetry and self-improvement
+
+Grogu records structured, locally stored, redacted evidence rather than
+conversation transcripts:
+
+```sh
+grogu telemetry record --event verification --outcome passed \
+  --repository-id "$GROGU_REPOSITORY_ID" \
+  --payload '{"tests":28}'
+grogu telemetry list
+grogu telemetry summary
+```
+
+Telemetry is intended to support a repeatable improvement loop: observe a
+failure or outcome, add a regression/evaluation case, change Grogu on a branch,
+verify the result, and retain the change only when evidence improves. See
+[docs/self-improvement.md](docs/self-improvement.md).
 
 `grogu task` is a repository-backed tracker built for concurrent sessions: one
 JSON file per task under `.grogu/tasks/` (committed, merge-friendly), leases

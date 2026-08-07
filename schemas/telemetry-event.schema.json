@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grogu.dev/schemas/telemetry-event.schema.json",
+  "title": "Grogu telemetry event",
+  "type": "object",
+  "required": ["id", "created_at", "event", "payload"],
+  "properties": {
+    "id": {"type": "string", "format": "uuid"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "event": {"type": "string", "minLength": 1},
+    "outcome": {"type": ["string", "null"]},
+    "repository_id": {"type": ["string", "null"]},
+    "session_id": {"type": ["string", "null"]},
+    "task_id": {"type": ["string", "null"]},
+    "duration_ms": {"type": ["integer", "null"], "minimum": 0},
+    "payload": {"type": "object"}
+  },
+  "additionalProperties": false
+}

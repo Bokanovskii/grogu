@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grogu.dev/schemas/repository-intelligence.schema.json",
+  "title": "Grogu repository intelligence",
+  "type": "object",
+  "required": ["schema_version", "kind", "repository_id", "derivation"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"enum": ["grogu.repository_intelligence", "grogu.repository_index", "grogu.repository_context"]},
+    "repository_id": {"type": "string", "minLength": 1},
+    "name": {"type": "string"},
+    "remote": {"type": "string"},
+    "derivation": {"type": "string", "minLength": 1},
+    "git": {"type": "object"},
+    "files": {"type": "object"},
+    "summary": {"type": "object"},
+    "important_files": {"type": "array"}
+  },
+  "additionalProperties": true
+}

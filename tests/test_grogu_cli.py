@@ -13,6 +13,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import grogu_banner  # noqa: E402
 import grogu_cli  # noqa: E402
+import grogu_memory  # noqa: E402
+import grogu_telemetry  # noqa: E402
 
 
 class GroguCliTests(unittest.TestCase):
@@ -72,6 +74,25 @@ class GroguCliTests(unittest.TestCase):
             manifest = Path(project) / ".grogu" / "project.json"
             self.assertTrue(manifest.is_file())
             self.assertEqual(json.loads(manifest.read_text())["slug"], "example")
+            self.assertNotIn("repository_path", json.loads(manifest.read_text()))
+
+    def test_project_relationship_catalog_is_separate_from_repo_context(self):
+        with tempfile.TemporaryDirectory() as home:
+            related = self.run_cli(
+                "project",
+                "relate",
+                "frontend",
+                "backend",
+                "depends-on",
+                "--evidence",
+                '{"source":"service configuration"}',
+                home=home,
+            )
+            self.assertEqual(related.returncode, 0)
+            graph = self.run_cli("project", "graph", home=home)
+            self.assertEqual(graph.returncode, 0)
+            self.assertIn('"kind": "depends-on"', graph.stdout)
+            self.assertIn("service configuration", graph.stdout)
 
     def test_session_new_adds_remote_flag(self):
         captured = []
@@ -105,6 +126,40 @@ class GroguCliTests(unittest.TestCase):
             grogu_cli.launch_copilot = original
         self.assertEqual(result, 0)
         self.assertEqual(captured, [["--remote-export"]])
+
+    def test_memory_index_is_incremental_and_portable(self):
+        with tempfile.TemporaryDirectory() as project:
+            root = Path(project)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "README.md").write_text("# Demo\n")
+            (root / "app.py").write_text("print('one')\n")
+            store = grogu_memory.MemoryStore(root)
+            first = store.index()
+            self.assertEqual(first["index"]["summary"]["file_count"], 2)
+            self.assertIn("app.py", first["changed"])
+            self.assertNotIn("mtime_ns", first["index"]["files"]["app.py"])
+            second = store.index()
+            self.assertEqual(second["changed"], [])
+            (root / "app.py").write_text("print('two')\n")
+            third = store.index()
+            self.assertEqual(third["changed"], ["app.py"])
+            self.assertTrue((root / ".grogu/state/memory-cache.json").is_file())
+
+    def test_telemetry_redacts_secret_values(self):
+        with tempfile.TemporaryDirectory() as home:
+            database = grogu_cli.connect(Path(home) / "traces.db")
+            try:
+                grogu_telemetry.initialize(database)
+                event = grogu_telemetry.record(
+                    database,
+                    "verification",
+                    outcome="passed",
+                    payload={"token": "secret", "message": "ghp_example"},
+                )
+                self.assertEqual(event["payload"]["token"], "[REDACTED]")
+                self.assertNotIn("ghp_example", json.dumps(event))
+            finally:
+                database.close()
 
 
 class BannerArtTests(unittest.TestCase):

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grogu.dev/schemas/project-relationship.schema.json",
+  "title": "Grogu project relationship",
+  "type": "object",
+  "required": ["source_id", "target_id", "kind", "evidence"],
+  "properties": {
+    "source_id": {"type": "string", "minLength": 1},
+    "target_id": {"type": "string", "minLength": 1},
+    "kind": {"type": "string", "minLength": 1},
+    "evidence": {"type": "object"},
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}
