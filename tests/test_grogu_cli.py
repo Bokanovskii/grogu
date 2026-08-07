@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import grogu_banner  # noqa: E402
 import grogu_cli
-import grogu_codemode  # noqa: E402
+import grogu_context  # noqa: E402
 import grogu_memory  # noqa: E402
 import grogu_personal_memory  # noqa: E402
 import grogu_telemetry  # noqa: E402
@@ -223,7 +223,7 @@ class GroguCliTests(unittest.TestCase):
                 database.close()
 
 
-class CodemodeTests(unittest.TestCase):
+class AggregateTests(unittest.TestCase):
     def make_repository(self):
         directory = tempfile.TemporaryDirectory()
         root = Path(directory.name)
@@ -259,11 +259,11 @@ class CodemodeTests(unittest.TestCase):
             (root / "app.py").write_text("print('two')\n")
             with tempfile.TemporaryDirectory() as home:
                 result = self.run_cli(
-                    "codemode", "git", "--repo", str(root), home=home
+                    "aggregate", "git", "--repo", str(root), home=home
                 )
                 self.assertEqual(result.returncode, 0)
                 payload = json.loads(result.stdout)
-                self.assertEqual(payload["kind"], "grogu.codemode_context")
+                self.assertEqual(payload["kind"], "grogu.context_summary")
                 self.assertEqual(payload["op"], "git")
                 data = payload["data"]
                 self.assertEqual(data["branch"], "main")
@@ -292,7 +292,7 @@ class CodemodeTests(unittest.TestCase):
             )
             with tempfile.TemporaryDirectory() as home:
                 result = self.run_cli(
-                    "codemode", "tasks", "--repo", str(root), home=home
+                    "aggregate", "tasks", "--repo", str(root), home=home
                 )
                 self.assertEqual(result.returncode, 0)
                 data = json.loads(result.stdout)["data"]
@@ -304,14 +304,14 @@ class CodemodeTests(unittest.TestCase):
             directory.cleanup()
 
     def test_signature_is_stable_for_identical_data(self):
-        first = grogu_codemode._envelope("git", "repo", {"a": 1, "b": 2})
-        second = grogu_codemode._envelope("git", "repo", {"b": 2, "a": 1})
+        first = grogu_context._envelope("git", "repo", {"a": 1, "b": 2})
+        second = grogu_context._envelope("git", "repo", {"b": 2, "a": 1})
         self.assertEqual(first["signature"], second["signature"])
 
     def test_unknown_operation_raises(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
-                grogu_codemode.aggregate("not-a-real-op", Path(directory))
+                grogu_context.aggregate("not-a-real-op", Path(directory))
 
 
 class BannerArtTests(unittest.TestCase):

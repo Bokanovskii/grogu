@@ -1,6 +1,6 @@
-"""Deterministic codemode context aggregation.
+"""Deterministic, bounded context aggregation.
 
-Codemode operations reduce the amount of raw data a session has to read by
+Aggregation operations reduce the amount of raw data a session has to read by
 performing the batching, filtering, and aggregation server-side, in Grogu,
 before anything reaches Copilot. Every operation returns a bounded,
 machine-readable summary rather than an unbounded dump, and the same inputs
@@ -50,7 +50,7 @@ def _signature(data: dict) -> str:
 def _envelope(op: str, repository_id: str, data: dict) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
-        "kind": "grogu.codemode_context",
+        "kind": "grogu.context_summary",
         "op": op,
         "repository_id": repository_id,
         "generated_at": now(),
@@ -132,7 +132,7 @@ def graph_context(
 ) -> dict:
     """Bounded knowledge-graph neighborhood, unchanged from ``memory context``.
 
-    Exposed here so a single codemode call can combine it with other bounded
+    Exposed here so a single context call can combine it with other bounded
     aggregations instead of issuing separate, larger requests.
     """
     return store.context(_bound(limit), query=query, node_id=node_id, depth=depth)
@@ -226,7 +226,7 @@ def service_metadata(root: Path) -> dict:
 
 
 def aggregate(op: str, root: Optional[Path] = None, **params) -> dict:
-    """Dispatch a codemode aggregation by name and wrap it in a stable envelope."""
+    """Dispatch a context aggregation by name and wrap it in a stable envelope."""
     resolved_root = grogu_memory.repository_root(root)
     store = grogu_memory.MemoryStore(resolved_root)
     repository_id = store.status().get("manifest", {}).get("repository_id", "")
@@ -246,5 +246,5 @@ def aggregate(op: str, root: Optional[Path] = None, **params) -> dict:
     elif op == "service":
         data = service_metadata(resolved_root)
     else:
-        raise ValueError(f"unknown codemode operation: {op}")
+        raise ValueError(f"unknown context operation: {op}")
     return _envelope(op, repository_id, data)

@@ -221,24 +221,24 @@ provenance-backed architecture knowledge and relationships. Use
 neighborhood, or `--related` to pull bounded context from repositories that
 are explicitly connected in the project relationship catalog.
 
-## Codemode context aggregation
+## Bounded context aggregation
 
-`grogu codemode` batches, filters, and aggregates Git, the knowledge graph,
+`grogu aggregate` batches, filters, and aggregates Git, the knowledge graph,
 tasks, telemetry, and the relationship catalog into bounded, cacheable
 summaries instead of unbounded dumps:
 
 ```sh
-grogu codemode git
-grogu codemode graph --query auth
-grogu codemode tasks --limit 20
-grogu codemode traces
-grogu codemode relationships
-grogu codemode service
+grogu aggregate git
+grogu aggregate graph --query auth
+grogu aggregate tasks --limit 20
+grogu aggregate traces
+grogu aggregate relationships
+grogu aggregate service
 ```
 
 Every operation returns the same stable envelope, including a signature
 derived only from its data so identical repository state produces identical
-output. See [docs/codemode.md](docs/codemode.md).
+output. See [docs/aggregate.md](docs/aggregate.md).
 
 ## Personal memory
 
