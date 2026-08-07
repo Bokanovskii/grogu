@@ -71,9 +71,15 @@ if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
     case "$CURRENT" in
         "$LAUNCHER") ;;
         *)
-            printf '%s\n' "setup.sh: refusing to replace existing $TARGET" >&2
-            printf '%s\n' "Remove it or choose another --install-dir." >&2
-            exit 1
+            if [ -L "$TARGET" ] && [ ! -e "$TARGET" ]; then
+                # A moved Grogu checkout leaves its old installation broken.
+                rm "$TARGET"
+                ln -s "$LAUNCHER" "$TARGET"
+            else
+                printf '%s\n' "setup.sh: refusing to replace existing $TARGET" >&2
+                printf '%s\n' "Remove it or choose another --install-dir." >&2
+                exit 1
+            fi
             ;;
     esac
 else
