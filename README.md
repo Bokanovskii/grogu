@@ -15,20 +15,24 @@ of the way. Copilot's interaction model, permissions and output are unchanged.
 
 ## Install
 
-Nothing is compiled and nothing is written outside your home directory. Clone
-the repository anywhere and put the launcher on your `PATH`:
+Nothing is compiled and no repository-relative path is assumed. Clone the
+repository anywhere and run the setup script:
 
 ```sh
 git clone https://github.com/Bokanovskii/grogu.git
 cd grogu
-ln -s "$PWD/bin/grogu" /usr/local/bin/grogu   # or any directory on your PATH
-grogu doctor
+./setup.sh
 ```
 
+The script installs a `grogu` symlink in the first writable directory already
+on `PATH`, or in `~/.local/bin` when none is available. It adds that directory
+to the appropriate shell startup file when needed. Use
+`./setup.sh --install-dir DIR` to choose a location or
+`./setup.sh --no-path-update` to avoid changing shell configuration.
+
 `bin/grogu` resolves symlinks before locating the repository, so the link can
-live anywhere and the checkout can be moved. No committed file contains an
-absolute path; everything machine-specific is resolved at runtime or comes from
-the environment.
+live anywhere and the checkout can be moved. All paths are resolved at runtime
+or supplied through environment variables.
 
 `grogu doctor` prints what Grogu found and where it will write. A non-zero exit
 means the Copilot CLI or the instruction files are missing.
@@ -117,7 +121,62 @@ so Grogu can start a separate remote session without replacing the current one.
   added to `GROGU_COMMANDS` so the launcher does not forward them to Copilot.
   Any argument Grogu does not recognise belongs to Copilot.
 
-## Tasks, and several people at once
+## Tasks, issues, handoff, and history
+
+Grogu has deliberately separate layers for local coordination, shared
+repository work, and cross-machine collaboration:
+
+| Layer | Location | Purpose |
+| --- | --- | --- |
+| Task record | `<repo>/.grogu/tasks/<id>.json` | Durable work item shared through Git |
+| Task state | `<repo>/.grogu/state/` | Machine-local leases, locks, and inbox files |
+| GitHub issue | GitHub | Cross-machine/person source for externally coordinated work |
+| Task log | `log` in each task record | Append-only mutation history |
+| Project catalog | `$GROGU_HOME/catalog.db` | User-local registry of named project paths |
+
+### Repository-backed task files
+
+`grogu task new` creates one JSON file per task under `.grogu/tasks/`. Each
+record contains its title, body, status, labels, assignee, timestamps, revision,
+and append-only event log. Because each task has its own file, unrelated
+changes merge cleanly and task state can be reviewed in a pull request.
+
+`claim` creates a short-lived lease under `.grogu/state/leases/`. The lease
+prevents two sessions from working on the same task, expires after its TTL, and
+is tied to the Grogu session process on the local machine. `heartbeat` extends
+it; `release` removes it and can transition the task to `review`, `done`, or
+another status. The volatile state directory is ignored and never shared
+through Git.
+
+### GitHub issue adoption
+
+`grogu task adopt 42` uses the GitHub CLI to read issue 42 and mirror its title,
+body, and labels into a local task record. The task stores the issue number, so
+`grogu task show '#42'` can resolve it later. Adoption is intentionally a
+local synchronization step; GitHub remains the source of truth for work that
+must cross machines. It requires an authenticated `gh` installation.
+
+### Updates to running sessions
+
+`grogu task tell <id> "message"` appends a message to the task's local inbox.
+At a checkpoint, the running session executes
+`grogu task inbox <id> --consume`, reads pending messages, marks them delivered,
+and relays them to its own background agents. This is pull-based because the
+Copilot CLI has no supported API for a separate process to inject text into a
+running local TUI.
+
+### Project catalog
+
+`grogu project init "Name" --path /path/to/project` writes a
+`.grogu/project.json` manifest in that project and registers its name, slug,
+path, and timestamps in `$GROGU_HOME/catalog.db`. `grogu project list` lists
+those registrations. The catalog is user-local and is not committed to any
+repository.
+
+The current catalog is a registry, not yet a relationship graph: it does not
+automatically index repository history, discover related repositories, or
+inject cross-project summaries into a new session. Those are planned
+incremental-memory capabilities.
 
 `grogu task` is a repository-backed tracker built for concurrent sessions: one
 JSON file per task under `.grogu/tasks/` (committed, merge-friendly), leases
