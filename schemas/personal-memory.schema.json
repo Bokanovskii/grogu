@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grogu.dev/schemas/personal-memory.schema.json",
+  "title": "Grogu user-scoped personal memory",
+  "type": "object",
+  "required": ["schema_version", "kind", "derivation"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {
+      "enum": [
+        "grogu.personal_memory",
+        "grogu.personal_memory_graph",
+        "grogu.personal_memory_context"
+      ]
+    },
+    "derivation": {"type": "string", "minLength": 1},
+    "nodes": {"type": "object"},
+    "edges": {"type": "array"},
+    "node": {
+      "type": "object",
+      "required": ["id", "type", "name", "summary", "confidence", "provenance"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {
+          "enum": [
+            "person",
+            "preference",
+            "project",
+            "goal",
+            "event",
+            "fact",
+            "interest"
+          ]
+        },
+        "name": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "provenance": {"type": "array"}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "required": ["id", "type", "name", "summary", "source", "status"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {
+          "enum": [
+            "person",
+            "preference",
+            "project",
+            "goal",
+            "event",
+            "fact",
+            "interest"
+          ]
+        },
+        "name": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "status": {"enum": ["pending", "confirmed", "rejected"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    }
+  },
+  "additionalProperties": true
+}

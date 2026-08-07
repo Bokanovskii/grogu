@@ -23,6 +23,17 @@ After verified work, preserve durable repository knowledge with
 concepts with `grogu memory link`. Prefer short architecture, decision,
 convention, workflow, and service summaries over copied source or transcripts.
 
+Personal memory about the user (relationships, preferences, goals, events,
+facts, interests) is separate from repository intelligence and lives under
+`grogu personal`, never inside `.grogu/intelligence/` or any repository path.
+Only use `grogu personal remember` when the user has explicitly stated a fact
+about themselves or explicitly asked it to be remembered. Anything observed
+passively — inferred from conversation, email, or another integration —
+must go through `grogu personal suggest` and stay pending until the user
+runs `grogu personal confirm`; never confirm a candidate on the user's
+behalf. Use `grogu personal recall` for bounded context instead of dumping
+the whole personal graph into a prompt.
+
 Use read-only operations by default. Ask for confirmation before destructive changes, external messages, sending email, deployment, spending money, or other irreversible side effects. Never expose secrets or personal data in traces.
 
 When a web interface or browser behavior needs validation, use the configured Playwright MCP capability when available. Prefer isolated/headless checks and targeted assertions; browser access does not authorize external side effects.
