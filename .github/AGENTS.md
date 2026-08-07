@@ -13,16 +13,24 @@ target-repository context in the Grogu source checkout or in global user state.
 Prefer `grogu aggregate <git|graph|tasks|traces|relationships|service>` over
 raw `git status`/`git log`, listing every task, or dumping the whole
 knowledge graph — it returns one bounded, cacheable summary per call instead
-of an unbounded dump. When a question needs combining or filtering more than
-one of those sources, or filtering a large collection down to a few matching
-items (e.g. "which open tasks are labeled urgent"), use
-`grogu codemode exec` instead: write a short script that calls the same
-tools as plain functions (`git_summary`, `graph_context`, `tasks_summary`,
-`service_metadata`, `task_create`, `memory_remember`), filter/combine in the
-script, and only `print()` the bounded answer — run `grogu codemode tools`
-or `grogu codemode search <term>` first to see what's callable. This keeps
-large intermediate results out of context; only the printed output and a
-sampled run log return to the session.
+of an unbounded dump. Start here when exploring what's changed or what needs
+attention (`grogu aggregate git` for recent activity, `grogu aggregate
+traces` for recent failures, `grogu aggregate tasks` for what's open) before
+deciding what to look into more deeply. When a question needs chaining or
+filtering more than one of those sources together, or filtering a large
+collection down to a few matching items (e.g. "which open tasks are labeled
+urgent"), use `grogu codemode exec` instead: write a short script that calls
+the same tools as plain functions (`git_summary`, `graph_context`,
+`tasks_summary`, `service_metadata`, `task_create`, `memory_remember`),
+chain/filter/combine them in the script, and only `print()` the bounded
+answer — run `grogu codemode tools` or `grogu codemode search <term>` first
+to see what's callable. This keeps large intermediate results out of
+context; only the printed output and a sampled run log return to the
+session. Codemode's sandbox has no network restriction of its own (only a
+CPU-time/wall-clock guard) — a script can also call `requests`/`urllib`
+against arbitrary APIs directly if the task calls for it, but it cannot yet
+call configured MCP servers (e.g. `playwright`) as functions; that needs an
+MCP client Grogu does not implement (see `docs/codemode.md`).
 
 Before claiming or editing a task, follow the repository task-store working
 agreement (`docs/tasks.md`): `grogu task gc` to forget dead leases, `grogu

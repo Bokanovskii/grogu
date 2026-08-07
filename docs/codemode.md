@@ -60,7 +60,26 @@ tree; `--timeout` bounds wall-clock time (default 20s, capped at 120s).
 
 Execution is sandboxed with a subprocess and a CPU-time resource limit; this
 is a guard against accidental runaway scripts, **not a security boundary**.
-Do not run untrusted code with `grogu codemode exec`.
+In particular, there is **no network restriction**: a script can `import
+requests`/`urllib` and call any API the host machine can reach, exactly like
+any other Python process. It can also import anything installed in this
+environment. Do not run untrusted code with `grogu codemode exec`.
+
+### Calling generic APIs vs. calling MCP servers
+
+These are two different things and only one works today:
+
+* **Generic REST/HTTP APIs** work right now, with no special support needed
+  — a script just imports `requests`/`urllib` and calls out, the same as any
+  Python code would. This was verified directly: a script run through
+  `grogu codemode exec` successfully reached `https://api.github.com` over
+  HTTPS with no additional wiring.
+* **Configured MCP servers** (e.g. `playwright`, `github-mcp-server` in
+  `~/.copilot/mcp-config.json`) are **not** callable as codemode functions
+  yet. Talking to them means speaking the MCP JSON-RPC 2.0 protocol over
+  stdio, which needs an actual MCP client — either the `mcp` Python SDK
+  (not installed in this environment) or a hand-rolled implementation.
+  Tracked as Phase 2 below.
 
 ### Output handling
 
@@ -87,10 +106,38 @@ per-machine, regeneratable Grogu state, and is never committed.
   service metadata) as callable functions in a sandboxed script.
 * **Phase 2.** Proxy real external MCP servers already configured for
   Copilot CLI (e.g. `~/.copilot/mcp-config.json`) so a codemode script can
-  also call `github-mcp-server`, `playwright`, and similar tools as plain
-  functions. This needs Grogu to act as an MCP client to those servers,
-  either via the `mcp` Python SDK or a hand-rolled JSON-RPC 2.0 stdio
-  client — neither is wired up yet.
+  also call `github-mcp-server`, `playwright`, and similar *MCP* tools as
+  plain functions the same way it already calls Grogu's own tools. Calling
+  arbitrary non-MCP REST APIs already works today via plain `requests`/
+  `urllib` — this phase is specifically about the MCP JSON-RPC protocol.
+
+  Speaking MCP itself is not the hard part — verified directly: the `mcp`
+  Python SDK completed a full handshake against the configured `playwright`
+  server and listed its 24 tools in about fifteen lines of code. What's
+  actually unsolved:
+
+  * **Python version.** The `mcp` SDK requires Python ≥3.10; Grogu's own
+    runtime is 3.8. Either Grogu's minimum version moves, or the bridge runs
+    as a separate 3.10+ subprocess and talks back to the 3.8 sandbox.
+  * **Async vs. sync.** The SDK is asyncio-native; `grogu codemode exec`
+    runs plain synchronous scripts. Exposing an MCP tool as an ordinary
+    blocking function call means bridging an event loop into that sandbox.
+  * **Statefulness.** `execute()` spawns one subprocess per `exec` call.
+    Playwright's server holds a live browser session across calls
+    (navigate, then click, then read) — spawning a fresh MCP server per
+    `exec` invocation would drop that state every time. This needs a
+    persistent bridge process that outlives a single `exec` call, with its
+    own lifecycle, crash recovery, and cleanup.
+  * **Dynamic schema-to-function generation.** Grogu's own 6 tools are
+    hand-written Python functions. MCP tools expose a live JSON Schema that
+    differs per server; keeping the "call it like a plain function"
+    ergonomics means generating signatures from that schema at runtime
+    instead of hand-writing them.
+  * **Confirmation semantics.** Copilot CLI already gates destructive tool
+    calls behind per-call confirmation. Calling MCP tools directly from
+    inside a sandboxed subprocess bypasses that entirely — a write-capable
+    MCP tool would just execute. This needs a real design decision, not
+    just a client implementation.
 * **Phase 3.** If Copilot CLI itself grows native support for code-execution
   tool calling, prefer that over Grogu re-implementing an MCP-to-code proxy;
   file a feature request against `github/copilot-cli` referencing this
