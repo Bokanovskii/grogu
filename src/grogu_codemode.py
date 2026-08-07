@@ -207,12 +207,31 @@ def _limit_resources() -> None:
         pass
 
 
-def _bootstrap_source(root: Path, src_dir: Path) -> str:
+def _bootstrap_source(root: Path, src_dir: Path, mcp: bool = False) -> str:
     tool_calls = "\n".join(
         f"def {name}(*args, **kwargs):\n"
         f"    return _TOOLS[{name!r}][\"function\"](_ROOT, *args, **kwargs)\n"
         for name in TOOLS
     )
+    mcp_bootstrap = ""
+    if mcp:
+        mcp_bootstrap = textwrap.dedent(
+            """
+            import atexit as _atexit
+            import grogu_mcp as _grogu_mcp
+
+            def mcp_servers():
+                return _grogu_mcp.list_servers()
+
+            def mcp_tools(server):
+                return _grogu_mcp.list_tools(server)
+
+            def mcp_call(server, tool, **kwargs):
+                return _grogu_mcp.call_tool(server, tool, **kwargs)
+
+            _atexit.register(_grogu_mcp.close_all)
+            """
+        )
     template = textwrap.dedent(
         """
         import sys
@@ -224,10 +243,11 @@ def _bootstrap_source(root: Path, src_dir: Path) -> str:
         _TOOLS = _codemode.TOOLS
 
         {tool_calls}
+        {mcp_bootstrap}
         """
     )
     return template.format(
-        src_dir=str(src_dir), root=str(root), tool_calls=tool_calls
+        src_dir=str(src_dir), root=str(root), tool_calls=tool_calls, mcp_bootstrap=mcp_bootstrap
     )
 
 
@@ -235,6 +255,7 @@ def execute(
     root: Path,
     code: str,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    mcp: bool = False,
 ) -> dict:
     """Run agent-written code with every tool bound as a plain function call.
 
@@ -243,18 +264,41 @@ def execute(
     under ``.grogu/state/codemode/runs/`` so a session can read more if the
     truncated summary is not enough — keeping large intermediate results out
     of the model's context by default, without losing them.
+
+    ``mcp=True`` additionally binds ``mcp_servers()``/``mcp_tools(server)``/
+    ``mcp_call(server, tool, **kwargs)`` so the script can call configured
+    MCP servers directly. This requires a Python 3.10+ interpreter with the
+    ``mcp`` package installed; a compatible interpreter is located
+    automatically (falling back to a clear error if none is found) rather
+    than requiring Grogu's own baseline Python to change. Because this
+    bypasses Copilot CLI's own per-tool confirmation gate for destructive
+    actions, it is opt-in only.
     """
     root = Path(root).expanduser().resolve()
     src_dir = Path(__file__).resolve().parent
     bounded_timeout = max(1, min(int(timeout), MAX_TIMEOUT_SECONDS))
     run_id = uuid.uuid4().hex[:12]
-    script = _bootstrap_source(root, src_dir) + "\n\n" + code
+
+    interpreter = sys.executable
+    if mcp:
+        sys.path.insert(0, str(src_dir))
+        import grogu_mcp
+
+        interpreter = grogu_mcp.find_compatible_python()
+        if interpreter is None:
+            raise RuntimeError(
+                "no Python 3.10+ interpreter with the 'mcp' package was found on "
+                "this machine; install one (e.g. `python3.11 -m pip install mcp`) "
+                "to use codemode --mcp"
+            )
+
+    script = _bootstrap_source(root, src_dir, mcp=mcp) + "\n\n" + code
     runs_dir = root / RUNS_DIRNAME
     runs_dir.mkdir(parents=True, exist_ok=True)
     log_path = runs_dir / f"{run_id}.log"
     try:
         completed = subprocess.run(
-            [sys.executable, "-c", script],
+            [interpreter, "-c", script],
             cwd=str(root),
             capture_output=True,
             text=True,

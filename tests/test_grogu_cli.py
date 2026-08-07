@@ -15,9 +15,12 @@ import grogu_banner  # noqa: E402
 import grogu_cli
 import grogu_codemode  # noqa: E402
 import grogu_context  # noqa: E402
+import grogu_mcp  # noqa: E402
 import grogu_memory  # noqa: E402
 import grogu_personal_memory  # noqa: E402
 import grogu_telemetry  # noqa: E402
+
+FIXTURES = ROOT / "tests" / "fixtures"
 
 
 class GroguCliTests(unittest.TestCase):
@@ -1013,6 +1016,209 @@ class PersonalMemoryCommandTests(unittest.TestCase):
 
             recalled_after = run("personal", "recall")
             self.assertIn("event:jamie-birthday", recalled_after.stdout)
+
+
+@unittest.skipUnless(
+    grogu_mcp.available(), "requires Python 3.10+ with the 'mcp' package installed"
+)
+class GroguMcpTests(unittest.TestCase):
+    """Exercises grogu_mcp.py against a tiny local stdio fixture server, so
+    these tests don't depend on any real external MCP server being
+    installed/configured on the machine. Skipped entirely under Grogu's
+    default (older) interpreter, since it can't import ``mcp`` at all; run
+    with a Python 3.10+ interpreter that has ``mcp`` installed to exercise
+    them for real (e.g. ``python3.11 -m pytest tests/test_grogu_cli.py -k Mcp``).
+    """
+
+    def make_config(self):
+        directory = tempfile.TemporaryDirectory()
+        config_path = Path(directory.name) / "mcp-config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "echo": {
+                            "type": "local",
+                            "command": sys.executable,
+                            "args": [str(FIXTURES / "mcp_echo_server.py")],
+                        }
+                    }
+                }
+            ),
+            encoding="utf8",
+        )
+        return directory, config_path
+
+    def setUp(self):
+        self.directory, self.config_path = self.make_config()
+        self._previous_config = os.environ.get("GROGU_MCP_CONFIG")
+        os.environ["GROGU_MCP_CONFIG"] = str(self.config_path)
+
+    def tearDown(self):
+        grogu_mcp.close_all()
+        if self._previous_config is None:
+            os.environ.pop("GROGU_MCP_CONFIG", None)
+        else:
+            os.environ["GROGU_MCP_CONFIG"] = self._previous_config
+        self.directory.cleanup()
+
+    def test_list_servers_without_connecting(self):
+        self.assertEqual(grogu_mcp.list_servers(), ["echo"])
+
+    def test_list_tools_returns_schema(self):
+        tools = {tool["name"]: tool for tool in grogu_mcp.list_tools("echo")}
+        self.assertEqual(set(tools), {"echo", "add", "fail"})
+        self.assertIn("properties", tools["echo"]["input_schema"])
+
+    def test_call_tool_returns_result(self):
+        self.assertEqual(grogu_mcp.call_tool("echo", "echo", text="hi"), "hi")
+        self.assertEqual(grogu_mcp.call_tool("echo", "add", a=2, b=3), 5)
+
+    def test_call_tool_propagates_errors(self):
+        with self.assertRaises(RuntimeError):
+            grogu_mcp.call_tool("echo", "fail")
+
+    def test_unknown_tool_raises(self):
+        with self.assertRaises(RuntimeError):
+            grogu_mcp.call_tool("echo", "not_a_real_tool")
+
+    def test_unknown_server_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            grogu_mcp.call_tool("does-not-exist", "echo", text="hi")
+
+    def test_session_is_reused_across_calls(self):
+        # Two calls against the same server should reuse one bridge/session
+        # rather than reconnecting, which matters for stateful servers.
+        grogu_mcp.call_tool("echo", "echo", text="first")
+        bridge_after_first = grogu_mcp._BRIDGES["echo"]
+        grogu_mcp.call_tool("echo", "echo", text="second")
+        self.assertIs(grogu_mcp._BRIDGES["echo"], bridge_after_first)
+
+    def test_close_all_allows_reconnecting(self):
+        grogu_mcp.call_tool("echo", "echo", text="one")
+        grogu_mcp.close_all()
+        self.assertEqual(grogu_mcp._BRIDGES, {})
+        # A fresh call after close_all() should transparently reconnect.
+        self.assertEqual(grogu_mcp.call_tool("echo", "echo", text="two"), "two")
+
+    def test_find_compatible_python_returns_current_interpreter(self):
+        self.assertEqual(grogu_mcp.find_compatible_python(), sys.executable)
+
+
+@unittest.skipUnless(
+    grogu_mcp.available(), "requires Python 3.10+ with the 'mcp' package installed"
+)
+class CodemodeMcpExecTests(unittest.TestCase):
+    """Exercises `grogu codemode exec --mcp` end to end via the CLI, using
+    the same echo fixture server as GroguMcpTests.
+    """
+
+    def make_repository(self):
+        directory = tempfile.TemporaryDirectory()
+        root = Path(directory.name)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.email", "a@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.name", "a"], check=True
+        )
+        (root / "app.py").write_text("print('one')\n")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-q", "-m", "init"], check=True
+        )
+        return directory, root
+
+    def setUp(self):
+        self.config_directory = tempfile.TemporaryDirectory()
+        self.config_path = Path(self.config_directory.name) / "mcp-config.json"
+        self.config_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "echo": {
+                            "type": "local",
+                            "command": sys.executable,
+                            "args": [str(FIXTURES / "mcp_echo_server.py")],
+                        }
+                    }
+                }
+            ),
+            encoding="utf8",
+        )
+
+    def tearDown(self):
+        self.config_directory.cleanup()
+
+    def run_cli(self, *arguments, home, input=None):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = home
+        environment["GROGU_MCP_CONFIG"] = str(self.config_path)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            input=input,
+            env=environment,
+        )
+
+    def test_exec_with_mcp_flag_calls_configured_server(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    "--mcp",
+                    "--code",
+                    "print(mcp_servers()); print(mcp_call('echo', 'add', a=1, b=2))",
+                    home=home,
+                )
+                self.assertEqual(result.returncode, 0)
+                payload = json.loads(result.stdout)
+                self.assertIn("echo", payload["stdout"])
+                self.assertIn("3", payload["stdout"])
+        finally:
+            directory.cleanup()
+
+    def test_exec_without_mcp_flag_has_no_mcp_functions(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    "--code",
+                    "mcp_call('echo', 'add', a=1, b=2)",
+                    home=home,
+                )
+                payload = json.loads(result.stdout)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("NameError", payload["stderr"])
+        finally:
+            directory.cleanup()
+
+    def test_mcp_servers_subcommand(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_cli("codemode", "mcp-servers", home=home)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(json.loads(result.stdout)["servers"], ["echo"])
+
+    def test_mcp_tools_subcommand(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_cli("codemode", "mcp-tools", "echo", home=home)
+            self.assertEqual(result.returncode, 0)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["server"], "echo")
+            names = {tool["name"] for tool in payload["tools"]}
+            self.assertEqual(names, {"echo", "add", "fail"})
 
 
 if __name__ == "__main__":

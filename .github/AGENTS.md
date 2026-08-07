@@ -28,9 +28,14 @@ to see what's callable. This keeps large intermediate results out of
 context; only the printed output and a sampled run log return to the
 session. Codemode's sandbox has no network restriction of its own (only a
 CPU-time/wall-clock guard) — a script can also call `requests`/`urllib`
-against arbitrary APIs directly if the task calls for it, but it cannot yet
-call configured MCP servers (e.g. `playwright`) as functions; that needs an
-MCP client Grogu does not implement (see `docs/codemode.md`).
+against arbitrary APIs directly if the task calls for it. It can also call
+configured local MCP servers (e.g. `playwright`) as plain functions via
+`grogu codemode exec --mcp`, which binds `mcp_servers()`/`mcp_tools(server)`/
+`mcp_call(server, tool, **kwargs)` into the script (see `docs/codemode.md`).
+This is opt-in and not the default because it bypasses Copilot CLI's own
+confirmation gate for destructive tool calls — only pass `--mcp` when the
+task genuinely needs to chain MCP tool calls together, and treat it with the
+same caution as running arbitrary code with real credentials.
 
 Before claiming or editing a task, follow the repository task-store working
 agreement (`docs/tasks.md`): `grogu task gc` to forget dead leases, `grogu

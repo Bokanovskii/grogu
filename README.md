@@ -253,6 +253,19 @@ grogu codemode exec --code "print(git_summary()['branch'])"
 grogu codemode generate                            # write per-tool docs for discovery
 ```
 
+Configured local MCP servers (e.g. `playwright`) can also be called as plain
+functions with `--mcp`:
+
+```sh
+grogu codemode mcp-servers                         # list configured servers
+grogu codemode mcp-tools playwright                # list a server's tools
+grogu codemode exec --mcp --code "print(mcp_call('playwright', 'browser_navigate', url='https://example.com'))"
+```
+
+This requires a Python 3.10+ interpreter with the `mcp` package installed
+somewhere on the machine (auto-detected) and is opt-in because it bypasses
+Copilot CLI's confirmation gate for destructive tool calls.
+
 Output is truncated for the model but always logged in full under
 `.grogu/state/codemode/runs/`. See [docs/codemode.md](docs/codemode.md).
 

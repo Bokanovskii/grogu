@@ -547,9 +547,55 @@ def codemode_exec(args: argparse.Namespace) -> int:
         code = args.code
     else:
         code = sys.stdin.read()
-    result = grogu_codemode.execute(root, code, timeout=args.timeout)
+    try:
+        result = grogu_codemode.execute(root, code, timeout=args.timeout, mcp=args.mcp)
+    except RuntimeError as error:
+        print_json({"error": str(error)})
+        return 1
     print_json(result)
     return 0 if result["returncode"] == 0 and not result["timed_out"] else 1
+
+
+def codemode_mcp_servers(_: argparse.Namespace) -> int:
+    src_dir = Path(__file__).resolve().parent
+    sys.path.insert(0, str(src_dir))
+    import grogu_mcp
+
+    print_json({"servers": grogu_mcp.list_servers()})
+    return 0
+
+
+def codemode_mcp_tools(args: argparse.Namespace) -> int:
+    src_dir = Path(__file__).resolve().parent
+    sys.path.insert(0, str(src_dir))
+    import grogu_mcp
+
+    interpreter = grogu_mcp.find_compatible_python()
+    if interpreter is None:
+        print_json(
+            {
+                "error": "no Python 3.10+ interpreter with the 'mcp' package was found "
+                "on this machine; install one (e.g. `python3.11 -m pip install mcp`) "
+                "to list MCP tools"
+            }
+        )
+        return 1
+    if interpreter == sys.executable:
+        print_json({"server": args.server, "tools": grogu_mcp.list_tools(args.server)})
+        return 0
+    script = (
+        f"import sys; sys.path.insert(0, {str(src_dir)!r})\n"
+        "import grogu_mcp, json\n"
+        f"print(json.dumps(grogu_mcp.list_tools({args.server!r})))\n"
+    )
+    completed = subprocess.run(
+        [interpreter, "-c", script], capture_output=True, text=True, timeout=30
+    )
+    if completed.returncode != 0:
+        print_json({"error": completed.stderr.strip() or "MCP tool listing failed"})
+        return 1
+    print_json({"server": args.server, "tools": json.loads(completed.stdout)})
+    return 0
 
 
 def context_traces(args: argparse.Namespace) -> int:
@@ -1199,7 +1245,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=grogu_codemode.DEFAULT_TIMEOUT_SECONDS,
         help="seconds before the sandboxed run is killed",
     )
+    codemode_exec_parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="also bind mcp_servers()/mcp_tools(server)/mcp_call(server, tool, **kwargs) "
+        "for configured MCP servers (requires Python 3.10+ with 'mcp' installed "
+        "somewhere on this machine; bypasses Copilot CLI's confirmation gate for "
+        "destructive actions, so use with care)",
+    )
     codemode_exec_parser.set_defaults(handler=codemode_exec)
+    codemode_mcp_servers_parser = codemode_subparsers.add_parser(
+        "mcp-servers",
+        parents=[codemode_common],
+        help="list configured local MCP servers available to --mcp",
+    )
+    codemode_mcp_servers_parser.set_defaults(handler=codemode_mcp_servers)
+    codemode_mcp_tools_parser = codemode_subparsers.add_parser(
+        "mcp-tools",
+        parents=[codemode_common],
+        help="list a configured MCP server's tools (connects to it once)",
+    )
+    codemode_mcp_tools_parser.add_argument("server")
+    codemode_mcp_tools_parser.set_defaults(handler=codemode_mcp_tools)
 
     personal = subparsers.add_parser(
         "personal",

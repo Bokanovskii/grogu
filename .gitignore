@@ -12,3 +12,6 @@ __pycache__/
 
 # Local editor and OS noise
 .DS_Store
+
+# Playwright MCP snapshot/screenshot artifacts (created by ad hoc browser use)
+.playwright-mcp/
