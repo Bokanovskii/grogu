@@ -240,6 +240,22 @@ Every operation returns the same stable envelope, including a signature
 derived only from its data so identical repository state produces identical
 output. See [docs/aggregate.md](docs/aggregate.md).
 
+## Codemode: programmatic tool calling
+
+`grogu codemode` lets a session write and run code that calls Grogu's tools
+as plain functions, instead of driving one tool call at a time — the
+"code execution with MCP" pattern:
+
+```sh
+grogu codemode tools                              # list every tool
+grogu codemode search task                         # find tools by name/summary
+grogu codemode exec --code "print(git_summary()['branch'])"
+grogu codemode generate                            # write per-tool docs for discovery
+```
+
+Output is truncated for the model but always logged in full under
+`.grogu/state/codemode/runs/`. See [docs/codemode.md](docs/codemode.md).
+
 ## Personal memory
 
 Separate from repository intelligence, `grogu personal` holds durable,

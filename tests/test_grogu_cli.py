@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import grogu_banner  # noqa: E402
 import grogu_cli
+import grogu_codemode  # noqa: E402
 import grogu_context  # noqa: E402
 import grogu_memory  # noqa: E402
 import grogu_personal_memory  # noqa: E402
@@ -312,6 +313,83 @@ class AggregateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
                 grogu_context.aggregate("not-a-real-op", Path(directory))
+
+
+class CodemodeTests(unittest.TestCase):
+    def make_repository(self):
+        directory = tempfile.TemporaryDirectory()
+        root = Path(directory.name)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.email", "a@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.name", "a"], check=True
+        )
+        (root / "app.py").write_text("print('one')\n")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-q", "-m", "init"], check=True
+        )
+        return directory, root
+
+    def test_execute_binds_tools_as_plain_function_calls(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(
+                root,
+                "created = task_create(title='Investigate flaky test', labels=['bug'])\n"
+                "summary = tasks_summary()\n"
+                "print(created['id'], summary['total'])\n",
+            )
+            self.assertEqual(result["returncode"], 0)
+            self.assertFalse(result["timed_out"])
+            output = result["stdout"].split()
+            self.assertTrue(output[0].startswith("t-"))
+            self.assertEqual(output[1], "1")
+            self.assertTrue(Path(result["log_path"]).is_file())
+        finally:
+            directory.cleanup()
+
+    def test_execute_truncates_large_output_but_keeps_full_log(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(root, "print('x' * 20000)")
+            self.assertTrue(result["stdout_truncated"])
+            self.assertLessEqual(
+                len(result["stdout"].encode("utf8")), grogu_codemode.MAX_OUTPUT_BYTES
+            )
+            logged = json.loads(Path(result["log_path"]).read_text())
+            self.assertEqual(len(logged["stdout"]), 20001)
+        finally:
+            directory.cleanup()
+
+    def test_execute_reports_timeout(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(
+                root, "import time; time.sleep(5)", timeout=1
+            )
+            self.assertTrue(result["timed_out"])
+        finally:
+            directory.cleanup()
+
+    def test_search_tools_is_bounded_to_matching_names_and_summaries(self):
+        matches = grogu_codemode.search_tools("task")
+        names = {tool["name"] for tool in matches}
+        self.assertIn("task_create", names)
+        self.assertIn("tasks_summary", names)
+        self.assertNotIn("git_summary", names)
+
+    def test_generate_tool_tree_writes_one_file_per_tool(self):
+        directory, root = self.make_repository()
+        try:
+            written = grogu_codemode.generate_tool_tree(root)
+            files = {path.stem for path in written.glob("*.py")}
+            self.assertEqual(files, set(grogu_codemode.TOOLS))
+        finally:
+            directory.cleanup()
 
 
 class BannerArtTests(unittest.TestCase):
