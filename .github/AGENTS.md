@@ -10,6 +10,11 @@ stale, and use `grogu memory context` to obtain bounded context. The
 `.grogu/intelligence/` directory belongs to the target repository; never store
 target-repository context in the Grogu source checkout or in global user state.
 
+Prefer `grogu aggregate <git|graph|tasks|traces|relationships|service>` over
+raw `git status`/`git log`, listing every task, or dumping the whole
+knowledge graph — it returns one bounded, cacheable summary per call instead
+of an unbounded dump.
+
 For coding work, explore narrowly: inspect Git state and project instructions, locate the relevant implementation and tests, trace the smallest useful call chain, edit minimally, and run targeted validation. Do not claim success without evidence.
 
 Record useful outcomes and failures with `grogu telemetry record`. Telemetry
