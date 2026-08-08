@@ -45,6 +45,13 @@ either can't complete (e.g. offline, or `python3` is older).
 `python_meets_minimum`/`mcp_available`. A non-zero exit means the Copilot CLI
 or the instruction files are missing.
 
+Setup prints green checks and red crosses for core and optional capabilities.
+iMessage is optional and requires macOS Full Disk Access for the terminal
+running Grogu. Gmail is optional, disabled by default, and requires
+`GROGU_GMAIL_ENABLED=1` plus an OAuth access token. Missing messaging access
+does not prevent Grogu from running; setup prints the exact fix and the
+follow-up status command.
+
 ## Launching
 
 ```sh
