@@ -139,6 +139,9 @@ case ":${PATH:-}:" in
         ;;
 esac
 
+printf '\n%s\n' "Grogu setup checks:"
+check_ok "Core launcher installed"
+
 # Best-effort: `bin/grogu` itself already prefers the newest 3.10+
 # interpreter it finds on PATH (python3.13/.12/.11/.10) over plain `python3`,
 # so this only needs to install `mcp` into whichever one grogu will actually
@@ -151,9 +154,6 @@ for candidate in python3.13 python3.12 python3.11 python3.10; do
         PYTHON=$candidate
         break
     fi
-
-    printf '\n%s\n' "Grogu setup checks:"
-    check_ok "Core launcher installed"
 done
 
 if command -v "$PYTHON" >/dev/null 2>&1; then
