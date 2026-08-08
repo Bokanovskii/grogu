@@ -210,8 +210,15 @@ if printf '%s' "$gmail_status" | grep -q '"enabled": true' &&
     check_ok "Gmail access configured"
 else
     check_fail "Gmail access unavailable (optional)"
-    printf '%s\n' "  Fix: set GROGU_GMAIL_ENABLED=1 and provide an OAuth access token,"
-    printf '%s\n' "  then run: grogu gmail status"
+    printf '%s\n' "  Fix: configure a Google OAuth desktop client with the Gmail API enabled."
+    printf '%s\n' "  Authorize these scopes:"
+    printf '%s\n' "    https://www.googleapis.com/auth/gmail.readonly"
+    printf '%s\n' "    https://www.googleapis.com/auth/gmail.compose"
+    printf '%s\n' "  Then export these values in the shell that runs Grogu:"
+    printf '%s\n' "    export GROGU_GMAIL_ENABLED=1"
+    printf '%s\n' "    export GROGU_GMAIL_ACCESS_TOKEN='YOUR_OAUTH_ACCESS_TOKEN'"
+    printf '%s\n' "  Get a user token with OAuth Playground: https://developers.google.com/oauthplayground"
+    printf '%s\n' "  Verify with: grogu gmail status"
 fi
 
 printf '\n%s\n' "Grogu setup complete. Optional messaging access may remain disabled."
