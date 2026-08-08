@@ -52,6 +52,22 @@ running Grogu. Gmail is optional, disabled by default, and requires
 does not prevent Grogu from running; setup prints the exact fix and the
 follow-up status command.
 
+To configure Gmail, enable the Gmail API in a Google Cloud project, create a
+desktop OAuth client, authorize the scopes printed by `grogu gmail status`,
+and obtain a user access token. OAuth Playground can perform the interactive
+authorization: <https://developers.google.com/oauthplayground>. Export the
+short-lived access token only in the shell that runs Grogu:
+
+```sh
+export GROGU_GMAIL_ENABLED=1
+export GROGU_GMAIL_ACCESS_TOKEN='YOUR_OAUTH_ACCESS_TOKEN'
+grogu gmail status
+```
+
+Grogu does not store or print the token. Access tokens expire; obtain a fresh
+one when needed. Gmail remains optional, and all other Grogu commands work
+without it.
+
 ## Launching
 
 ```sh

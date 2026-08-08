@@ -250,6 +250,8 @@ class GroguCliTests(unittest.TestCase):
     def test_gmail_is_disabled_by_default_and_drafts_are_local(self):
         adapter = grogu_gmail.GmailAdapter(access_token="token", enabled=False)
         self.assertFalse(adapter.status()["enabled"])
+        self.assertIn("GROGU_GMAIL_ACCESS_TOKEN", adapter.status()["reason"])
+        self.assertIn("oauth_playground", adapter.status()["setup"])
         with self.assertRaises(grogu_gmail.GmailDisabledError):
             adapter.search("from:billing")
         with tempfile.TemporaryDirectory() as home:

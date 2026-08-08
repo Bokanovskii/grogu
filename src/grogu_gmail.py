@@ -130,8 +130,17 @@ class GmailAdapter:
             "reason": (
                 ""
                 if self.enabled and self.access_token
-                else "Gmail is disabled by default; set GROGU_GMAIL_ENABLED=1 and provide an access token"
+                else "Gmail is disabled by default; configure a Google OAuth "
+                "desktop client, authorize the listed scopes, set "
+                "GROGU_GMAIL_ENABLED=1, and provide "
+                "GROGU_GMAIL_ACCESS_TOKEN"
             ),
+            "setup": {
+                "oauth_playground": "https://developers.google.com/oauthplayground",
+                "enabled_variable": "GROGU_GMAIL_ENABLED=1",
+                "token_variable": "GROGU_GMAIL_ACCESS_TOKEN",
+                "scopes": [self.read_scope, self.send_scope],
+            },
         }
 
     def search(self, query: str, limit: int = 20) -> List[dict]:
