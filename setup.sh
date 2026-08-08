@@ -66,6 +66,24 @@ INSTALL_DIR=$(CDPATH= cd -P -- "$INSTALL_DIR" && pwd)
 TARGET="$INSTALL_DIR/grogu"
 LAUNCHER="$ROOT/bin/grogu"
 
+if [ -t 1 ]; then
+    GREEN=$(printf '\033[32m')
+    RED=$(printf '\033[31m')
+    RESET=$(printf '\033[0m')
+else
+    GREEN=
+    RED=
+    RESET=
+fi
+
+check_ok() {
+    printf '%s✓%s %s\n' "$GREEN" "$RESET" "$1"
+}
+
+check_fail() {
+    printf '%s✗%s %s\n' "$RED" "$RESET" "$1"
+}
+
 if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
     CURRENT=$(readlink "$TARGET" 2>/dev/null || true)
     case "$CURRENT" in
@@ -121,6 +139,9 @@ case ":${PATH:-}:" in
         ;;
 esac
 
+printf '\n%s\n' "Grogu setup checks:"
+check_ok "Core launcher installed"
+
 # Best-effort: `bin/grogu` itself already prefers the newest 3.10+
 # interpreter it finds on PATH (python3.13/.12/.11/.10) over plain `python3`,
 # so this only needs to install `mcp` into whichever one grogu will actually
@@ -137,25 +158,60 @@ done
 
 if command -v "$PYTHON" >/dev/null 2>&1; then
     if "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+        check_ok "Python 3.10+ available ($PYTHON)"
         if "$PYTHON" -c 'import mcp' >/dev/null 2>&1; then
-            printf '%s\n' "$PYTHON is 3.10+ and 'mcp' is already installed."
+            check_ok "MCP package available"
         elif "$PYTHON" -m pip install --quiet mcp >/dev/null 2>&1; then
-            printf '%s is 3.10+; installed '\''mcp'\'' for codemode MCP tool calls.\n' "$PYTHON"
+            check_ok "MCP package installed for codemode tool calls"
         else
-            printf '%s\n' "Warning: could not install 'mcp' (offline, or pip unavailable)."
-            printf 'Run '\''%s -m pip install mcp'\'' later to enable codemode MCP tool calls.\n' "$PYTHON"
+            check_fail "MCP package unavailable (optional)"
+            printf '  Fix: %s -m pip install mcp\n' "$PYTHON"
         fi
     else
-        printf 'Warning: %s is older than 3.10; codemode'\''s MCP\n' "$PYTHON"
-        printf '%s\n' "tool calling (grogu codemode exec, mcp_call(...)) needs 3.10+."
-        printf '%s\n' "Everything else in Grogu works fine on an older python3."
+        check_fail "Python 3.10+ unavailable (codemode MCP calls disabled)"
+        printf '%s\n' "  Fix: install Python 3.10 or newer; core Grogu commands still work."
     fi
+else
+    check_fail "Python 3 unavailable"
+    printf '%s\n' "  Fix: install Python 3.10 or newer."
 fi
 
 if command -v copilot >/dev/null 2>&1; then
-    "$TARGET" doctor >/dev/null
-    printf '%s\n' "Grogu setup complete; Copilot CLI detected."
+    check_ok "Copilot CLI detected"
 else
-    printf '%s\n' "Grogu setup complete; Copilot CLI was not found on PATH."
-    printf '%s\n' "Install Copilot CLI, then run: grogu doctor"
+    check_fail "Copilot CLI not found (required to launch Grogu)"
+    printf '%s\n' "  Fix: install Copilot CLI, then run: grogu doctor"
 fi
+
+if [ -f "$ROOT/.github/AGENTS.md" ]; then
+    check_ok "Grogu instructions found"
+else
+    check_fail "Grogu instructions missing"
+    printf '%s\n' "  Fix: reinstall Grogu from a complete checkout."
+fi
+
+if [ "$(uname -s)" = "Darwin" ]; then
+    imessage_status=$("$TARGET" imessage status 2>/dev/null || true)
+    if printf '%s' "$imessage_status" | grep -q '"available": true'; then
+        check_ok "iMessage access available"
+    else
+        check_fail "iMessage access unavailable (optional)"
+        printf '%s\n' "  Fix: grant Full Disk Access to the terminal running Grogu,"
+        printf '%s\n' "  restart it, then run: grogu imessage status"
+    fi
+else
+    check_fail "iMessage unavailable on this platform (optional)"
+    printf '%s\n' "  Fix: use Grogu on macOS to enable iMessage access."
+fi
+
+gmail_status=$("$TARGET" gmail status 2>/dev/null || true)
+if printf '%s' "$gmail_status" | grep -q '"enabled": true' &&
+   printf '%s' "$gmail_status" | grep -q '"authenticated": true'; then
+    check_ok "Gmail access configured"
+else
+    check_fail "Gmail access unavailable (optional)"
+    printf '%s\n' "  Fix: set GROGU_GMAIL_ENABLED=1 and provide an OAuth access token,"
+    printf '%s\n' "  then run: grogu gmail status"
+fi
+
+printf '\n%s\n' "Grogu setup complete. Optional messaging access may remain disabled."

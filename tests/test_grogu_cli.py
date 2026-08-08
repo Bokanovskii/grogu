@@ -15,6 +15,8 @@ import grogu_banner  # noqa: E402
 import grogu_cli
 import grogu_codemode  # noqa: E402
 import grogu_context  # noqa: E402
+import grogu_gmail  # noqa: E402
+import grogu_imessage  # noqa: E402
 import grogu_mcp  # noqa: E402
 import grogu_memory  # noqa: E402
 import grogu_personal_memory  # noqa: E402
@@ -234,6 +236,27 @@ class GroguCliTests(unittest.TestCase):
                 self.assertNotIn("ghp_example", json.dumps(event))
             finally:
                 database.close()
+
+    def test_imessage_drafts_require_confirmation(self):
+        with tempfile.TemporaryDirectory() as home:
+            store = grogu_imessage.DraftStore(Path(home))
+            draft = store.create(
+                grogu_imessage.Recipient("+15551234567"), "Hello"
+            )
+            adapter = grogu_imessage.MacOSIMessageAdapter()
+            with self.assertRaises(grogu_imessage.ConfirmationRequiredError):
+                adapter.send(draft.recipient, draft.body)
+
+    def test_gmail_is_disabled_by_default_and_drafts_are_local(self):
+        adapter = grogu_gmail.GmailAdapter(access_token="token", enabled=False)
+        self.assertFalse(adapter.status()["enabled"])
+        with self.assertRaises(grogu_gmail.GmailDisabledError):
+            adapter.search("from:billing")
+        with tempfile.TemporaryDirectory() as home:
+            draft = grogu_gmail.DraftStore(Path(home)).create(
+                "person@example.com", "Hello", "Message"
+            )
+            self.assertEqual(draft.status, "draft")
 
 
 class AggregateTests(unittest.TestCase):
