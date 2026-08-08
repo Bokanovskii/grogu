@@ -105,6 +105,28 @@ Grogu also exports `GROGU_SESSION_ID`, `GROGU_SESSION_PID`, and
 `.github` directory to `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Existing values are
 preserved.
 
+## Messaging skills
+
+The opt-in `imessage` and `gmail` skills provide read/search assistance and
+draft-first outbound workflows. They are isolated from ordinary launches.
+iMessage requires macOS and Full Disk Access. Gmail is disabled by default and
+uses an access token supplied through the environment; credentials are never
+stored by Grogu.
+
+```sh
+grogu imessage status
+grogu imessage draft --recipient "+15551234567" --message "Hello"
+grogu imessage send DRAFT_ID --confirm
+
+GROGU_GMAIL_ENABLED=1 grogu gmail status
+GROGU_GMAIL_ENABLED=1 grogu gmail search "from:billing newer_than:30d"
+grogu gmail draft --to "person@example.com" --subject "Hello" --message "..."
+GROGU_GMAIL_ENABLED=1 grogu gmail send DRAFT_ID --confirm
+```
+
+Sending requires explicit confirmation after showing the exact recipient and
+body. Message content and credentials are excluded from telemetry.
+
 ## Remote sessions
 
 Start a new Grogu session that is available from GitHub web and mobile with:
