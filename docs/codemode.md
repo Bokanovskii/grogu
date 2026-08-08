@@ -17,6 +17,11 @@ when a session needs to combine or filter several of Grogu's data sources
 with real control flow (loops, conditionals, intermediate variables) before
 deciding what's worth returning.
 
+For a session-facing quick reference (when to use `aggregate` vs.
+`codemode`, and the `--mcp` safety caveat), see the `grogu-context-tools`
+skill (`.github/skills/grogu-context-tools/SKILL.md`); this document is the
+full design write-up.
+
 ## Why this instead of one tool call per step
 
 * **Progressive disclosure.** `grogu codemode tools`/`search` return short

@@ -10,46 +10,18 @@ stale, and use `grogu memory context` to obtain bounded context. The
 `.grogu/intelligence/` directory belongs to the target repository; never store
 target-repository context in the Grogu source checkout or in global user state.
 
-Prefer `grogu aggregate <git|graph|tasks|traces|relationships|service>` over
-raw `git status`/`git log`, listing every task, or dumping the whole
-knowledge graph — it returns one bounded, cacheable summary per call instead
-of an unbounded dump. Start here when exploring what's changed or what needs
-attention (`grogu aggregate git` for recent activity, `grogu aggregate
-traces` for recent failures, `grogu aggregate tasks` for what's open) before
-deciding what to look into more deeply. When a question needs chaining or
-filtering more than one of those sources together, or filtering a large
-collection down to a few matching items (e.g. "which open tasks are labeled
-urgent"), use `grogu codemode exec` instead: write a short script that calls
-the same tools as plain functions (`git_summary`, `graph_context`,
-`tasks_summary`, `service_metadata`, `task_create`, `memory_remember`),
-chain/filter/combine them in the script, and only `print()` the bounded
-answer — run `grogu codemode tools` or `grogu codemode search <term>` first
-to see what's callable. This keeps large intermediate results out of
-context; only the printed output and a sampled run log return to the
-session. Codemode's sandbox has no network restriction of its own (only a
-CPU-time/wall-clock guard) — a script can also call `requests`/`urllib`
-against arbitrary APIs directly if the task calls for it. It can also call
-configured local MCP servers (e.g. `playwright`) as plain functions via
-`grogu codemode exec --mcp`, which binds `mcp_servers()`/`mcp_tools(server)`/
-`mcp_call(server, tool, **kwargs)` into the script (see `docs/codemode.md`).
-This is opt-in and not the default because it bypasses Copilot CLI's own
-confirmation gate for destructive tool calls — only pass `--mcp` when the
-task genuinely needs to chain MCP tool calls together, and treat it with the
-same caution as running arbitrary code with real credentials.
+Prefer `grogu aggregate <git|graph|tasks|traces|relationships|service>` for a
+bounded, cacheable summary over raw `git status`/`git log`, listing every
+task, or dumping the whole knowledge graph, and prefer `grogu codemode exec`
+when a question needs chaining or filtering more than one of those sources
+together (invoke the `grogu-context-tools` skill for the full walkthrough,
+including the opt-in `--mcp` flag for calling configured MCP servers like
+`playwright` as plain functions and its safety caveats).
 
 Before claiming or editing a task, follow the repository task-store working
-agreement (`docs/tasks.md`): `grogu task gc` to forget dead leases, `grogu
-task list` to see what's open and unheld, `grogu task claim <id>` to take
-exactly one, `grogu task heartbeat <id>` during long work so the lease
-survives, `grogu task update <id> --note "…"` to record progress, and `grogu
-task release <id> --status review --note "…"` when done. `grogu task tell
-<id> <text>` queues a message for whichever session holds a task; check
-`grogu task inbox` at each checkpoint for messages queued for the current
-session, and relay anything relevant to a running background subagent with
-the in-session `write_agent` tool — that is the only way to reach a
-subagent, and only the session itself can take it. This is how a second
-session started in another terminal or without a worktree picks a different
-task instead of racing or silently overwriting the first one.
+agreement so concurrent sessions never race or silently overwrite each
+other's work (invoke the `grogu-tasks` skill for the claim/heartbeat/release
+lifecycle and inbox relay steps).
 
 Record and query the cross-project relationship catalog with `grogu project
 {init, list, relate, graph}`, not by hand-tracking which repositories depend
