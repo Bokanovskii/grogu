@@ -9,7 +9,7 @@ of the way. Copilot's interaction model, permissions and output are unchanged.
 
 * [GitHub Copilot CLI](https://github.com/github/copilot-cli) on `PATH`
   (developed against 1.0.78)
-* Python 3.8 or newer, and `git`
+* Python 3.10 or newer, and `git`
 * macOS or Linux (the harness uses `flock` and POSIX signals)
 * Optional: [`gh`](https://cli.github.com), for `grogu task adopt`
 
@@ -34,8 +34,16 @@ to the appropriate shell startup file when needed. Use
 live anywhere and the checkout can be moved. All paths are resolved at runtime
 or supplied through environment variables.
 
-`grogu doctor` prints what Grogu found and where it will write. A non-zero exit
-means the Copilot CLI or the instruction files are missing.
+Setup also checks that `python3` on `PATH` is 3.10+ and, if so, best-effort
+installs the `mcp` package so `grogu codemode exec` can call configured MCP
+servers (e.g. `playwright`) out of the box — see
+[Codemode](#codemode-programmatic-tool-calling) below. Neither step is
+required for the rest of Grogu; a warning is printed and setup continues if
+either can't complete (e.g. offline, or `python3` is older).
+
+`grogu doctor` prints what Grogu found and where it will write, including
+`python_meets_minimum`/`mcp_available`. A non-zero exit means the Copilot CLI
+or the instruction files are missing.
 
 ## Launching
 
@@ -254,17 +262,19 @@ grogu codemode generate                            # write per-tool docs for dis
 ```
 
 Configured local MCP servers (e.g. `playwright`) can also be called as plain
-functions with `--mcp`:
+functions, with no extra flag — `mcp_call`/`mcp_tools`/`mcp_servers` are
+bound automatically whenever the `mcp` package is installed:
 
 ```sh
 grogu codemode mcp-servers                         # list configured servers
 grogu codemode mcp-tools playwright                # list a server's tools
-grogu codemode exec --mcp --code "print(mcp_call('playwright', 'browser_navigate', url='https://example.com'))"
+grogu codemode exec --code "print(mcp_call('playwright', 'browser_navigate', url='https://example.com'))"
 ```
 
-This requires a Python 3.10+ interpreter with the `mcp` package installed
-somewhere on the machine (auto-detected) and is opt-in because it bypasses
-Copilot CLI's confirmation gate for destructive tool calls.
+`./setup.sh` best-effort installs `mcp` as part of Grogu's Python 3.10+
+baseline. If it isn't installed, `mcp_call` etc. are simply undefined and a
+script that calls one gets a plain `NameError` — the same as any other
+undefined name, not a special error path.
 
 Output is truncated for the model but always logged in full under
 `.grogu/state/codemode/runs/`. See [docs/codemode.md](docs/codemode.md).

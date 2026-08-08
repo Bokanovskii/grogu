@@ -45,6 +45,15 @@ class GroguCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("grogu 0.1.0", result.stdout)
 
+    def test_doctor_reports_python_and_mcp_status(self):
+        result = self.run_cli("doctor")
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["python_min_required"], "3.10")
+        self.assertEqual(
+            payload["python_meets_minimum"], sys.version_info >= (3, 10)
+        )
+        self.assertIn("mcp_available", payload)
+
     def test_bare_launch_defaults_to_autopilot(self):
         self.assertEqual(grogu_cli.copilot_arguments([]), ["--autopilot"])
         self.assertEqual(
@@ -478,6 +487,22 @@ class CodemodeTests(unittest.TestCase):
             result = grogu_context.graph_context(store, query="README")
             names = [node["name"] for node in result["nodes"]]
             self.assertIn("README", names)
+        finally:
+            directory.cleanup()
+
+    @unittest.skipIf(
+        grogu_mcp.available(), "only meaningful when 'mcp' is NOT installed"
+    )
+    def test_mcp_functions_undefined_without_package(self):
+        # No flag is needed to call mcp_call(); it's simply not bound into
+        # the sandbox when the 'mcp' package isn't installed, so a script
+        # that tries to use it gets an ordinary NameError, the same as
+        # calling any other undefined name.
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(root, "mcp_call('x', 'y')")
+            self.assertNotEqual(result["returncode"], 0)
+            self.assertIn("NameError", result["stderr"])
         finally:
             directory.cleanup()
 
@@ -1101,16 +1126,15 @@ class GroguMcpTests(unittest.TestCase):
         # A fresh call after close_all() should transparently reconnect.
         self.assertEqual(grogu_mcp.call_tool("echo", "echo", text="two"), "two")
 
-    def test_find_compatible_python_returns_current_interpreter(self):
-        self.assertEqual(grogu_mcp.find_compatible_python(), sys.executable)
-
 
 @unittest.skipUnless(
     grogu_mcp.available(), "requires Python 3.10+ with the 'mcp' package installed"
 )
 class CodemodeMcpExecTests(unittest.TestCase):
-    """Exercises `grogu codemode exec --mcp` end to end via the CLI, using
-    the same echo fixture server as GroguMcpTests.
+    """Exercises `grogu codemode exec` calling MCP tools end to end via the
+    CLI, using the same echo fixture server as GroguMcpTests. No flag is
+    needed: mcp_call() etc. are always bound in when the 'mcp' package is
+    importable, and simply undefined (a plain NameError) otherwise.
     """
 
     def make_repository(self):
@@ -1165,7 +1189,7 @@ class CodemodeMcpExecTests(unittest.TestCase):
             env=environment,
         )
 
-    def test_exec_with_mcp_flag_calls_configured_server(self):
+    def test_exec_calls_configured_mcp_server_by_default(self):
         directory, root = self.make_repository()
         try:
             with tempfile.TemporaryDirectory() as home:
@@ -1174,7 +1198,6 @@ class CodemodeMcpExecTests(unittest.TestCase):
                     "exec",
                     "--repo",
                     str(root),
-                    "--mcp",
                     "--code",
                     "print(mcp_servers()); print(mcp_call('echo', 'add', a=1, b=2))",
                     home=home,
@@ -1183,25 +1206,6 @@ class CodemodeMcpExecTests(unittest.TestCase):
                 payload = json.loads(result.stdout)
                 self.assertIn("echo", payload["stdout"])
                 self.assertIn("3", payload["stdout"])
-        finally:
-            directory.cleanup()
-
-    def test_exec_without_mcp_flag_has_no_mcp_functions(self):
-        directory, root = self.make_repository()
-        try:
-            with tempfile.TemporaryDirectory() as home:
-                result = self.run_cli(
-                    "codemode",
-                    "exec",
-                    "--repo",
-                    str(root),
-                    "--code",
-                    "mcp_call('echo', 'add', a=1, b=2)",
-                    home=home,
-                )
-                payload = json.loads(result.stdout)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("NameError", payload["stderr"])
         finally:
             directory.cleanup()
 

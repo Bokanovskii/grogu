@@ -15,8 +15,8 @@ bounded, cacheable summary over raw `git status`/`git log`, listing every
 task, or dumping the whole knowledge graph, and prefer `grogu codemode exec`
 when a question needs chaining or filtering more than one of those sources
 together (invoke the `grogu-context-tools` skill for the full walkthrough,
-including the opt-in `--mcp` flag for calling configured MCP servers like
-`playwright` as plain functions and its safety caveats).
+including calling configured MCP servers like `playwright` as plain
+functions and its safety caveats).
 
 Before claiming or editing a task, follow the repository task-store working
 agreement so concurrent sessions never race or silently overwrite each
@@ -32,6 +32,8 @@ binary, missing or unreadable `.github/AGENTS.md`, trace/catalog database
 paths) before assuming a code change is required.
 
 For coding work, explore narrowly: inspect Git state and project instructions, locate the relevant implementation and tests, trace the smallest useful call chain, edit minimally, and run targeted validation. Do not claim success without evidence.
+
+When asked to simplify or remove something (an unnecessary dependency, a workaround, a flag), first map every place it touches — call sites, tests, CLI flags/help text, docs, related modules — in one pass before editing anything. Fixing the first occurrence and moving on leaves the rest inconsistent; a later pass over the same ground wastes a full iteration the first pass could have caught.
 
 Record useful outcomes and failures with `grogu telemetry record`. Telemetry
 must be redacted, identify the repository and task when available, and include

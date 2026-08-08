@@ -21,12 +21,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import grogu_banner
 import grogu_codemode
 import grogu_context
+import grogu_mcp
 import grogu_memory
 import grogu_personal_memory
 import grogu_telemetry
 import grogu_tasks
 
 VERSION = "0.1.0"
+MIN_PYTHON = (3, 10)
 ROOT = Path(__file__).resolve().parent.parent
 GROGU_HOME = Path(os.environ.get("GROGU_HOME", Path.home() / ".grogu"))
 TRACE_DB = GROGU_HOME / "traces.db"
@@ -138,6 +140,9 @@ def doctor(_: argparse.Namespace) -> int:
     store = grogu_tasks.TaskStore()
     checks = {
         "python": sys.version.split()[0],
+        "python_min_required": ".".join(str(part) for part in MIN_PYTHON),
+        "python_meets_minimum": sys.version_info >= MIN_PYTHON,
+        "mcp_available": grogu_mcp.available(),
         "grogu_version": VERSION,
         "copilot_path": copilot,
         "copilot_available": copilot is not None,
@@ -547,54 +552,27 @@ def codemode_exec(args: argparse.Namespace) -> int:
         code = args.code
     else:
         code = sys.stdin.read()
-    try:
-        result = grogu_codemode.execute(root, code, timeout=args.timeout, mcp=args.mcp)
-    except RuntimeError as error:
-        print_json({"error": str(error)})
-        return 1
+    result = grogu_codemode.execute(root, code, timeout=args.timeout)
     print_json(result)
     return 0 if result["returncode"] == 0 and not result["timed_out"] else 1
 
 
 def codemode_mcp_servers(_: argparse.Namespace) -> int:
-    src_dir = Path(__file__).resolve().parent
-    sys.path.insert(0, str(src_dir))
-    import grogu_mcp
-
     print_json({"servers": grogu_mcp.list_servers()})
     return 0
 
 
 def codemode_mcp_tools(args: argparse.Namespace) -> int:
-    src_dir = Path(__file__).resolve().parent
-    sys.path.insert(0, str(src_dir))
-    import grogu_mcp
-
-    interpreter = grogu_mcp.find_compatible_python()
-    if interpreter is None:
+    if not grogu_mcp.available():
         print_json(
             {
-                "error": "no Python 3.10+ interpreter with the 'mcp' package was found "
-                "on this machine; install one (e.g. `python3.11 -m pip install mcp`) "
-                "to list MCP tools"
+                "error": "the 'mcp' package is not installed for this Python "
+                "interpreter; run `python3 -m pip install mcp` (or re-run "
+                "./setup.sh) to list MCP tools"
             }
         )
         return 1
-    if interpreter == sys.executable:
-        print_json({"server": args.server, "tools": grogu_mcp.list_tools(args.server)})
-        return 0
-    script = (
-        f"import sys; sys.path.insert(0, {str(src_dir)!r})\n"
-        "import grogu_mcp, json\n"
-        f"print(json.dumps(grogu_mcp.list_tools({args.server!r})))\n"
-    )
-    completed = subprocess.run(
-        [interpreter, "-c", script], capture_output=True, text=True, timeout=30
-    )
-    if completed.returncode != 0:
-        print_json({"error": completed.stderr.strip() or "MCP tool listing failed"})
-        return 1
-    print_json({"server": args.server, "tools": json.loads(completed.stdout)})
+    print_json({"server": args.server, "tools": grogu_mcp.list_tools(args.server)})
     return 0
 
 
@@ -1245,19 +1223,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=grogu_codemode.DEFAULT_TIMEOUT_SECONDS,
         help="seconds before the sandboxed run is killed",
     )
-    codemode_exec_parser.add_argument(
-        "--mcp",
-        action="store_true",
-        help="also bind mcp_servers()/mcp_tools(server)/mcp_call(server, tool, **kwargs) "
-        "for configured MCP servers (requires Python 3.10+ with 'mcp' installed "
-        "somewhere on this machine; bypasses Copilot CLI's confirmation gate for "
-        "destructive actions, so use with care)",
-    )
     codemode_exec_parser.set_defaults(handler=codemode_exec)
     codemode_mcp_servers_parser = codemode_subparsers.add_parser(
         "mcp-servers",
         parents=[codemode_common],
-        help="list configured local MCP servers available to --mcp",
+        help="list configured local MCP servers callable from exec scripts",
     )
     codemode_mcp_servers_parser.set_defaults(handler=codemode_mcp_servers)
     codemode_mcp_tools_parser = codemode_subparsers.add_parser(

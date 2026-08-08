@@ -18,7 +18,7 @@ with real control flow (loops, conditionals, intermediate variables) before
 deciding what's worth returning.
 
 For a session-facing quick reference (when to use `aggregate` vs.
-`codemode`, and the `--mcp` safety caveat), see the `grogu-context-tools`
+`codemode`, and the MCP safety caveat), see the `grogu-context-tools`
 skill (`.github/skills/grogu-context-tools/SKILL.md`); this document is the
 full design write-up.
 
@@ -70,6 +70,17 @@ requests`/`urllib` and call any API the host machine can reach, exactly like
 any other Python process. It can also import anything installed in this
 environment. Do not run untrusted code with `grogu codemode exec`.
 
+### Generic scripting, not just Grogu/MCP tools
+
+Because a codemode script is plain Python with no import restriction, it is
+also a reasonable way to search/filter/transform arbitrary text — grep-like
+scans across many files, JSON/log parsing, regex extraction across a large
+document set, or piping several tools' output together with `re`/`json`/
+`pathlib` — whenever the result needs to be reduced to a small answer before
+it reaches the session's context, the same motivation as chaining Grogu's
+own tools. It isn't limited to the bound tool functions listed by
+`grogu codemode tools`; those are just the pre-wired conveniences.
+
 ### Calling generic APIs vs. calling MCP servers
 
 * **Generic REST/HTTP APIs** work right now, with no special support needed
@@ -78,12 +89,13 @@ environment. Do not run untrusted code with `grogu codemode exec`.
   `grogu codemode exec` successfully reached `https://api.github.com` over
   HTTPS with no additional wiring.
 * **Configured MCP servers** (e.g. `playwright` in `~/.copilot/mcp-config.json`)
-  are callable as plain functions via `grogu codemode exec --mcp` (Phase 2,
-  below) — `mcp_servers()`, `mcp_tools(server)`, and
-  `mcp_call(server, tool, **kwargs)` are bound into the sandbox alongside
-  Grogu's own tools when the flag is passed. This is opt-in, not default,
-  because it bypasses Copilot CLI's own confirmation gate for destructive
-  actions (see the Phase 2 write-up below).
+  are callable the same way, with no special flag: `mcp_servers()`,
+  `mcp_tools(server)`, and `mcp_call(server, tool, **kwargs)` are bound into
+  every sandbox automatically whenever the `mcp` package is installed (see
+  Phase 2, below). This is intentionally consistent with the point above —
+  codemode already lets a script reach arbitrary APIs with no opt-in, so
+  gating MCP specifically behind a flag would have added a flag to remember
+  without adding any actual safety.
 
 ### Output handling
 
@@ -106,7 +118,7 @@ per-machine, regeneratable Grogu state, and is never committed.
 
 ## MCP servers (Phase 2)
 
-`grogu codemode exec --mcp` binds three extra functions into the sandbox for
+`grogu codemode exec` binds three extra functions into the sandbox for
 every MCP server configured in `~/.copilot/mcp-config.json` (local/stdio
 servers only — remote/HTTP-type servers are out of scope for now):
 
@@ -119,23 +131,27 @@ mcp_call(server, tool, **kwargs)    # -> the tool's extracted result (str, dict,
 `grogu codemode mcp-servers` and `grogu codemode mcp-tools <server>` expose
 the same listing calls outside of a sandboxed run, for discovery.
 
-This requires a Python 3.10+ interpreter with the `mcp` package installed
-somewhere on the machine — `mcp` itself only imports on 3.10+, and Grogu's
-own baseline stays on whatever Python it always used. `grogu_mcp.
-find_compatible_python()` locates one automatically (preferring the
-interpreter already running `grogu codemode exec`, falling back to
-`python3.11`/`.12`/`.13` on `PATH`) and `execute()` re-execs the sandboxed
-script under it only when `--mcp` is passed; without the flag, nothing
-changes. If no compatible interpreter is found, `exec --mcp` fails with a
-clear error rather than a cryptic import failure.
+This requires the `mcp` package, which needs Python 3.10+. Grogu's own
+baseline requirement is Python 3.10+ (see README.md) for exactly this
+reason, so codemode runs `mcp_call` in the *same* interpreter as everything
+else — no separate interpreter is located or re-exec'd. `./setup.sh`
+best-effort installs `mcp` automatically when `python3` on `PATH` qualifies;
+`grogu doctor` reports `python_meets_minimum`/`mcp_available` so a session
+can check state directly. If `mcp` genuinely isn't installed (e.g. an
+offline setup), `mcp_call`/`mcp_tools`/`mcp_servers` are simply not defined
+in the sandbox and a script that calls one gets an ordinary `NameError` —
+the same experience as calling any other undefined name, not a special
+error path.
 
 Each configured server gets one persistent background thread with its own
-asyncio event loop and a live `ClientSession`, lazily started on first use
-and reused for the remainder of the `exec` process — necessary because
-servers like `playwright` are stateful across calls (a `browser_navigate`
-followed by a `browser_snapshot` needs to hit the same browser session, not
-a freshly spawned one). The bridge is closed automatically via `atexit` when
-the sandboxed script finishes.
+asyncio event loop and a live `ClientSession`, lazily started on the first
+actual `mcp_call` and reused for the remainder of the `exec` process —
+necessary because servers like `playwright` are stateful across calls (a
+`browser_navigate` followed by a `browser_snapshot` needs to hit the same
+browser session, not a freshly spawned one). Because the connection is
+lazy, a script that never calls `mcp_call` pays no extra cost even though
+the functions are always bound. The bridge is closed automatically via
+`atexit` when the sandboxed script finishes.
 
 Verified end to end against the real, configured `playwright` server: listed
 its 24 tools, called `browser_navigate` then `browser_snapshot` against the
@@ -144,26 +160,25 @@ errors surface as a normal Python `RuntimeError` with the server's own error
 text. Also covered by an automated test suite (`GroguMcpTests`,
 `CodemodeMcpExecTests` in `tests/test_grogu_cli.py`) against a small local
 fixture MCP server (`tests/fixtures/mcp_echo_server.py`), so these tests
-don't depend on any specific external server being installed. Those tests —
-and `--mcp` itself — are skipped/unavailable under Grogu's default
-interpreter if it's below 3.10 or lacks `mcp`; run
-`python3.11 -m pytest tests/test_grogu_cli.py -k Mcp` (or whatever compatible
-interpreter is on the machine) to exercise them for real.
+don't depend on any specific external server being installed. Those tests
+are skipped under Grogu's own default interpreter here if it's below 3.10 or
+lacks `mcp`; run `python3.11 -m pytest tests/test_grogu_cli.py -k Mcp` (or
+whatever compatible interpreter is on the machine) to exercise them for real.
 
-**Known open issue, not yet resolved:** calling an MCP tool via `--mcp`
-bypasses Copilot CLI's own per-tool confirmation gate for destructive
-actions entirely — a write-capable MCP tool just executes. The only
-mitigation right now is that `--mcp` is opt-in and the risk is documented
-here, in `AGENTS.md`, and in the CLI's own `--help` text. No allowlisting or
-extra confirmation step has been designed yet; treat scripts using `--mcp`
-with the same caution as running arbitrary code with real credentials.
+**Known open issue, not yet resolved:** calling an MCP tool bypasses Copilot
+CLI's own per-tool confirmation gate for destructive actions entirely — a
+write-capable MCP tool just executes, the same way a script calling
+`requests.post(...)` against some arbitrary API already does today. No
+allowlisting or extra confirmation step has been designed for either case;
+this is documented here and in `AGENTS.md` as a standing risk, not a
+per-call opt-in.
 
 ## Roadmap
 
 * **Phase 1 (done).** Bind Grogu's own tools (git, knowledge graph, tasks,
   service metadata) as callable functions in a sandboxed script.
-* **Phase 2 (done).** Proxy configured local MCP servers as plain functions
-  via `grogu codemode exec --mcp` — see above.
+* **Phase 2 (done).** Proxy configured local MCP servers as plain functions,
+  bound into every `grogu codemode exec` sandbox automatically — see above.
 * **Phase 3.** If Copilot CLI itself grows native support for code-execution
   tool calling, prefer that over Grogu re-implementing an MCP-to-code proxy;
   file a feature request against `github/copilot-cli` referencing this

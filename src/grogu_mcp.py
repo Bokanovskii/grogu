@@ -1,21 +1,26 @@
 """MCP client bridge: proxy configured MCP servers as codemode-callable tools.
 
 This is Phase 2 of codemode (see docs/codemode.md): speaking the MCP wire
-protocol itself is simple, but three things make it more than "add a
-client":
+protocol itself is simple, but two things make it more than "add a client":
 
-* The ``mcp`` SDK requires Python 3.10+; Grogu's own CLI keeps running on
-  whatever Python it always has, so this module is only imported lazily and
-  ``available()`` is checked before anything tries to use it.
 * MCP servers can be stateful across calls (Playwright's server holds a
   live browser session). Spawning a fresh server per call would drop that
   state, so each server gets one persistent background thread running its
   own asyncio event loop and MCP session for the lifetime of the
   interpreter process that imported this module (i.e. for the duration of
   one ``grogu codemode exec`` run).
-* This intentionally bypasses Copilot CLI's own per-tool confirmation gate
-  for destructive actions, which is why callers must opt in explicitly
-  (``grogu codemode exec --mcp``) rather than getting this by default.
+* Calling an MCP tool this way intentionally bypasses Copilot CLI's own
+  per-tool confirmation gate for destructive actions. There is no separate
+  opt-in flag for this: MCP functions are bound into every codemode sandbox
+  automatically whenever this module reports ``available()``, the same as
+  a script being free to call ``requests``/``urllib`` against any API with
+  no opt-in — see docs/codemode.md for the reasoning.
+
+Grogu's baseline Python requirement is 3.10+ (see README.md), the same
+version the ``mcp`` SDK requires, so this module runs in the same
+interpreter as the rest of Grogu — no separate interpreter selection is
+needed. ``available()`` still exists as a defensive check in case ``mcp``
+isn't installed (e.g. ``setup.sh`` couldn't reach the package index).
 """
 
 from __future__ import annotations
@@ -61,7 +66,14 @@ def load_servers() -> dict:
 
 
 def available() -> bool:
-    """Whether this interpreter can act as an MCP client at all."""
+    """Whether this interpreter can act as an MCP client at all.
+
+    Should be ``True`` on any machine where Grogu's own setup completed
+    successfully, since Grogu requires Python 3.10+ and installs ``mcp`` as
+    part of ``setup.sh``. Checked defensively rather than assumed, so a
+    partial/offline setup fails with a clear message instead of a cryptic
+    import error deep inside a sandboxed script.
+    """
     if sys.version_info < MIN_PYTHON:
         return False
     try:
@@ -69,31 +81,6 @@ def available() -> bool:
     except ImportError:
         return False
     return True
-
-
-def find_compatible_python() -> Optional[str]:
-    """A Python interpreter with MCP support: this one, or one found on PATH.
-
-    Prefers the interpreter already running (no extra process to manage) and
-    falls back to common version-suffixed names. Returns ``None`` if nothing
-    on this machine can do it, so callers can fail with a clear message
-    instead of a cryptic import error.
-    """
-    if available():
-        return sys.executable
-    import shutil
-    import subprocess
-
-    for candidate in ("python3.13", "python3.12", "python3.11", "python3.10"):
-        found = shutil.which(candidate)
-        if not found:
-            continue
-        probe = subprocess.run(
-            [found, "-c", "import mcp"], capture_output=True, timeout=10
-        )
-        if probe.returncode == 0:
-            return found
-    return None
 
 
 def _extract_content(result) -> object:

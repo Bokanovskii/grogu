@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Optional
 
 import grogu_context
+import grogu_mcp
 import grogu_memory
 import grogu_tasks
 
@@ -207,14 +208,14 @@ def _limit_resources() -> None:
         pass
 
 
-def _bootstrap_source(root: Path, src_dir: Path, mcp: bool = False) -> str:
+def _bootstrap_source(root: Path, src_dir: Path) -> str:
     tool_calls = "\n".join(
         f"def {name}(*args, **kwargs):\n"
         f"    return _TOOLS[{name!r}][\"function\"](_ROOT, *args, **kwargs)\n"
         for name in TOOLS
     )
     mcp_bootstrap = ""
-    if mcp:
+    if grogu_mcp.available():
         mcp_bootstrap = textwrap.dedent(
             """
             import atexit as _atexit
@@ -255,7 +256,6 @@ def execute(
     root: Path,
     code: str,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
-    mcp: bool = False,
 ) -> dict:
     """Run agent-written code with every tool bound as a plain function call.
 
@@ -265,40 +265,29 @@ def execute(
     truncated summary is not enough — keeping large intermediate results out
     of the model's context by default, without losing them.
 
-    ``mcp=True`` additionally binds ``mcp_servers()``/``mcp_tools(server)``/
-    ``mcp_call(server, tool, **kwargs)`` so the script can call configured
-    MCP servers directly. This requires a Python 3.10+ interpreter with the
-    ``mcp`` package installed; a compatible interpreter is located
-    automatically (falling back to a clear error if none is found) rather
-    than requiring Grogu's own baseline Python to change. Because this
-    bypasses Copilot CLI's own per-tool confirmation gate for destructive
-    actions, it is opt-in only.
+    If the ``mcp`` package is available (installed by ``setup.sh`` as part of
+    Grogu's Python 3.10+ baseline), the script also gets ``mcp_servers()``/
+    ``mcp_tools(server)``/``mcp_call(server, tool, **kwargs)`` for calling
+    configured MCP servers directly — no separate flag needed, the same way a
+    script can already call `requests`/`urllib` against arbitrary APIs with
+    no special opt-in. Each server only connects lazily, on its first actual
+    ``mcp_call``, so scripts that never touch MCP pay no extra cost. If
+    ``mcp`` isn't installed, ``mcp_call`` etc. simply aren't defined and a
+    script that tries to use them fails with an ordinary ``NameError``, the
+    same as calling any other undefined name.
     """
     root = Path(root).expanduser().resolve()
     src_dir = Path(__file__).resolve().parent
     bounded_timeout = max(1, min(int(timeout), MAX_TIMEOUT_SECONDS))
     run_id = uuid.uuid4().hex[:12]
 
-    interpreter = sys.executable
-    if mcp:
-        sys.path.insert(0, str(src_dir))
-        import grogu_mcp
-
-        interpreter = grogu_mcp.find_compatible_python()
-        if interpreter is None:
-            raise RuntimeError(
-                "no Python 3.10+ interpreter with the 'mcp' package was found on "
-                "this machine; install one (e.g. `python3.11 -m pip install mcp`) "
-                "to use codemode --mcp"
-            )
-
-    script = _bootstrap_source(root, src_dir, mcp=mcp) + "\n\n" + code
+    script = _bootstrap_source(root, src_dir) + "\n\n" + code
     runs_dir = root / RUNS_DIRNAME
     runs_dir.mkdir(parents=True, exist_ok=True)
     log_path = runs_dir / f"{run_id}.log"
     try:
         completed = subprocess.run(
-            [interpreter, "-c", script],
+            [sys.executable, "-c", script],
             cwd=str(root),
             capture_output=True,
             text=True,
