@@ -13,6 +13,11 @@ Issues remain the source of truth for anything that crosses a machine boundary.
 The repository task store is what a Grogu session can read, claim and update
 without network access, and what a reviewer sees in a pull request diff.
 
+For a session-facing quick reference of the claim/heartbeat/release lifecycle
+and inbox relay, see the `grogu-tasks` skill
+(`.github/skills/grogu-tasks/SKILL.md`); this document is the full design
+write-up.
+
 ## Commands
 
 ```sh

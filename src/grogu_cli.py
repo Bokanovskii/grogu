@@ -19,13 +19,16 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import grogu_banner
+import grogu_codemode
 import grogu_context
+import grogu_mcp
 import grogu_memory
 import grogu_personal_memory
 import grogu_telemetry
 import grogu_tasks
 
 VERSION = "0.1.0"
+MIN_PYTHON = (3, 10)
 ROOT = Path(__file__).resolve().parent.parent
 GROGU_HOME = Path(os.environ.get("GROGU_HOME", Path.home() / ".grogu"))
 TRACE_DB = GROGU_HOME / "traces.db"
@@ -137,6 +140,9 @@ def doctor(_: argparse.Namespace) -> int:
     store = grogu_tasks.TaskStore()
     checks = {
         "python": sys.version.split()[0],
+        "python_min_required": ".".join(str(part) for part in MIN_PYTHON),
+        "python_meets_minimum": sys.version_info >= MIN_PYTHON,
+        "mcp_available": grogu_mcp.available(),
         "grogu_version": VERSION,
         "copilot_path": copilot,
         "copilot_available": copilot is not None,
@@ -514,6 +520,59 @@ def context_tasks(args: argparse.Namespace) -> int:
 
 def context_service(args: argparse.Namespace) -> int:
     print_json(grogu_context.aggregate("service", context_repo(args)))
+    return 0
+
+
+def codemode_repo(args: argparse.Namespace) -> Path:
+    given = Path(args.repo).expanduser() if getattr(args, "repo", None) else None
+    return grogu_memory.repository_root(given)
+
+
+def codemode_tools(_: argparse.Namespace) -> int:
+    print_json({"tools": grogu_codemode.list_tools()})
+    return 0
+
+
+def codemode_search(args: argparse.Namespace) -> int:
+    print_json({"query": args.query, "tools": grogu_codemode.search_tools(args.query)})
+    return 0
+
+
+def codemode_generate(args: argparse.Namespace) -> int:
+    directory = grogu_codemode.generate_tool_tree(codemode_repo(args))
+    print_json({"tools_directory": str(directory)})
+    return 0
+
+
+def codemode_exec(args: argparse.Namespace) -> int:
+    root = codemode_repo(args)
+    if args.file:
+        code = Path(args.file).expanduser().read_text(encoding="utf8")
+    elif args.code:
+        code = args.code
+    else:
+        code = sys.stdin.read()
+    result = grogu_codemode.execute(root, code, timeout=args.timeout)
+    print_json(result)
+    return 0 if result["returncode"] == 0 and not result["timed_out"] else 1
+
+
+def codemode_mcp_servers(_: argparse.Namespace) -> int:
+    print_json({"servers": grogu_mcp.list_servers()})
+    return 0
+
+
+def codemode_mcp_tools(args: argparse.Namespace) -> int:
+    if not grogu_mcp.available():
+        print_json(
+            {
+                "error": "the 'mcp' package is not installed for this Python "
+                "interpreter; run `python3 -m pip install mcp` (or re-run "
+                "./setup.sh) to list MCP tools"
+            }
+        )
+        return 1
+    print_json({"server": args.server, "tools": grogu_mcp.list_tools(args.server)})
     return 0
 
 
@@ -1124,6 +1183,61 @@ def build_parser() -> argparse.ArgumentParser:
     )
     context_service_parser.set_defaults(handler=context_service)
 
+    codemode = subparsers.add_parser(
+        "codemode",
+        help="generate code bindings for Grogu's tools and run agent code "
+        "against them in a bounded sandbox",
+    )
+    codemode_subparsers = codemode.add_subparsers(
+        dest="codemode_command", required=True
+    )
+    codemode_common = argparse.ArgumentParser(add_help=False)
+    codemode_common.add_argument(
+        "--repo", help="repository root (default: the enclosing Git work tree)"
+    )
+    codemode_tools_parser = codemode_subparsers.add_parser(
+        "tools", parents=[codemode_common], help="list all available tools"
+    )
+    codemode_tools_parser.set_defaults(handler=codemode_tools)
+    codemode_search_parser = codemode_subparsers.add_parser(
+        "search", parents=[codemode_common], help="search tools by name/summary"
+    )
+    codemode_search_parser.add_argument("query")
+    codemode_search_parser.set_defaults(handler=codemode_search)
+    codemode_generate_parser = codemode_subparsers.add_parser(
+        "generate",
+        parents=[codemode_common],
+        help="write one documentation file per tool for filesystem discovery",
+    )
+    codemode_generate_parser.set_defaults(handler=codemode_generate)
+    codemode_exec_parser = codemode_subparsers.add_parser(
+        "exec",
+        parents=[codemode_common],
+        help="run code with every tool bound as a plain function call",
+    )
+    codemode_exec_parser.add_argument("--code", help="inline code to execute")
+    codemode_exec_parser.add_argument("--file", help="path to a script to execute")
+    codemode_exec_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=grogu_codemode.DEFAULT_TIMEOUT_SECONDS,
+        help="seconds before the sandboxed run is killed",
+    )
+    codemode_exec_parser.set_defaults(handler=codemode_exec)
+    codemode_mcp_servers_parser = codemode_subparsers.add_parser(
+        "mcp-servers",
+        parents=[codemode_common],
+        help="list configured local MCP servers callable from exec scripts",
+    )
+    codemode_mcp_servers_parser.set_defaults(handler=codemode_mcp_servers)
+    codemode_mcp_tools_parser = codemode_subparsers.add_parser(
+        "mcp-tools",
+        parents=[codemode_common],
+        help="list a configured MCP server's tools (connects to it once)",
+    )
+    codemode_mcp_tools_parser.add_argument("server")
+    codemode_mcp_tools_parser.set_defaults(handler=codemode_mcp_tools)
+
     personal = subparsers.add_parser(
         "personal",
         help="build and inspect user-scoped personal memory (never repository state)",
@@ -1465,6 +1579,7 @@ GROGU_COMMANDS = frozenset(
         "project",
         "memory",
         "aggregate",
+        "codemode",
         "personal",
         "banner",
         "task",
