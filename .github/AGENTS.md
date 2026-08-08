@@ -10,7 +10,30 @@ stale, and use `grogu memory context` to obtain bounded context. The
 `.grogu/intelligence/` directory belongs to the target repository; never store
 target-repository context in the Grogu source checkout or in global user state.
 
+Prefer `grogu aggregate <git|graph|tasks|traces|relationships|service>` for a
+bounded, cacheable summary over raw `git status`/`git log`, listing every
+task, or dumping the whole knowledge graph, and prefer `grogu codemode exec`
+when a question needs chaining or filtering more than one of those sources
+together (invoke the `grogu-context-tools` skill for the full walkthrough,
+including calling configured MCP servers like `playwright` as plain
+functions and its safety caveats).
+
+Before claiming or editing a task, follow the repository task-store working
+agreement so concurrent sessions never race or silently overwrite each
+other's work (invoke the `grogu-tasks` skill for the claim/heartbeat/release
+lifecycle and inbox relay steps).
+
+Record and query the cross-project relationship catalog with `grogu project
+{init, list, relate, graph}`, not by hand-tracking which repositories depend
+on each other.
+
+Run `grogu doctor` when the environment seems misconfigured (missing Copilot
+binary, missing or unreadable `.github/AGENTS.md`, trace/catalog database
+paths) before assuming a code change is required.
+
 For coding work, explore narrowly: inspect Git state and project instructions, locate the relevant implementation and tests, trace the smallest useful call chain, edit minimally, and run targeted validation. Do not claim success without evidence.
+
+When asked to simplify or remove something (an unnecessary dependency, a workaround, a flag), first map every place it touches — call sites, tests, CLI flags/help text, docs, related modules — in one pass before editing anything. Fixing the first occurrence and moving on leaves the rest inconsistent; a later pass over the same ground wastes a full iteration the first pass could have caught.
 
 Record useful outcomes and failures with `grogu telemetry record`. Telemetry
 must be redacted, identify the repository and task when available, and include
@@ -38,7 +61,7 @@ Use read-only operations by default. Ask for confirmation before destructive cha
 
 When a web interface or browser behavior needs validation, use the configured Playwright MCP capability when available. Prefer isolated/headless checks and targeted assertions; browser access does not authorize external side effects.
 
-When multiple sessions are active, detect related branches, worktrees, and leases before editing. Shared Grogu behavior changes belong in a branch and pull request.
+Shared Grogu behavior changes belong in a branch and pull request.
 
 To start another Grogu session that can be opened from GitHub web or mobile,
 run `grogu session new`. Pass Copilot options after `--`, for example

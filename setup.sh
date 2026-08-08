@@ -121,6 +121,37 @@ case ":${PATH:-}:" in
         ;;
 esac
 
+# Best-effort: `bin/grogu` itself already prefers the newest 3.10+
+# interpreter it finds on PATH (python3.13/.12/.11/.10) over plain `python3`,
+# so this only needs to install `mcp` into whichever one grogu will actually
+# use — matching that same preference order keeps this in sync with
+# `bin/grogu` rather than picking a different interpreter to check/install
+# into. Neither check is fatal to setup: the rest of Grogu only needs stdlib.
+PYTHON=python3
+for candidate in python3.13 python3.12 python3.11 python3.10; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        PYTHON=$candidate
+        break
+    fi
+done
+
+if command -v "$PYTHON" >/dev/null 2>&1; then
+    if "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+        if "$PYTHON" -c 'import mcp' >/dev/null 2>&1; then
+            printf '%s\n' "$PYTHON is 3.10+ and 'mcp' is already installed."
+        elif "$PYTHON" -m pip install --quiet mcp >/dev/null 2>&1; then
+            printf '%s is 3.10+; installed '\''mcp'\'' for codemode MCP tool calls.\n' "$PYTHON"
+        else
+            printf '%s\n' "Warning: could not install 'mcp' (offline, or pip unavailable)."
+            printf 'Run '\''%s -m pip install mcp'\'' later to enable codemode MCP tool calls.\n' "$PYTHON"
+        fi
+    else
+        printf 'Warning: %s is older than 3.10; codemode'\''s MCP\n' "$PYTHON"
+        printf '%s\n' "tool calling (grogu codemode exec, mcp_call(...)) needs 3.10+."
+        printf '%s\n' "Everything else in Grogu works fine on an older python3."
+    fi
+fi
+
 if command -v copilot >/dev/null 2>&1; then
     "$TARGET" doctor >/dev/null
     printf '%s\n' "Grogu setup complete; Copilot CLI detected."

@@ -14,16 +14,21 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import grogu_banner
+import grogu_codemode
+import grogu_context
+import grogu_mcp
 import grogu_memory
 import grogu_personal_memory
 import grogu_telemetry
 import grogu_tasks
 
 VERSION = "0.1.0"
+MIN_PYTHON = (3, 10)
 ROOT = Path(__file__).resolve().parent.parent
 GROGU_HOME = Path(os.environ.get("GROGU_HOME", Path.home() / ".grogu"))
 TRACE_DB = GROGU_HOME / "traces.db"
@@ -135,6 +140,9 @@ def doctor(_: argparse.Namespace) -> int:
     store = grogu_tasks.TaskStore()
     checks = {
         "python": sys.version.split()[0],
+        "python_min_required": ".".join(str(part) for part in MIN_PYTHON),
+        "python_meets_minimum": sys.version_info >= MIN_PYTHON,
+        "mcp_available": grogu_mcp.available(),
         "grogu_version": VERSION,
         "copilot_path": copilot,
         "copilot_available": copilot is not None,
@@ -479,6 +487,129 @@ def memory_link(args: argparse.Namespace) -> int:
         provenance={"kind": args.provenance},
     )
     print_json(edge)
+    return 0
+
+
+def context_repo(args: argparse.Namespace) -> Optional[Path]:
+    return Path(args.repo).expanduser() if getattr(args, "repo", None) else None
+
+
+def context_git(args: argparse.Namespace) -> int:
+    print_json(grogu_context.aggregate("git", context_repo(args)))
+    return 0
+
+
+def context_graph(args: argparse.Namespace) -> int:
+    print_json(
+        grogu_context.aggregate(
+            "graph",
+            context_repo(args),
+            query=args.query,
+            node_id=args.node,
+            depth=args.depth,
+            limit=args.limit,
+        )
+    )
+    return 0
+
+
+def context_tasks(args: argparse.Namespace) -> int:
+    print_json(grogu_context.aggregate("tasks", context_repo(args), limit=args.limit))
+    return 0
+
+
+def context_service(args: argparse.Namespace) -> int:
+    print_json(grogu_context.aggregate("service", context_repo(args)))
+    return 0
+
+
+def codemode_repo(args: argparse.Namespace) -> Path:
+    given = Path(args.repo).expanduser() if getattr(args, "repo", None) else None
+    return grogu_memory.repository_root(given)
+
+
+def codemode_tools(_: argparse.Namespace) -> int:
+    print_json({"tools": grogu_codemode.list_tools()})
+    return 0
+
+
+def codemode_search(args: argparse.Namespace) -> int:
+    print_json({"query": args.query, "tools": grogu_codemode.search_tools(args.query)})
+    return 0
+
+
+def codemode_generate(args: argparse.Namespace) -> int:
+    directory = grogu_codemode.generate_tool_tree(codemode_repo(args))
+    print_json({"tools_directory": str(directory)})
+    return 0
+
+
+def codemode_exec(args: argparse.Namespace) -> int:
+    root = codemode_repo(args)
+    if args.file:
+        code = Path(args.file).expanduser().read_text(encoding="utf8")
+    elif args.code:
+        code = args.code
+    else:
+        code = sys.stdin.read()
+    result = grogu_codemode.execute(root, code, timeout=args.timeout)
+    print_json(result)
+    return 0 if result["returncode"] == 0 and not result["timed_out"] else 1
+
+
+def codemode_mcp_servers(_: argparse.Namespace) -> int:
+    print_json({"servers": grogu_mcp.list_servers()})
+    return 0
+
+
+def codemode_mcp_tools(args: argparse.Namespace) -> int:
+    if not grogu_mcp.available():
+        print_json(
+            {
+                "error": "the 'mcp' package is not installed for this Python "
+                "interpreter; run `python3 -m pip install mcp` (or re-run "
+                "./setup.sh) to list MCP tools"
+            }
+        )
+        return 1
+    print_json({"server": args.server, "tools": grogu_mcp.list_tools(args.server)})
+    return 0
+
+
+def context_traces(args: argparse.Namespace) -> int:
+    root = grogu_memory.repository_root(context_repo(args))
+    store = grogu_memory.MemoryStore(root)
+    repository_id = store.status().get("manifest", {}).get("repository_id", "")
+    initialize_trace_db()
+    with connect(TRACE_DB) as database:
+        grogu_telemetry.initialize(database)
+        data = grogu_context.traces_summary(database)
+    print_json(grogu_context._envelope("traces", repository_id, data))
+    return 0
+
+
+def context_relationships(args: argparse.Namespace) -> int:
+    root = grogu_memory.repository_root(context_repo(args))
+    store = grogu_memory.MemoryStore(root)
+    repository_id = store.status().get("manifest", {}).get("repository_id", "")
+    initialize_catalog_db()
+    with connect(CATALOG_DB) as database:
+        rows = database.execute(
+            """
+            SELECT source_id, target_id, kind, evidence_json, updated_at
+            FROM project_relationships
+            WHERE source_id = ? OR target_id = ?
+            ORDER BY source_id, target_id, kind
+            """,
+            (repository_id, repository_id),
+        ).fetchall()
+    edges = []
+    for row in rows:
+        value = dict(row)
+        value["evidence"] = json.loads(value.pop("evidence_json"))
+        edges.append(value)
+    data = grogu_context.relationships_summary(edges, limit=args.limit)
+    print_json(grogu_context._envelope("relationships", repository_id, data))
     return 0
 
 
@@ -1009,6 +1140,104 @@ def build_parser() -> argparse.ArgumentParser:
     link.add_argument("--provenance", default="user")
     link.set_defaults(handler=memory_link)
 
+    aggregate = subparsers.add_parser(
+        "aggregate",
+        help="bounded, cacheable context aggregations for Git, the knowledge "
+        "graph, tasks, telemetry, relationships, and service metadata",
+    )
+    context_subparsers = aggregate.add_subparsers(
+        dest="context_command", required=True
+    )
+    context_common = argparse.ArgumentParser(add_help=False)
+    context_common.add_argument(
+        "--repo", help="repository root (default: the enclosing Git work tree)"
+    )
+    context_git_parser = context_subparsers.add_parser(
+        "git", parents=[context_common]
+    )
+    context_git_parser.set_defaults(handler=context_git)
+    context_graph_parser = context_subparsers.add_parser(
+        "graph", parents=[context_common]
+    )
+    context_graph_parser.add_argument("--limit", type=int, default=40)
+    context_graph_parser.add_argument("--query", default="")
+    context_graph_parser.add_argument("--node", default="")
+    context_graph_parser.add_argument("--depth", type=int, default=1)
+    context_graph_parser.set_defaults(handler=context_graph)
+    context_tasks_parser = context_subparsers.add_parser(
+        "tasks", parents=[context_common]
+    )
+    context_tasks_parser.add_argument("--limit", type=int, default=20)
+    context_tasks_parser.set_defaults(handler=context_tasks)
+    context_traces_parser = context_subparsers.add_parser(
+        "traces", parents=[context_common]
+    )
+    context_traces_parser.set_defaults(handler=context_traces)
+    context_relationships_parser = context_subparsers.add_parser(
+        "relationships", parents=[context_common]
+    )
+    context_relationships_parser.add_argument("--limit", type=int, default=40)
+    context_relationships_parser.set_defaults(handler=context_relationships)
+    context_service_parser = context_subparsers.add_parser(
+        "service", parents=[context_common]
+    )
+    context_service_parser.set_defaults(handler=context_service)
+
+    codemode = subparsers.add_parser(
+        "codemode",
+        help="generate code bindings for Grogu's tools and run agent code "
+        "against them in a bounded sandbox",
+    )
+    codemode_subparsers = codemode.add_subparsers(
+        dest="codemode_command", required=True
+    )
+    codemode_common = argparse.ArgumentParser(add_help=False)
+    codemode_common.add_argument(
+        "--repo", help="repository root (default: the enclosing Git work tree)"
+    )
+    codemode_tools_parser = codemode_subparsers.add_parser(
+        "tools", parents=[codemode_common], help="list all available tools"
+    )
+    codemode_tools_parser.set_defaults(handler=codemode_tools)
+    codemode_search_parser = codemode_subparsers.add_parser(
+        "search", parents=[codemode_common], help="search tools by name/summary"
+    )
+    codemode_search_parser.add_argument("query")
+    codemode_search_parser.set_defaults(handler=codemode_search)
+    codemode_generate_parser = codemode_subparsers.add_parser(
+        "generate",
+        parents=[codemode_common],
+        help="write one documentation file per tool for filesystem discovery",
+    )
+    codemode_generate_parser.set_defaults(handler=codemode_generate)
+    codemode_exec_parser = codemode_subparsers.add_parser(
+        "exec",
+        parents=[codemode_common],
+        help="run code with every tool bound as a plain function call",
+    )
+    codemode_exec_parser.add_argument("--code", help="inline code to execute")
+    codemode_exec_parser.add_argument("--file", help="path to a script to execute")
+    codemode_exec_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=grogu_codemode.DEFAULT_TIMEOUT_SECONDS,
+        help="seconds before the sandboxed run is killed",
+    )
+    codemode_exec_parser.set_defaults(handler=codemode_exec)
+    codemode_mcp_servers_parser = codemode_subparsers.add_parser(
+        "mcp-servers",
+        parents=[codemode_common],
+        help="list configured local MCP servers callable from exec scripts",
+    )
+    codemode_mcp_servers_parser.set_defaults(handler=codemode_mcp_servers)
+    codemode_mcp_tools_parser = codemode_subparsers.add_parser(
+        "mcp-tools",
+        parents=[codemode_common],
+        help="list a configured MCP server's tools (connects to it once)",
+    )
+    codemode_mcp_tools_parser.add_argument("server")
+    codemode_mcp_tools_parser.set_defaults(handler=codemode_mcp_tools)
+
     personal = subparsers.add_parser(
         "personal",
         help="build and inspect user-scoped personal memory (never repository state)",
@@ -1349,6 +1578,8 @@ GROGU_COMMANDS = frozenset(
         "telemetry",
         "project",
         "memory",
+        "aggregate",
+        "codemode",
         "personal",
         "banner",
         "task",

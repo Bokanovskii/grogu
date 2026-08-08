@@ -12,10 +12,15 @@ CLI = ROOT / "src" / "grogu_cli.py"
 sys.path.insert(0, str(ROOT / "src"))
 
 import grogu_banner  # noqa: E402
-import grogu_cli  # noqa: E402
+import grogu_cli
+import grogu_codemode  # noqa: E402
+import grogu_context  # noqa: E402
+import grogu_mcp  # noqa: E402
 import grogu_memory  # noqa: E402
 import grogu_personal_memory  # noqa: E402
 import grogu_telemetry  # noqa: E402
+
+FIXTURES = ROOT / "tests" / "fixtures"
 
 
 class GroguCliTests(unittest.TestCase):
@@ -39,6 +44,15 @@ class GroguCliTests(unittest.TestCase):
         result = self.run_cli("--version")
         self.assertEqual(result.returncode, 0)
         self.assertIn("grogu 0.1.0", result.stdout)
+
+    def test_doctor_reports_python_and_mcp_status(self):
+        result = self.run_cli("doctor")
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["python_min_required"], "3.10")
+        self.assertEqual(
+            payload["python_meets_minimum"], sys.version_info >= (3, 10)
+        )
+        self.assertIn("mcp_available", payload)
 
     def test_bare_launch_defaults_to_autopilot(self):
         self.assertEqual(grogu_cli.copilot_arguments([]), ["--autopilot"])
@@ -220,6 +234,429 @@ class GroguCliTests(unittest.TestCase):
                 self.assertNotIn("ghp_example", json.dumps(event))
             finally:
                 database.close()
+
+
+class AggregateTests(unittest.TestCase):
+    def make_repository(self):
+        directory = tempfile.TemporaryDirectory()
+        root = Path(directory.name)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.email", "a@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.name", "a"], check=True
+        )
+        (root / "app.py").write_text("print('one')\n")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-q", "-m", "init"], check=True
+        )
+        return directory, root
+
+    def run_cli(self, *arguments, home):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = home
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def test_git_summary_is_bounded_and_has_no_diff_content(self):
+        directory, root = self.make_repository()
+        try:
+            (root / "app.py").write_text("print('two')\n")
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "aggregate", "git", "--repo", str(root), home=home
+                )
+                self.assertEqual(result.returncode, 0)
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["kind"], "grogu.context_summary")
+                self.assertEqual(payload["op"], "git")
+                data = payload["data"]
+                self.assertEqual(data["branch"], "main")
+                self.assertEqual(data["changed_files"], 1)
+                self.assertEqual(data["changed_by_role"], {"source": 1})
+                self.assertNotIn("print(", result.stdout)
+        finally:
+            directory.cleanup()
+
+    def test_tasks_summary_omits_task_bodies(self):
+        directory, root = self.make_repository()
+        try:
+            task_dir = root / ".grogu/tasks"
+            task_dir.mkdir(parents=True)
+            (task_dir / "t-demo.json").write_text(
+                json.dumps(
+                    {
+                        "id": "t-demo",
+                        "title": "Ship the thing",
+                        "body": "a secret implementation detail",
+                        "status": "open",
+                        "labels": ["bug"],
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                    }
+                )
+            )
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "aggregate", "tasks", "--repo", str(root), home=home
+                )
+                self.assertEqual(result.returncode, 0)
+                data = json.loads(result.stdout)["data"]
+                self.assertEqual(data["total"], 1)
+                self.assertEqual(data["by_status"], {"open": 1})
+                self.assertEqual(data["by_label"], {"bug": 1})
+                self.assertNotIn("secret implementation detail", result.stdout)
+        finally:
+            directory.cleanup()
+
+    def test_signature_is_stable_for_identical_data(self):
+        first = grogu_context._envelope("git", "repo", {"a": 1, "b": 2})
+        second = grogu_context._envelope("git", "repo", {"b": 2, "a": 1})
+        self.assertEqual(first["signature"], second["signature"])
+
+    def test_unknown_operation_raises(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                grogu_context.aggregate("not-a-real-op", Path(directory))
+
+
+class CodemodeTests(unittest.TestCase):
+    def make_repository(self):
+        directory = tempfile.TemporaryDirectory()
+        root = Path(directory.name)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.email", "a@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.name", "a"], check=True
+        )
+        (root / "app.py").write_text("print('one')\n")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-q", "-m", "init"], check=True
+        )
+        return directory, root
+
+    def test_execute_binds_tools_as_plain_function_calls(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(
+                root,
+                "created = task_create(title='Investigate flaky test', labels=['bug'])\n"
+                "summary = tasks_summary()\n"
+                "print(created['id'], summary['total'])\n",
+            )
+            self.assertEqual(result["returncode"], 0)
+            self.assertFalse(result["timed_out"])
+            output = result["stdout"].split()
+            self.assertTrue(output[0].startswith("t-"))
+            self.assertEqual(output[1], "1")
+            self.assertTrue(Path(result["log_path"]).is_file())
+        finally:
+            directory.cleanup()
+
+    def test_execute_truncates_large_output_but_keeps_full_log(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(root, "print('x' * 20000)")
+            self.assertTrue(result["stdout_truncated"])
+            self.assertLessEqual(
+                len(result["stdout"].encode("utf8")), grogu_codemode.MAX_OUTPUT_BYTES
+            )
+            logged = json.loads(Path(result["log_path"]).read_text())
+            self.assertEqual(len(logged["stdout"]), 20001)
+        finally:
+            directory.cleanup()
+
+    def test_execute_reports_timeout(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(
+                root, "import time; time.sleep(5)", timeout=1
+            )
+            self.assertTrue(result["timed_out"])
+        finally:
+            directory.cleanup()
+
+    def test_search_tools_is_bounded_to_matching_names_and_summaries(self):
+        matches = grogu_codemode.search_tools("task")
+        names = {tool["name"] for tool in matches}
+        self.assertIn("task_create", names)
+        self.assertIn("tasks_summary", names)
+        self.assertNotIn("git_summary", names)
+
+    def test_generate_tool_tree_writes_one_file_per_tool(self):
+        directory, root = self.make_repository()
+        try:
+            written = grogu_codemode.generate_tool_tree(root)
+            files = {path.stem for path in written.glob("*.py")}
+            self.assertEqual(files, set(grogu_codemode.TOOLS))
+            content = (written / "git_summary.py").read_text()
+            self.assertIn("git_summary() -> dict", content)
+            self.assertIn("Branch, upstream drift", content)
+        finally:
+            directory.cleanup()
+
+    def test_execute_surfaces_exceptions_as_nonzero_returncode(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(root, "raise ValueError('boom')")
+            self.assertNotEqual(result["returncode"], 0)
+            self.assertFalse(result["timed_out"])
+            self.assertIn("ValueError: boom", result["stderr"])
+        finally:
+            directory.cleanup()
+
+    def test_execute_reports_unknown_tool_as_name_error(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(root, "not_a_real_tool()")
+            self.assertNotEqual(result["returncode"], 0)
+            self.assertIn("NameError", result["stderr"])
+        finally:
+            directory.cleanup()
+
+    def test_execute_truncates_large_stderr_but_keeps_full_log(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(
+                root, "import sys; sys.stderr.write('e' * 20000)"
+            )
+            self.assertTrue(result["stderr_truncated"])
+            self.assertLessEqual(
+                len(result["stderr"].encode("utf8")), grogu_codemode.MAX_OUTPUT_BYTES
+            )
+            logged = json.loads(Path(result["log_path"]).read_text())
+            self.assertEqual(len(logged["stderr"]), 20000)
+        finally:
+            directory.cleanup()
+
+    def test_execute_clamps_timeout_to_configured_bounds(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(root, "print('ok')", timeout=0)
+            self.assertEqual(result["returncode"], 0)
+            result = grogu_codemode.execute(
+                root, "print('ok')", timeout=10_000
+            )
+            self.assertEqual(result["returncode"], 0)
+        finally:
+            directory.cleanup()
+
+    def test_task_create_persists_across_separate_executions(self):
+        directory, root = self.make_repository()
+        try:
+            grogu_codemode.execute(
+                root, "task_create(title='Persisted task')"
+            )
+            result = grogu_codemode.execute(root, "print(tasks_summary()['total'])")
+            self.assertEqual(result["stdout"].strip(), "1")
+        finally:
+            directory.cleanup()
+
+    def test_execute_accepts_positional_arguments_matching_documented_signature(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(
+                root,
+                "print(task_create('Positional title', 'body text')['title'])",
+            )
+            self.assertEqual(result["returncode"], 0)
+            self.assertEqual(result["stdout"].strip(), "Positional title")
+        finally:
+            directory.cleanup()
+
+    def test_memory_remember_persists_a_graph_node(self):
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(
+                root,
+                "memory_remember('doc', 'README', 'top-level readme')",
+            )
+            self.assertEqual(result["returncode"], 0, result["stderr"])
+            store = grogu_memory.MemoryStore(root)
+            result = grogu_context.graph_context(store, query="README")
+            names = [node["name"] for node in result["nodes"]]
+            self.assertIn("README", names)
+        finally:
+            directory.cleanup()
+
+    @unittest.skipIf(
+        grogu_mcp.available(), "only meaningful when 'mcp' is NOT installed"
+    )
+    def test_mcp_functions_undefined_without_package(self):
+        # No flag is needed to call mcp_call(); it's simply not bound into
+        # the sandbox when the 'mcp' package isn't installed, so a script
+        # that tries to use it gets an ordinary NameError, the same as
+        # calling any other undefined name.
+        directory, root = self.make_repository()
+        try:
+            result = grogu_codemode.execute(root, "mcp_call('x', 'y')")
+            self.assertNotEqual(result["returncode"], 0)
+            self.assertIn("NameError", result["stderr"])
+        finally:
+            directory.cleanup()
+
+
+class CodemodeCliTests(unittest.TestCase):
+    def make_repository(self):
+        directory = tempfile.TemporaryDirectory()
+        root = Path(directory.name)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.email", "a@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.name", "a"], check=True
+        )
+        (root / "app.py").write_text("print('one')\n")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-q", "-m", "init"], check=True
+        )
+        return directory, root
+
+    def run_cli(self, *arguments, home, input=None):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = home
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            input=input,
+            env=environment,
+        )
+
+    def test_tools_and_search_subcommands(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_cli("codemode", "tools", home=home)
+            self.assertEqual(result.returncode, 0)
+            names = {tool["name"] for tool in json.loads(result.stdout)["tools"]}
+            self.assertIn("git_summary", names)
+
+            result = self.run_cli("codemode", "search", "task", home=home)
+            self.assertEqual(result.returncode, 0)
+            names = {tool["name"] for tool in json.loads(result.stdout)["tools"]}
+            self.assertEqual(names, {"task_create", "tasks_summary"})
+
+    def test_exec_with_inline_code_flag(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    "--code",
+                    "print(git_summary()['branch'])",
+                    home=home,
+                )
+                self.assertEqual(result.returncode, 0)
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["stdout"].strip(), "main")
+        finally:
+            directory.cleanup()
+
+    def test_exec_with_file_flag(self):
+        directory, root = self.make_repository()
+        try:
+            script = root / "script.py"
+            script.write_text("print(service_metadata())")
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    "--file",
+                    str(script),
+                    home=home,
+                )
+                self.assertEqual(result.returncode, 0)
+                self.assertIn("manifests", json.loads(result.stdout)["stdout"])
+        finally:
+            directory.cleanup()
+
+    def test_exec_reads_code_from_stdin_by_default(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    home=home,
+                    input="print(tasks_summary()['total'])",
+                )
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(json.loads(result.stdout)["stdout"].strip(), "0")
+        finally:
+            directory.cleanup()
+
+    def test_exec_cli_exit_code_is_nonzero_on_script_failure(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    "--code",
+                    "raise RuntimeError('nope')",
+                    home=home,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("RuntimeError", json.loads(result.stdout)["stderr"])
+        finally:
+            directory.cleanup()
+
+    def test_exec_cli_exit_code_is_nonzero_on_timeout(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    "--timeout",
+                    "1",
+                    "--code",
+                    "import time; time.sleep(5)",
+                    home=home,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(json.loads(result.stdout)["timed_out"])
+        finally:
+            directory.cleanup()
+
+    def test_generate_subcommand_writes_tool_tree(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode", "generate", "--repo", str(root), home=home
+                )
+                self.assertEqual(result.returncode, 0)
+                directory_path = Path(json.loads(result.stdout)["tools_directory"])
+                self.assertTrue(directory_path.is_dir())
+                self.assertTrue((directory_path / "git_summary.py").is_file())
+        finally:
+            directory.cleanup()
 
 
 class BannerArtTests(unittest.TestCase):
@@ -604,6 +1041,188 @@ class PersonalMemoryCommandTests(unittest.TestCase):
 
             recalled_after = run("personal", "recall")
             self.assertIn("event:jamie-birthday", recalled_after.stdout)
+
+
+@unittest.skipUnless(
+    grogu_mcp.available(), "requires Python 3.10+ with the 'mcp' package installed"
+)
+class GroguMcpTests(unittest.TestCase):
+    """Exercises grogu_mcp.py against a tiny local stdio fixture server, so
+    these tests don't depend on any real external MCP server being
+    installed/configured on the machine. Skipped entirely under Grogu's
+    default (older) interpreter, since it can't import ``mcp`` at all; run
+    with a Python 3.10+ interpreter that has ``mcp`` installed to exercise
+    them for real (e.g. ``python3.11 -m pytest tests/test_grogu_cli.py -k Mcp``).
+    """
+
+    def make_config(self):
+        directory = tempfile.TemporaryDirectory()
+        config_path = Path(directory.name) / "mcp-config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "echo": {
+                            "type": "local",
+                            "command": sys.executable,
+                            "args": [str(FIXTURES / "mcp_echo_server.py")],
+                        }
+                    }
+                }
+            ),
+            encoding="utf8",
+        )
+        return directory, config_path
+
+    def setUp(self):
+        self.directory, self.config_path = self.make_config()
+        self._previous_config = os.environ.get("GROGU_MCP_CONFIG")
+        os.environ["GROGU_MCP_CONFIG"] = str(self.config_path)
+
+    def tearDown(self):
+        grogu_mcp.close_all()
+        if self._previous_config is None:
+            os.environ.pop("GROGU_MCP_CONFIG", None)
+        else:
+            os.environ["GROGU_MCP_CONFIG"] = self._previous_config
+        self.directory.cleanup()
+
+    def test_list_servers_without_connecting(self):
+        self.assertEqual(grogu_mcp.list_servers(), ["echo"])
+
+    def test_list_tools_returns_schema(self):
+        tools = {tool["name"]: tool for tool in grogu_mcp.list_tools("echo")}
+        self.assertEqual(set(tools), {"echo", "add", "fail"})
+        self.assertIn("properties", tools["echo"]["input_schema"])
+
+    def test_call_tool_returns_result(self):
+        self.assertEqual(grogu_mcp.call_tool("echo", "echo", text="hi"), "hi")
+        self.assertEqual(grogu_mcp.call_tool("echo", "add", a=2, b=3), 5)
+
+    def test_call_tool_propagates_errors(self):
+        with self.assertRaises(RuntimeError):
+            grogu_mcp.call_tool("echo", "fail")
+
+    def test_unknown_tool_raises(self):
+        with self.assertRaises(RuntimeError):
+            grogu_mcp.call_tool("echo", "not_a_real_tool")
+
+    def test_unknown_server_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            grogu_mcp.call_tool("does-not-exist", "echo", text="hi")
+
+    def test_session_is_reused_across_calls(self):
+        # Two calls against the same server should reuse one bridge/session
+        # rather than reconnecting, which matters for stateful servers.
+        grogu_mcp.call_tool("echo", "echo", text="first")
+        bridge_after_first = grogu_mcp._BRIDGES["echo"]
+        grogu_mcp.call_tool("echo", "echo", text="second")
+        self.assertIs(grogu_mcp._BRIDGES["echo"], bridge_after_first)
+
+    def test_close_all_allows_reconnecting(self):
+        grogu_mcp.call_tool("echo", "echo", text="one")
+        grogu_mcp.close_all()
+        self.assertEqual(grogu_mcp._BRIDGES, {})
+        # A fresh call after close_all() should transparently reconnect.
+        self.assertEqual(grogu_mcp.call_tool("echo", "echo", text="two"), "two")
+
+
+@unittest.skipUnless(
+    grogu_mcp.available(), "requires Python 3.10+ with the 'mcp' package installed"
+)
+class CodemodeMcpExecTests(unittest.TestCase):
+    """Exercises `grogu codemode exec` calling MCP tools end to end via the
+    CLI, using the same echo fixture server as GroguMcpTests. No flag is
+    needed: mcp_call() etc. are always bound in when the 'mcp' package is
+    importable, and simply undefined (a plain NameError) otherwise.
+    """
+
+    def make_repository(self):
+        directory = tempfile.TemporaryDirectory()
+        root = Path(directory.name)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.email", "a@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.name", "a"], check=True
+        )
+        (root / "app.py").write_text("print('one')\n")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-q", "-m", "init"], check=True
+        )
+        return directory, root
+
+    def setUp(self):
+        self.config_directory = tempfile.TemporaryDirectory()
+        self.config_path = Path(self.config_directory.name) / "mcp-config.json"
+        self.config_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "echo": {
+                            "type": "local",
+                            "command": sys.executable,
+                            "args": [str(FIXTURES / "mcp_echo_server.py")],
+                        }
+                    }
+                }
+            ),
+            encoding="utf8",
+        )
+
+    def tearDown(self):
+        self.config_directory.cleanup()
+
+    def run_cli(self, *arguments, home, input=None):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = home
+        environment["GROGU_MCP_CONFIG"] = str(self.config_path)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            input=input,
+            env=environment,
+        )
+
+    def test_exec_calls_configured_mcp_server_by_default(self):
+        directory, root = self.make_repository()
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                result = self.run_cli(
+                    "codemode",
+                    "exec",
+                    "--repo",
+                    str(root),
+                    "--code",
+                    "print(mcp_servers()); print(mcp_call('echo', 'add', a=1, b=2))",
+                    home=home,
+                )
+                self.assertEqual(result.returncode, 0)
+                payload = json.loads(result.stdout)
+                self.assertIn("echo", payload["stdout"])
+                self.assertIn("3", payload["stdout"])
+        finally:
+            directory.cleanup()
+
+    def test_mcp_servers_subcommand(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_cli("codemode", "mcp-servers", home=home)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(json.loads(result.stdout)["servers"], ["echo"])
+
+    def test_mcp_tools_subcommand(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_cli("codemode", "mcp-tools", "echo", home=home)
+            self.assertEqual(result.returncode, 0)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["server"], "echo")
+            names = {tool["name"] for tool in payload["tools"]}
+            self.assertEqual(names, {"echo", "add", "fail"})
 
 
 if __name__ == "__main__":

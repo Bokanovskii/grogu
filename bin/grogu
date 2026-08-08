@@ -11,4 +11,20 @@ while [ -L "$SOURCE" ]; do
     esac
 done
 ROOT=$(CDPATH= cd -P -- "$(dirname -- "$SOURCE")/.." && pwd)
-exec python3 "$ROOT/src/grogu_cli.py" "$@"
+
+# Prefer the newest 3.10+ interpreter actually on PATH over whatever
+# `python3` happens to resolve to, so codemode's MCP tool calling
+# (grogu_mcp, requires 3.10+) works out of the box even on a machine whose
+# default `python3` is older, with no separate interpreter selection at
+# runtime and no --mcp-style flag needed. Falls back to plain `python3` if
+# none of the versioned names are found (grogu still runs fine on 3.8+;
+# only MCP tool calling needs 3.10+).
+PYTHON=python3
+for candidate in python3.13 python3.12 python3.11 python3.10; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        PYTHON=$candidate
+        break
+    fi
+done
+
+exec "$PYTHON" "$ROOT/src/grogu_cli.py" "$@"
