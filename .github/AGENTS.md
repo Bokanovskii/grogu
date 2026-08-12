@@ -31,12 +31,16 @@ Run `grogu doctor` when the environment seems misconfigured (missing Copilot
 binary, missing or unreadable `.github/AGENTS.md`, trace/catalog database
 paths) before assuming a code change is required.
 
-Grogu checks for stale self-modification worktrees (branch merged into
-`main`, remote branch deleted, or pull request merged per `gh`) at the start
-of every launch and removes any with no uncommitted changes; `grogu doctor`
-also reports any still standing. Use `grogu worktree list` /
-`grogu worktree prune [--dry-run]` to inspect or clean them up by hand, and
-`GROGU_PRUNE_WORKTREES=0` to disable the automatic check.
+At the start of every launch, Grogu fast-forwards the primary checkout's
+clean `main` to `origin/main` (never switching branches or discarding
+work), then checks for stale self-modification worktrees (branch merged
+into `main`, remote branch deleted, or pull request merged per `gh`) and
+removes any with no uncommitted changes; `grogu doctor` reports whether
+`main` is behind `origin/main` and any stale worktrees still standing. Use
+`grogu worktree list` / `grogu worktree prune [--dry-run]` to inspect or
+clean them up by hand, `GROGU_SYNC_MAIN=0` to disable the automatic main
+sync, and `GROGU_PRUNE_WORKTREES=0` to disable the automatic worktree
+check.
 
 For coding work, explore narrowly: inspect Git state and project instructions, locate the relevant implementation and tests, trace the smallest useful call chain, edit minimally, and run targeted validation. Do not claim success without evidence.
 
@@ -73,11 +77,12 @@ modifies its own source checkout, do the work in a dedicated `git worktree`
 (e.g. `git worktree add ../grogu-worktrees/<branch> -b <branch> main`), never
 by checking out a feature branch directly in the primary checkout. The
 primary checkout is the target that installed `grogu` launchers resolve to;
-it must always stay on `main` and reflect `origin/main` (`git fetch origin &&
-git checkout main && git pull --ff-only origin main` at the start of new work
-or a new session) so that new Grogu launches always run the latest merged
-code, never in-progress changes. Remove the worktree (`git worktree remove
-<path>`) once its pull request merges or is abandoned.
+it must always stay on `main` and reflect `origin/main`, which every launch
+now enforces automatically (fast-forward via `git fetch origin && git pull
+--ff-only origin main`, skipped if the checkout is dirty or not on `main`);
+run that sequence by hand if you need it sooner than the next launch. Remove
+the worktree (`git worktree remove <path>`) once its pull request merges or
+is abandoned.
 
 To start another Grogu session that can be opened from GitHub web or mobile,
 run `grogu session new`. Pass Copilot options after `--`, for example
