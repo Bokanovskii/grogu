@@ -1198,7 +1198,23 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
     def test_seaglass_available_reflects_mcp_config(self):
         self.assertTrue(grogu_imessage.seaglass_available())
         os.environ.pop("GROGU_MCP_CONFIG", None)
-        self.assertFalse(grogu_imessage.seaglass_available())
+        # Regression test for IMPROVEMENT-13: previously this relied on
+        # the real user's ~/.copilot/mcp-config.json happening to have no
+        # seaglass entry once GROGU_MCP_CONFIG was popped -- fragile, and
+        # in fact now false on this machine since a real seaglass entry
+        # was registered as part of end-to-end verification. Point
+        # COPILOT_HOME at an empty directory instead, so the "no config"
+        # case is genuinely isolated from whatever the real environment
+        # has configured.
+        previous_home = os.environ.get("COPILOT_HOME")
+        os.environ["COPILOT_HOME"] = str(Path(tempfile.mkdtemp()))
+        try:
+            self.assertFalse(grogu_imessage.seaglass_available())
+        finally:
+            if previous_home is None:
+                os.environ.pop("COPILOT_HOME", None)
+            else:
+                os.environ["COPILOT_HOME"] = previous_home
 
     def test_search_via_seaglass_flattens_sessions(self):
         results = grogu_imessage.search_via_seaglass("dinner plans")
