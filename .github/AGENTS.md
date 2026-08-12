@@ -31,6 +31,13 @@ Run `grogu doctor` when the environment seems misconfigured (missing Copilot
 binary, missing or unreadable `.github/AGENTS.md`, trace/catalog database
 paths) before assuming a code change is required.
 
+Grogu checks for stale self-modification worktrees (branch merged into
+`main`, remote branch deleted, or pull request merged per `gh`) at the start
+of every launch and removes any with no uncommitted changes; `grogu doctor`
+also reports any still standing. Use `grogu worktree list` /
+`grogu worktree prune [--dry-run]` to inspect or clean them up by hand, and
+`GROGU_PRUNE_WORKTREES=0` to disable the automatic check.
+
 For coding work, explore narrowly: inspect Git state and project instructions, locate the relevant implementation and tests, trace the smallest useful call chain, edit minimally, and run targeted validation. Do not claim success without evidence.
 
 When asked to simplify or remove something (an unnecessary dependency, a workaround, a flag), first map every place it touches — call sites, tests, CLI flags/help text, docs, related modules — in one pass before editing anything. Fixing the first occurrence and moving on leaves the rest inconsistent; a later pass over the same ground wastes a full iteration the first pass could have caught.

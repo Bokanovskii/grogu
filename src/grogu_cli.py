@@ -29,6 +29,7 @@ import grogu_memory
 import grogu_personal_memory
 import grogu_telemetry
 import grogu_tasks
+import grogu_worktrees
 
 VERSION = "0.1.0"
 MIN_PYTHON = (3, 10)
@@ -141,6 +142,11 @@ def doctor(_: argparse.Namespace) -> int:
     instructions = ROOT / ".github" / "AGENTS.md"
     settings = grogu_banner.settings_path()
     store = grogu_tasks.TaskStore()
+    try:
+        stale = grogu_worktrees.stale_worktrees(ROOT)
+        stale_worktree_paths = [str(entry.worktree.path) for entry in stale]
+    except Exception:  # pragma: no cover - best-effort diagnostic only
+        stale_worktree_paths = []
     checks = {
         "python": sys.version.split()[0],
         "python_min_required": ".".join(str(part) for part in MIN_PYTHON),
@@ -168,6 +174,7 @@ def doctor(_: argparse.Namespace) -> int:
             if task["status"] not in grogu_tasks.CLOSED_STATUSES
         ),
         "pending_updates": store.pending_counts(),
+        "stale_worktrees": stale_worktree_paths,
     }
     print_json(checks)
     return 0 if checks["copilot_available"] and checks["instructions_available"] else 1
@@ -844,6 +851,26 @@ def mark_grogu_terminal() -> None:
     sys.stdout.flush()
 
 
+def prune_stale_grogu_worktrees() -> None:
+    """Best-effort startup cleanup of Grogu's own self-modification worktrees.
+
+    Never blocks or fails a launch: any error prunes nothing and is
+    swallowed, since this is a convenience, not a correctness requirement.
+    """
+    if os.environ.get("GROGU_PRUNE_WORKTREES", "1") == "0":
+        return
+    try:
+        pruned = grogu_worktrees.prune_stale_worktrees(ROOT)
+    except Exception:  # pragma: no cover - never let cleanup break a launch
+        return
+    for entry in pruned:
+        print(
+            f"grogu: removed stale worktree {entry.worktree.path} "
+            f"({entry.reason})",
+            file=sys.stderr,
+        )
+
+
 def banner_enabled() -> bool:
     return os.environ.get("GROGU_BANNER", "1") != "0"
 
@@ -865,6 +892,29 @@ def banner_status_line(_: argparse.Namespace) -> int:
 
 def banner_restore(_: argparse.Namespace) -> int:
     grogu_banner.restore(GROGU_HOME, pid=-1)
+    return 0
+
+
+def worktree_list(_: argparse.Namespace) -> int:
+    for entry in grogu_worktrees.list_worktrees(ROOT):
+        marker = "*" if entry.is_main else " "
+        print(f"{marker} {entry.path}  [{entry.branch or 'detached'}]")
+    return 0
+
+
+def worktree_prune(args: argparse.Namespace) -> int:
+    if args.dry_run:
+        stale = grogu_worktrees.stale_worktrees(ROOT)
+        for entry in stale:
+            print(f"{entry.worktree.path}  ({entry.reason})")
+        if not stale:
+            print("no stale worktrees")
+        return 0
+    pruned = grogu_worktrees.prune_stale_worktrees(ROOT)
+    for entry in pruned:
+        print(f"removed {entry.worktree.path}  ({entry.reason})")
+    if not pruned:
+        print("no stale worktrees")
     return 0
 
 
@@ -1572,6 +1622,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="additional Copilot options; separate them with -- when needed",
     )
     new_session.set_defaults(handler=session_new)
+
+    worktree = subparsers.add_parser(
+        "worktree",
+        help="inspect and clean up Grogu's own self-modification git worktrees",
+    )
+    worktree_subparsers = worktree.add_subparsers(
+        dest="worktree_command", required=True
+    )
+    worktree_list_parser = worktree_subparsers.add_parser(
+        "list", help="list git worktrees in the Grogu checkout"
+    )
+    worktree_list_parser.set_defaults(handler=worktree_list)
+    worktree_prune_parser = worktree_subparsers.add_parser(
+        "prune",
+        help="remove worktrees whose branch has merged or was deleted upstream",
+    )
+    worktree_prune_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report stale worktrees without removing them",
+    )
+    worktree_prune_parser.set_defaults(handler=worktree_prune)
+
     return parser
 
 
@@ -1644,6 +1717,7 @@ def launch_copilot(arguments: list[str]) -> int:
 
     arguments = copilot_arguments(arguments)
     mark_grogu_terminal()
+    prune_stale_grogu_worktrees()
     environment = os.environ.copy()
     environment.setdefault("GROGU_SESSION_ID", str(uuid.uuid4()))
     # Task leases taken inside this session end when this launcher ends.
@@ -1717,6 +1791,7 @@ GROGU_COMMANDS = frozenset(
         "banner",
         "task",
         "session",
+        "worktree",
     }
 )
 

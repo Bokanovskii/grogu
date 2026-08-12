@@ -126,6 +126,7 @@ Environment variables:
 | `GROGU_TAB_COLOR` | `1` | `0` leaves the iTerm2 tab alone |
 | `GROGU_ACTOR` | `$USER@$HOSTNAME` | Identity recorded on tasks and leases |
 | `GROGU_AZURE` | `0` | Reserved; no provider is ever chosen for you |
+| `GROGU_PRUNE_WORKTREES` | `1` | `0` skips the startup check for stale Grogu self-modification worktrees |
 
 Grogu also exports `GROGU_SESSION_ID`, `GROGU_SESSION_PID`, and
 `GROGU_PERSONAL_MEMORY_DIR` into the Copilot environment, and appends its
@@ -393,6 +394,23 @@ checkpoint and relays it to any background subagents itself. Copilot has no
 supported API for a third process to push text into a running local session, so
 Grogu does not pretend otherwise; see [docs/handoff.md](docs/handoff.md) for the
 full protocol and for the routes that *are* supported.
+
+## Self-modification worktrees
+
+Changes to Grogu's own source live in a dedicated `git worktree` per branch
+(never checked out directly in the primary checkout, which always stays on
+`main`); see the contract in [.github/AGENTS.md](.github/AGENTS.md) and
+[docs/self-improvement.md](docs/self-improvement.md). Grogu checks for stale
+worktrees — ones whose branch has merged into `main`, whose remote branch was
+deleted (the common case after a squash-merge), or whose pull request `gh`
+reports as merged — at the start of every launch and removes any that have no
+uncommitted changes. Set `GROGU_PRUNE_WORKTREES=0` to skip the check.
+
+```sh
+grogu worktree list
+grogu worktree prune --dry-run
+grogu worktree prune
+```
 
 ## The Grogu mark
 
