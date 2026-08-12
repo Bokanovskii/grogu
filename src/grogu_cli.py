@@ -733,7 +733,10 @@ def imessage_status(args: argparse.Namespace) -> int:
 
 
 def imessage_search(args: argparse.Namespace) -> int:
-    for message in imessage_adapter(args).search(args.query, limit=args.limit):
+    messages = imessage_adapter(args).search(
+        args.query, limit=args.limit, use_seaglass=not args.no_seaglass
+    )
+    for message in messages:
         print(json.dumps(message, sort_keys=True))
     return 0
 
@@ -1489,6 +1492,11 @@ def build_parser() -> argparse.ArgumentParser:
     imessage_search_parser = imessage_subparsers.add_parser("search")
     imessage_search_parser.add_argument("query")
     imessage_search_parser.add_argument("--limit", type=int, default=20)
+    imessage_search_parser.add_argument(
+        "--no-seaglass",
+        action="store_true",
+        help="force the local SQL LIKE scan even if a seaglass MCP server is configured",
+    )
     imessage_search_parser.set_defaults(handler=imessage_search)
     imessage_draft_parser = imessage_subparsers.add_parser("draft")
     imessage_draft_parser.add_argument("--recipient", required=True)

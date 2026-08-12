@@ -130,7 +130,9 @@ class _Bridge:
         from mcp.client.stdio import stdio_client
 
         params = StdioServerParameters(
-            command=self.spec["command"], args=self.spec.get("args", []) or []
+            command=self.spec["command"],
+            args=self.spec.get("args", []) or [],
+            env=self.spec.get("env") or None,
         )
         self._stdio_cm = stdio_client(params)
         read, write = await self._stdio_cm.__aenter__()

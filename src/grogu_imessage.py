@@ -13,6 +13,96 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import List, Optional
 
+import grogu_mcp
+
+# Name of the local MCP server entry (in ~/.copilot/mcp-config.json) that a
+# seaglass installation is expected to register itself under. If a user has
+# seaglass installed and configured, `search()` prefers it over the naive
+# SQL LIKE scan below -- see README.md's "Messaging skills" section.
+SEAGLASS_SERVER_NAME = "seaglass"
+
+# Apple's `message.date` column mixes seconds and nanoseconds since
+# 2001-01-01 depending on macOS version at write time -- same ambiguity
+# seaglass's own imessage.source.apple_to_unix handles. The SQL LIKE
+# fallback below reads this column directly, so it must apply the same
+# conversion; otherwise its `date` field (Apple-epoch, either unit) is
+# silently inconsistent with seaglass's `date` field (always unix
+# seconds), depending on which backend happened to answer (BUG-7).
+_APPLE_EPOCH_UNIX = 978307200  # 2001-01-01T00:00:00Z, as unix seconds
+_NS_VS_S_THRESHOLD = 1e11
+
+
+def _apple_date_to_unix(value: Optional[int]) -> Optional[float]:
+    if value is None:
+        return None
+    secs = value / 1e9 if value > _NS_VS_S_THRESHOLD else value
+    return secs + _APPLE_EPOCH_UNIX
+
+
+def seaglass_available() -> bool:
+    """Whether a local `seaglass` MCP server is configured for this user.
+
+    Only checks that grogu_mcp can see a matching entry in the MCP config;
+    does not start/connect to it (that happens lazily on first real call,
+    inside grogu_mcp's own bridge).
+    """
+    if not grogu_mcp.available():
+        return False
+    return SEAGLASS_SERVER_NAME in grogu_mcp.load_servers()
+
+
+def _flatten_seaglass_result(payload: dict) -> List[dict]:
+    """Flatten seaglass's ranked session/message payload into the same flat
+    `{id, text, date, handle}`-shaped list the SQL LIKE search returns, so
+    callers (and existing output formatting) don't need to know which
+    backend answered. Session order (best-first, per seaglass's rerank
+    score) is preserved; messages within a session keep their own order.
+
+    Includes both a session's `messages` (the actual reranked hits) and
+    its `context_messages` (surrounding messages seaglass expanded the
+    session with) -- previously only `messages` was flattened, silently
+    dropping context that seaglass's own eval/score.py recall@final
+    metric counts as legitimate hits (IMPROVEMENT-8). Context messages
+    are appended after a session's hits, so callers that only want the
+    hits can still take the first N per session if they need to.
+    """
+    flattened: List[dict] = []
+    for session in payload.get("sessions", []):
+        for message in session.get("messages", []) + session.get("context_messages", []):
+            flattened.append(
+                {
+                    "id": message.get("message_id"),
+                    "text": message.get("text") or "",
+                    "date": message.get("ts"),
+                    "handle": message.get("sender") or "",
+                }
+            )
+    return flattened
+
+
+def search_via_seaglass(query: str, limit: int = 20) -> List[dict]:
+    """Search through the configured `seaglass` MCP server and flatten its
+    result to this module's plain list-of-dicts shape. Raises whatever
+    grogu_mcp.call_tool raises (e.g. RuntimeError/TimeoutError) if the
+    server is configured but fails to answer -- callers decide whether to
+    fall back to the SQL LIKE search.
+
+    `limit` is a *message* count (matching the SQL LIKE path's semantics
+    and this module's own public API), not a *session* count -- seaglass's
+    `max_sessions` parameter is sessions, not individual messages
+    (typically several messages each). Previously `limit` was passed
+    straight through as `max_sessions` (IMPROVEMENT-8), so
+    `imessage search --limit 20` (the default) asked seaglass for 20
+    *sessions* (~2.5x its own default of 8), overfetching and paying
+    unnecessary rerank/hydrate cost. Request seaglass's own default
+    session count and let the flatten+slice below cap at the requested
+    message limit instead.
+    """
+    payload = grogu_mcp.call_tool(
+        SEAGLASS_SERVER_NAME, "search_messages", query=query, max_sessions=8
+    )
+    return _flatten_seaglass_result(payload)[:limit]
+
 
 class IMessageError(RuntimeError):
     """Base error for unavailable or unsafe iMessage operations."""
@@ -159,12 +249,35 @@ class MacOSIMessageAdapter:
                 "reason": str(error),
                 "database": str(self.database_path),
             }
-        return {"available": True, "platform": platform.system(), "database": str(self.database_path)}
+        return {
+            "available": True,
+            "platform": platform.system(),
+            "database": str(self.database_path),
+            "seaglass": seaglass_available(),
+        }
 
-    def search(self, query: str, limit: int = 20) -> List[dict]:
+    def search(self, query: str, limit: int = 20, use_seaglass: bool = True) -> List[dict]:
+        """Search message history for `query`.
+
+        When a `seaglass` MCP server is configured (see
+        `seaglass_available()`), it is preferred: it does semantic/ranked
+        retrieval rather than a raw substring scan, and returns citable
+        message_ids drawn from full conversation context. If seaglass is
+        unavailable or its call fails for any reason, this transparently
+        falls back to the local SQL LIKE scan below, so `imessage search`
+        always returns *something* even on a machine without seaglass set
+        up. Pass `use_seaglass=False` to force the SQL LIKE path (e.g. for
+        the fallback comparison, or when the caller wants raw substring
+        semantics).
+        """
         self._require_supported()
         if not query.strip():
             raise ValueError("search query is required")
+        if use_seaglass and seaglass_available():
+            try:
+                return search_via_seaglass(query, limit=limit)
+            except Exception:
+                pass  # fall through to the local SQL LIKE scan below
         with self._connect() as database:
             rows = database.execute(
                 """
@@ -182,7 +295,7 @@ class MacOSIMessageAdapter:
             {
                 "id": row["id"],
                 "text": row["text"] or "",
-                "date": row["date"],
+                "date": _apple_date_to_unix(row["date"]),
                 "handle": row["handle"] or "",
             }
             for row in rows
