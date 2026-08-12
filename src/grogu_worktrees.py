@@ -1,11 +1,13 @@
 """Detect and prune stale `git worktree` checkouts left over from Grogu's own
-self-modification workflow.
+self-modification workflow, and keep the primary checkout's `main` in sync
+with `origin/main`.
 
 Per the operating contract in `.github/AGENTS.md`, Grogu changes to its own
 source checkout happen in a dedicated `git worktree` on a branch, and that
 worktree is meant to be removed once its pull request merges or is
-abandoned. In practice that cleanup step is easy to forget across sessions,
-so this module gives Grogu a way to notice and clear those worktrees itself:
+abandoned; the primary checkout itself must always stay on a clean `main`
+that reflects `origin/main`. In practice both are easy to forget across
+sessions, so this module gives Grogu a way to notice and fix them itself:
 at the start of a new session (best-effort, non-blocking) and via the
 explicit `grogu worktree list`/`grogu worktree prune` commands.
 
@@ -19,7 +21,9 @@ A worktree is considered stale when its branch is safe to discard:
 * `gh` is available and reports the associated pull request as merged.
 
 A worktree is only ever removed automatically when it has no uncommitted
-changes, so in-progress work is never discarded.
+changes, so in-progress work is never discarded. Likewise, `main` is only
+ever fast-forwarded when the primary checkout is already on a clean `main`;
+it is never switched to `main` or reset over local changes.
 """
 
 from __future__ import annotations
@@ -114,6 +118,48 @@ def _pr_merged_via_gh(root: Path, branch: str) -> bool:
 def _worktree_is_clean(path: Path) -> bool:
     output = _run(["git", "status", "--porcelain"], path)
     return output is not None and output.strip() == ""
+
+
+def _current_branch(path: Path) -> Optional[str]:
+    output = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], path)
+    return output.strip() if output is not None else None
+
+
+def main_behind_origin(root: Path) -> Optional[bool]:
+    """Report (without fetching) whether local `main` trails `origin/main`.
+
+    Diagnostic only, so it never mutates the checkout: it compares the refs
+    already known locally rather than fetching, and returns `None` when that
+    can't be determined (e.g. no `origin/main` ref cached yet).
+    """
+    output = _run(
+        ["git", "rev-list", "--count", "main..origin/main"], root
+    )
+    if output is None:
+        return None
+    return output.strip() != "0"
+
+
+def sync_main_with_origin(root: Path) -> Optional[str]:
+    """Fast-forward the primary checkout's `main` to `origin/main`.
+
+    Per the self-modification contract, the primary checkout must always
+    stay on `main` and reflect `origin/main` so every new launch runs the
+    latest merged code. Only acts when `root` is already on a clean `main`
+    (never switches branches or discards work); returns a short description
+    of what happened, or `None` if nothing changed or the sync was skipped.
+    """
+    if _current_branch(root) != "main" or not _worktree_is_clean(root):
+        return None
+    before = _run(["git", "rev-parse", "HEAD"], root)
+    if _run(["git", "fetch", "origin", "main"], root) is None:
+        return None
+    if _run(["git", "pull", "--ff-only", "origin", "main"], root) is None:
+        return None
+    after = _run(["git", "rev-parse", "HEAD"], root)
+    if before is None or after is None or before.strip() == after.strip():
+        return None
+    return f"updated main to {after.strip()[:12]}"
 
 
 def stale_worktrees(root: Path) -> list[StaleWorktree]:

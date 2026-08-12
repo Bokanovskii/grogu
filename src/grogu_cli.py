@@ -147,6 +147,10 @@ def doctor(_: argparse.Namespace) -> int:
         stale_worktree_paths = [str(entry.worktree.path) for entry in stale]
     except Exception:  # pragma: no cover - best-effort diagnostic only
         stale_worktree_paths = []
+    try:
+        main_behind_origin = grogu_worktrees.main_behind_origin(ROOT)
+    except Exception:  # pragma: no cover - best-effort diagnostic only
+        main_behind_origin = None
     checks = {
         "python": sys.version.split()[0],
         "python_min_required": ".".join(str(part) for part in MIN_PYTHON),
@@ -175,6 +179,7 @@ def doctor(_: argparse.Namespace) -> int:
         ),
         "pending_updates": store.pending_counts(),
         "stale_worktrees": stale_worktree_paths,
+        "main_behind_origin": main_behind_origin,
     }
     print_json(checks)
     return 0 if checks["copilot_available"] and checks["instructions_available"] else 1
@@ -849,6 +854,24 @@ def mark_grogu_terminal() -> None:
         sys.stdout.write(f"\033]6;1;bg;{channel};brightness;{value}\a")
     sys.stdout.write("\033]2;Grogu\a")
     sys.stdout.flush()
+
+
+def sync_grogu_main_checkout() -> None:
+    """Best-effort startup fast-forward of the primary checkout to `origin/main`.
+
+    Never blocks or fails a launch: any error leaves the checkout untouched
+    and is swallowed, since this is a convenience, not a correctness
+    requirement. Runs before worktree pruning so staleness is judged against
+    a fresh `main`, not whatever happened to be checked out last session.
+    """
+    if os.environ.get("GROGU_SYNC_MAIN", "1") == "0":
+        return
+    try:
+        result = grogu_worktrees.sync_main_with_origin(ROOT)
+    except Exception:  # pragma: no cover - never let sync break a launch
+        return
+    if result:
+        print(f"grogu: {result}", file=sys.stderr)
 
 
 def prune_stale_grogu_worktrees() -> None:
@@ -1717,6 +1740,7 @@ def launch_copilot(arguments: list[str]) -> int:
 
     arguments = copilot_arguments(arguments)
     mark_grogu_terminal()
+    sync_grogu_main_checkout()
     prune_stale_grogu_worktrees()
     environment = os.environ.copy()
     environment.setdefault("GROGU_SESSION_ID", str(uuid.uuid4()))

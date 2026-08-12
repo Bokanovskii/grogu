@@ -127,6 +127,7 @@ Environment variables:
 | `GROGU_ACTOR` | `$USER@$HOSTNAME` | Identity recorded on tasks and leases |
 | `GROGU_AZURE` | `0` | Reserved; no provider is ever chosen for you |
 | `GROGU_PRUNE_WORKTREES` | `1` | `0` skips the startup check for stale Grogu self-modification worktrees |
+| `GROGU_SYNC_MAIN` | `1` | `0` skips the startup fast-forward of the primary checkout to `origin/main` |
 
 Grogu also exports `GROGU_SESSION_ID`, `GROGU_SESSION_PID`, and
 `GROGU_PERSONAL_MEMORY_DIR` into the Copilot environment, and appends its
@@ -400,11 +401,14 @@ full protocol and for the routes that *are* supported.
 Changes to Grogu's own source live in a dedicated `git worktree` per branch
 (never checked out directly in the primary checkout, which always stays on
 `main`); see the contract in [.github/AGENTS.md](.github/AGENTS.md) and
-[docs/self-improvement.md](docs/self-improvement.md). Grogu checks for stale
-worktrees — ones whose branch has merged into `main`, whose remote branch was
-deleted (the common case after a squash-merge), or whose pull request `gh`
-reports as merged — at the start of every launch and removes any that have no
-uncommitted changes. Set `GROGU_PRUNE_WORKTREES=0` to skip the check.
+[docs/self-improvement.md](docs/self-improvement.md). At the start of every
+launch, Grogu fast-forwards the primary checkout's clean `main` to
+`origin/main` (never switching branches or discarding work; set
+`GROGU_SYNC_MAIN=0` to skip), then checks for stale worktrees — ones whose
+branch has merged into `main`, whose remote branch was deleted (the common
+case after a squash-merge), or whose pull request `gh` reports as merged —
+and removes any that have no uncommitted changes. Set
+`GROGU_PRUNE_WORKTREES=0` to skip the prune check.
 
 ```sh
 grogu worktree list

@@ -110,5 +110,86 @@ class GroguWorktreesTests(unittest.TestCase):
         self.assertTrue(path.exists())
 
 
+class GroguMainSyncTests(unittest.TestCase):
+    """Tests for `sync_main_with_origin` / `main_behind_origin`, which need a
+    real `origin` remote (a bare clone) rather than the single-repo setup
+    used above."""
+
+    def setUp(self):
+        self.temporary_dir = tempfile.TemporaryDirectory()
+        base = Path(self.temporary_dir.name)
+        self.bare = base / "origin.git"
+        run(["git", "init", "--bare", "-b", "main", str(self.bare)], base)
+
+        self.upstream = base / "upstream"
+        self.upstream.mkdir()
+        run(["git", "init", "-b", "main"], self.upstream)
+        run(["git", "config", "user.email", "test@example.com"], self.upstream)
+        run(["git", "config", "user.name", "Test"], self.upstream)
+        (self.upstream / "README.md").write_text("hello\n")
+        run(["git", "add", "README.md"], self.upstream)
+        run(["git", "commit", "-m", "initial"], self.upstream)
+        run(["git", "remote", "add", "origin", str(self.bare)], self.upstream)
+        run(["git", "push", "origin", "main"], self.upstream)
+
+        self.repo = base / "clone"
+        run(["git", "clone", str(self.bare), str(self.repo)], base)
+        run(["git", "config", "user.email", "test@example.com"], self.repo)
+        run(["git", "config", "user.name", "Test"], self.repo)
+
+    def tearDown(self):
+        self.temporary_dir.cleanup()
+
+    def push_new_commit_upstream(self):
+        (self.upstream / "README.md").write_text("hello again\n")
+        run(["git", "add", "README.md"], self.upstream)
+        run(["git", "commit", "-m", "update"], self.upstream)
+        run(["git", "push", "origin", "main"], self.upstream)
+
+    def test_sync_fast_forwards_clean_main_checkout(self):
+        self.push_new_commit_upstream()
+
+        result = grogu_worktrees.sync_main_with_origin(self.repo)
+
+        self.assertIsNotNone(result)
+        local_head = run(["git", "rev-parse", "HEAD"], self.repo).strip()
+        remote_head = run(["git", "rev-parse", "origin/main"], self.repo).strip()
+        self.assertEqual(local_head, remote_head)
+
+    def test_sync_is_noop_when_already_up_to_date(self):
+        result = grogu_worktrees.sync_main_with_origin(self.repo)
+        self.assertIsNone(result)
+
+    def test_sync_skips_dirty_checkout(self):
+        self.push_new_commit_upstream()
+        (self.repo / "scratch.txt").write_text("uncommitted\n")
+
+        result = grogu_worktrees.sync_main_with_origin(self.repo)
+
+        self.assertIsNone(result)
+        local_head = run(["git", "rev-parse", "HEAD"], self.repo).strip()
+        upstream_head = run(["git", "rev-parse", "HEAD"], self.upstream).strip()
+        self.assertNotEqual(local_head, upstream_head)
+
+    def test_sync_skips_when_not_on_main(self):
+        run(["git", "checkout", "-b", "feature"], self.repo)
+        self.push_new_commit_upstream()
+
+        result = grogu_worktrees.sync_main_with_origin(self.repo)
+
+        self.assertIsNone(result)
+
+    def test_main_behind_origin_reports_true_after_fetch(self):
+        self.push_new_commit_upstream()
+        run(["git", "fetch", "origin"], self.repo)
+
+        self.assertTrue(grogu_worktrees.main_behind_origin(self.repo))
+
+    def test_main_behind_origin_reports_false_when_up_to_date(self):
+        run(["git", "fetch", "origin"], self.repo)
+
+        self.assertFalse(grogu_worktrees.main_behind_origin(self.repo))
+
+
 if __name__ == "__main__":
     unittest.main()
