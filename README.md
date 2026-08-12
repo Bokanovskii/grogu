@@ -141,8 +141,18 @@ iMessage requires macOS and Full Disk Access. Gmail is disabled by default and
 uses an access token supplied through the environment; credentials are never
 stored by Grogu.
 
+`grogu imessage search` prefers a locally configured
+[seaglass](https://github.com/Bokanovskii/seaglass) MCP server when one is
+present in `~/.copilot/mcp-config.json` (semantic/ranked retrieval over the
+whole message history), and transparently falls back to a plain SQL substring
+scan otherwise, or if the seaglass call itself fails for any reason. Pass
+`--no-seaglass` to force the substring scan even when seaglass is configured.
+`grogu imessage status` reports whether seaglass is available via a
+`seaglass` boolean field.
+
 ```sh
 grogu imessage status
+grogu imessage search "dinner plans" --limit 10
 grogu imessage draft --recipient "+15551234567" --message "Hello"
 grogu imessage send DRAFT_ID --confirm
 

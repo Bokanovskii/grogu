@@ -13,6 +13,60 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import List, Optional
 
+import grogu_mcp
+
+# Name of the local MCP server entry (in ~/.copilot/mcp-config.json) that a
+# seaglass installation is expected to register itself under. If a user has
+# seaglass installed and configured, `search()` prefers it over the naive
+# SQL LIKE scan below -- see README.md's "Messaging skills" section.
+SEAGLASS_SERVER_NAME = "seaglass"
+
+
+def seaglass_available() -> bool:
+    """Whether a local `seaglass` MCP server is configured for this user.
+
+    Only checks that grogu_mcp can see a matching entry in the MCP config;
+    does not start/connect to it (that happens lazily on first real call,
+    inside grogu_mcp's own bridge).
+    """
+    if not grogu_mcp.available():
+        return False
+    return SEAGLASS_SERVER_NAME in grogu_mcp.load_servers()
+
+
+def _flatten_seaglass_result(payload: dict) -> List[dict]:
+    """Flatten seaglass's ranked session/message payload into the same flat
+    `{id, text, date, handle}`-shaped list the SQL LIKE search returns, so
+    callers (and existing output formatting) don't need to know which
+    backend answered. Session order (best-first, per seaglass's rerank
+    score) is preserved; messages within a session keep their own order.
+    """
+    flattened: List[dict] = []
+    for session in payload.get("sessions", []):
+        for message in session.get("messages", []):
+            flattened.append(
+                {
+                    "id": message.get("message_id"),
+                    "text": message.get("text") or "",
+                    "date": message.get("ts"),
+                    "handle": message.get("sender") or "",
+                }
+            )
+    return flattened
+
+
+def search_via_seaglass(query: str, limit: int = 20) -> List[dict]:
+    """Search through the configured `seaglass` MCP server and flatten its
+    result to this module's plain list-of-dicts shape. Raises whatever
+    grogu_mcp.call_tool raises (e.g. RuntimeError/TimeoutError) if the
+    server is configured but fails to answer -- callers decide whether to
+    fall back to the SQL LIKE search.
+    """
+    payload = grogu_mcp.call_tool(
+        SEAGLASS_SERVER_NAME, "search_messages", query=query, max_sessions=limit
+    )
+    return _flatten_seaglass_result(payload)[:limit]
+
 
 class IMessageError(RuntimeError):
     """Base error for unavailable or unsafe iMessage operations."""
@@ -159,12 +213,35 @@ class MacOSIMessageAdapter:
                 "reason": str(error),
                 "database": str(self.database_path),
             }
-        return {"available": True, "platform": platform.system(), "database": str(self.database_path)}
+        return {
+            "available": True,
+            "platform": platform.system(),
+            "database": str(self.database_path),
+            "seaglass": seaglass_available(),
+        }
 
-    def search(self, query: str, limit: int = 20) -> List[dict]:
+    def search(self, query: str, limit: int = 20, use_seaglass: bool = True) -> List[dict]:
+        """Search message history for `query`.
+
+        When a `seaglass` MCP server is configured (see
+        `seaglass_available()`), it is preferred: it does semantic/ranked
+        retrieval rather than a raw substring scan, and returns citable
+        message_ids drawn from full conversation context. If seaglass is
+        unavailable or its call fails for any reason, this transparently
+        falls back to the local SQL LIKE scan below, so `imessage search`
+        always returns *something* even on a machine without seaglass set
+        up. Pass `use_seaglass=False` to force the SQL LIKE path (e.g. for
+        the fallback comparison, or when the caller wants raw substring
+        semantics).
+        """
         self._require_supported()
         if not query.strip():
             raise ValueError("search query is required")
+        if use_seaglass and seaglass_available():
+            try:
+                return search_via_seaglass(query, limit=limit)
+            except Exception:
+                pass  # fall through to the local SQL LIKE scan below
         with self._connect() as database:
             rows = database.execute(
                 """

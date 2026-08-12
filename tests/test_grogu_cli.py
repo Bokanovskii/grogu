@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -1150,6 +1151,111 @@ class GroguMcpTests(unittest.TestCase):
         self.assertEqual(grogu_mcp._BRIDGES, {})
         # A fresh call after close_all() should transparently reconnect.
         self.assertEqual(grogu_mcp.call_tool("echo", "echo", text="two"), "two")
+
+
+@unittest.skipUnless(
+    grogu_mcp.available(), "requires Python 3.10+ with the 'mcp' package installed"
+)
+class ImessageSeaglassIntegrationTests(unittest.TestCase):
+    """`MacOSIMessageAdapter.search()` should prefer a configured `seaglass`
+    MCP server over the local SQL LIKE scan, and fall back transparently if
+    the seaglass call fails. Uses tests/fixtures/mcp_seaglass_stub.py so
+    this doesn't depend on a real seaglass installation.
+    """
+
+    def make_config(self):
+        directory = tempfile.TemporaryDirectory()
+        config_path = Path(directory.name) / "mcp-config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "seaglass": {
+                            "type": "local",
+                            "command": sys.executable,
+                            "args": [str(FIXTURES / "mcp_seaglass_stub.py")],
+                        }
+                    }
+                }
+            ),
+            encoding="utf8",
+        )
+        return directory, config_path
+
+    def setUp(self):
+        self.directory, self.config_path = self.make_config()
+        self._previous_config = os.environ.get("GROGU_MCP_CONFIG")
+        os.environ["GROGU_MCP_CONFIG"] = str(self.config_path)
+
+    def tearDown(self):
+        grogu_mcp.close_all()
+        if self._previous_config is None:
+            os.environ.pop("GROGU_MCP_CONFIG", None)
+        else:
+            os.environ["GROGU_MCP_CONFIG"] = self._previous_config
+        self.directory.cleanup()
+
+    def test_seaglass_available_reflects_mcp_config(self):
+        self.assertTrue(grogu_imessage.seaglass_available())
+        os.environ.pop("GROGU_MCP_CONFIG", None)
+        self.assertFalse(grogu_imessage.seaglass_available())
+
+    def test_search_via_seaglass_flattens_sessions(self):
+        results = grogu_imessage.search_via_seaglass("dinner plans")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], 1001)
+        self.assertIn("dinner plans", results[0]["text"])
+        self.assertEqual(results[0]["handle"], "+15551234567")
+
+    def test_adapter_search_prefers_seaglass_when_configured(self):
+        adapter = grogu_imessage.MacOSIMessageAdapter()
+        results = adapter.search("dinner plans")
+        self.assertEqual(len(results), 1)
+        self.assertIn("dinner plans", results[0]["text"])
+
+    def test_adapter_search_can_force_sql_like_path(self):
+        # database_path deliberately points nowhere, so the SQL LIKE path
+        # would raise -- this confirms use_seaglass=False actually bypasses
+        # seaglass rather than silently still using it.
+        adapter = grogu_imessage.MacOSIMessageAdapter(
+            database_path=Path(self.directory.name) / "does-not-exist.db"
+        )
+        with self.assertRaises(grogu_imessage.IMessageError):
+            adapter.search("dinner plans", use_seaglass=False)
+
+    def test_adapter_search_falls_back_to_sql_like_on_seaglass_failure(self):
+        # Force the fixture's search_messages tool to raise, and point the
+        # adapter at an empty (but real) sqlite file so the SQL LIKE
+        # fallback path runs to completion instead of raising too.
+        empty_db = Path(self.directory.name) / "chat.db"
+        connection = sqlite3.connect(empty_db)
+        connection.executescript(
+            """
+            CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, date INTEGER, handle_id INTEGER);
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            """
+        )
+        connection.commit()
+        connection.close()
+        adapter = grogu_imessage.MacOSIMessageAdapter(database_path=empty_db)
+        results = adapter.search("__fail__")
+        self.assertEqual(results, [])
+
+    def test_status_reports_seaglass_configured(self):
+        real_db = Path(self.directory.name) / "chat.db"
+        connection = sqlite3.connect(real_db)
+        connection.executescript(
+            """
+            CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, date INTEGER, handle_id INTEGER);
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            """
+        )
+        connection.commit()
+        connection.close()
+        adapter = grogu_imessage.MacOSIMessageAdapter(database_path=real_db)
+        status = adapter.status()
+        self.assertTrue(status["available"])
+        self.assertTrue(status["seaglass"])
 
 
 @unittest.skipUnless(
