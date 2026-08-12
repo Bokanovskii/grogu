@@ -46,18 +46,11 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ -z "$INSTALL_DIR" ]; then
-    OLD_IFS=$IFS
-    IFS=:
-    for directory in ${PATH:-}; do
-        if [ -d "$directory" ] && [ -w "$directory" ]; then
-            INSTALL_DIR=$directory
-            break
-        fi
-    done
-    IFS=$OLD_IFS
-fi
-
+# Default to a stable, user-owned directory rather than scanning PATH for the
+# first writable entry: version manager shims (fnm, nvm, pyenv, rbenv, ...)
+# are often writable and already on PATH, but their directories are tied to
+# whatever toolchain version is currently active and can disappear when that
+# version is switched or uninstalled, silently breaking the grogu symlink.
 INSTALL_DIR=${INSTALL_DIR:-"$HOME/.local/bin"}
 if [ ! -d "$INSTALL_DIR" ]; then
     mkdir -p "$INSTALL_DIR"

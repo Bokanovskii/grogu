@@ -24,11 +24,15 @@ cd grogu
 ./setup.sh
 ```
 
-The script installs a `grogu` symlink in the first writable directory already
-on `PATH`, or in `~/.local/bin` when none is available. It adds that directory
-to the appropriate shell startup file when needed. Use
-`./setup.sh --install-dir DIR` to choose a location or
-`./setup.sh --no-path-update` to avoid changing shell configuration.
+The script installs a `grogu` symlink in `~/.local/bin` by default (created if
+missing) and adds that directory to the appropriate shell startup file when
+it isn't already on `PATH`. It intentionally does not reuse an
+already-writable directory it finds on `PATH`, since those are often version
+manager shims (`fnm`, `nvm`, `pyenv`, `rbenv`, ...) tied to whatever toolchain
+version is currently active; switching or removing that version would take
+the `grogu` symlink down with it. Use `./setup.sh --install-dir DIR` to choose
+a different location or `./setup.sh --no-path-update` to avoid changing shell
+configuration.
 
 `bin/grogu` resolves symlinks before locating the repository, so the link can
 live anywhere and the checkout can be moved. All paths are resolved at runtime
