@@ -21,6 +21,23 @@ import grogu_mcp
 # SQL LIKE scan below -- see README.md's "Messaging skills" section.
 SEAGLASS_SERVER_NAME = "seaglass"
 
+# Apple's `message.date` column mixes seconds and nanoseconds since
+# 2001-01-01 depending on macOS version at write time -- same ambiguity
+# seaglass's own imessage.source.apple_to_unix handles. The SQL LIKE
+# fallback below reads this column directly, so it must apply the same
+# conversion; otherwise its `date` field (Apple-epoch, either unit) is
+# silently inconsistent with seaglass's `date` field (always unix
+# seconds), depending on which backend happened to answer (BUG-7).
+_APPLE_EPOCH_UNIX = 978307200  # 2001-01-01T00:00:00Z, as unix seconds
+_NS_VS_S_THRESHOLD = 1e11
+
+
+def _apple_date_to_unix(value: Optional[int]) -> Optional[float]:
+    if value is None:
+        return None
+    secs = value / 1e9 if value > _NS_VS_S_THRESHOLD else value
+    return secs + _APPLE_EPOCH_UNIX
+
 
 def seaglass_available() -> bool:
     """Whether a local `seaglass` MCP server is configured for this user.
@@ -40,10 +57,18 @@ def _flatten_seaglass_result(payload: dict) -> List[dict]:
     callers (and existing output formatting) don't need to know which
     backend answered. Session order (best-first, per seaglass's rerank
     score) is preserved; messages within a session keep their own order.
+
+    Includes both a session's `messages` (the actual reranked hits) and
+    its `context_messages` (surrounding messages seaglass expanded the
+    session with) -- previously only `messages` was flattened, silently
+    dropping context that seaglass's own eval/score.py recall@final
+    metric counts as legitimate hits (IMPROVEMENT-8). Context messages
+    are appended after a session's hits, so callers that only want the
+    hits can still take the first N per session if they need to.
     """
     flattened: List[dict] = []
     for session in payload.get("sessions", []):
-        for message in session.get("messages", []):
+        for message in session.get("messages", []) + session.get("context_messages", []):
             flattened.append(
                 {
                     "id": message.get("message_id"),
@@ -61,9 +86,20 @@ def search_via_seaglass(query: str, limit: int = 20) -> List[dict]:
     grogu_mcp.call_tool raises (e.g. RuntimeError/TimeoutError) if the
     server is configured but fails to answer -- callers decide whether to
     fall back to the SQL LIKE search.
+
+    `limit` is a *message* count (matching the SQL LIKE path's semantics
+    and this module's own public API), not a *session* count -- seaglass's
+    `max_sessions` parameter is sessions, not individual messages
+    (typically several messages each). Previously `limit` was passed
+    straight through as `max_sessions` (IMPROVEMENT-8), so
+    `imessage search --limit 20` (the default) asked seaglass for 20
+    *sessions* (~2.5x its own default of 8), overfetching and paying
+    unnecessary rerank/hydrate cost. Request seaglass's own default
+    session count and let the flatten+slice below cap at the requested
+    message limit instead.
     """
     payload = grogu_mcp.call_tool(
-        SEAGLASS_SERVER_NAME, "search_messages", query=query, max_sessions=limit
+        SEAGLASS_SERVER_NAME, "search_messages", query=query, max_sessions=8
     )
     return _flatten_seaglass_result(payload)[:limit]
 
@@ -259,7 +295,7 @@ class MacOSIMessageAdapter:
             {
                 "id": row["id"],
                 "text": row["text"] or "",
-                "date": row["date"],
+                "date": _apple_date_to_unix(row["date"]),
                 "handle": row["handle"] or "",
             }
             for row in rows

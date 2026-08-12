@@ -35,7 +35,16 @@ def search_messages(query: str, max_sessions: int = 8, redact: bool = False) -> 
                         "has_attachment": False,
                     }
                 ],
-                "context_messages": [],
+                "context_messages": [
+                    {
+                        "message_id": 1000,
+                        "ts": 1704067100.0,
+                        "is_from_me": True,
+                        "sender": "me",
+                        "text": "context before the hit",
+                        "has_attachment": False,
+                    }
+                ],
             }
         ],
     }

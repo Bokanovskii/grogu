@@ -1202,15 +1202,21 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
 
     def test_search_via_seaglass_flattens_sessions(self):
         results = grogu_imessage.search_via_seaglass("dinner plans")
-        self.assertEqual(len(results), 1)
+        # Both the reranked hit and its context_messages must be flattened
+        # (IMPROVEMENT-8 fix): previously context_messages were silently
+        # dropped even though seaglass's own recall@final metric counts
+        # them as hits.
+        self.assertEqual(len(results), 2)
         self.assertEqual(results[0]["id"], 1001)
         self.assertIn("dinner plans", results[0]["text"])
         self.assertEqual(results[0]["handle"], "+15551234567")
+        self.assertEqual(results[1]["id"], 1000)
+        self.assertEqual(results[1]["text"], "context before the hit")
 
     def test_adapter_search_prefers_seaglass_when_configured(self):
         adapter = grogu_imessage.MacOSIMessageAdapter()
         results = adapter.search("dinner plans")
-        self.assertEqual(len(results), 1)
+        self.assertEqual(len(results), 2)
         self.assertIn("dinner plans", results[0]["text"])
 
     def test_adapter_search_can_force_sql_like_path(self):
@@ -1223,23 +1229,56 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
         with self.assertRaises(grogu_imessage.IMessageError):
             adapter.search("dinner plans", use_seaglass=False)
 
-    def test_adapter_search_falls_back_to_sql_like_on_seaglass_failure(self):
-        # Force the fixture's search_messages tool to raise, and point the
-        # adapter at an empty (but real) sqlite file so the SQL LIKE
-        # fallback path runs to completion instead of raising too.
-        empty_db = Path(self.directory.name) / "chat.db"
-        connection = sqlite3.connect(empty_db)
+    def test_sql_like_path_normalizes_date_to_unix_seconds(self):
+        # Regression test for BUG-7: the SQL LIKE fallback used to return
+        # message.date's raw Apple-epoch value (seconds OR nanoseconds,
+        # depending on macOS version) verbatim, while seaglass's path
+        # always returns unix seconds in the same "date" field -- silently
+        # inconsistent depending on which backend answered. 700000000 is a
+        # realistic Apple-epoch-seconds value (2023-03-11ish); 978307200
+        # is the 2001-01-01 unix-seconds offset dates are relative to.
+        chat_db = Path(self.directory.name) / "chat.db"
+        connection = sqlite3.connect(chat_db)
         connection.executescript(
             """
             CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, date INTEGER, handle_id INTEGER);
             CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            INSERT INTO handle (ROWID, id) VALUES (1, '+15559990000');
+            INSERT INTO message (ROWID, text, date, handle_id)
+                VALUES (1, 'dinner plans tonight', 700000000, 1);
             """
         )
         connection.commit()
         connection.close()
-        adapter = grogu_imessage.MacOSIMessageAdapter(database_path=empty_db)
+        adapter = grogu_imessage.MacOSIMessageAdapter(database_path=chat_db)
+        results = adapter.search("dinner plans", use_seaglass=False)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["date"], 700000000 + 978307200)
+
+    def test_adapter_search_falls_back_to_sql_like_on_seaglass_failure(self):
+        # Force the fixture's search_messages tool to raise, and point the
+        # adapter at a real sqlite file *with a matching row* (not an
+        # empty one) so a non-empty result unambiguously proves the SQL
+        # LIKE fallback actually ran, rather than being indistinguishable
+        # from "seaglass succeeded with zero results" (IMPROVEMENT-13).
+        chat_db = Path(self.directory.name) / "chat.db"
+        connection = sqlite3.connect(chat_db)
+        connection.executescript(
+            """
+            CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, date INTEGER, handle_id INTEGER);
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            INSERT INTO handle (ROWID, id) VALUES (1, '+15559990000');
+            INSERT INTO message (ROWID, text, date, handle_id)
+                VALUES (1, 'contains the __fail__ sentinel text', 700000000, 1);
+            """
+        )
+        connection.commit()
+        connection.close()
+        adapter = grogu_imessage.MacOSIMessageAdapter(database_path=chat_db)
         results = adapter.search("__fail__")
-        self.assertEqual(results, [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["text"], "contains the __fail__ sentinel text")
+        self.assertEqual(results[0]["handle"], "+15559990000")
 
     def test_status_reports_seaglass_configured(self):
         real_db = Path(self.directory.name) / "chat.db"
