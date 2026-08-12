@@ -142,19 +142,41 @@ esac
 printf '\n%s\n' "Grogu setup checks:"
 check_ok "Core launcher installed"
 
-# Best-effort: `bin/grogu` itself already prefers the newest 3.10+
-# interpreter it finds on PATH (python3.13/.12/.11/.10) over plain `python3`,
-# so this only needs to install `mcp` into whichever one grogu will actually
-# use — matching that same preference order keeps this in sync with
-# `bin/grogu` rather than picking a different interpreter to check/install
-# into. Neither check is fatal to setup: the rest of Grogu only needs stdlib.
-PYTHON=python3
-for candidate in python3.13 python3.12 python3.11 python3.10; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-        PYTHON=$candidate
-        break
+find_python() {
+    best=
+    best_major=-1
+    best_minor=-1
+    old_ifs=$IFS
+    IFS=:
+    for directory in ${PATH:-}; do
+        [ -n "$directory" ] || directory=.
+        for candidate in "$directory"/python3*; do
+            [ -x "$candidate" ] || continue
+            version=$("$candidate" -c 'import sys; print("%d.%d" % (sys.version_info[0], sys.version_info[1]))' 2>/dev/null) || continue
+            major=${version%%.*}
+            minor=${version#*.}
+            case "$major:$minor" in
+                ''|*[!0-9:]*|*:*:*) continue ;;
+            esac
+            if [ "$major" -gt "$best_major" ] ||
+               { [ "$major" -eq "$best_major" ] && [ "$minor" -gt "$best_minor" ]; }; then
+                best=$candidate
+                best_major=$major
+                best_minor=$minor
+            fi
+        done
+    done
+    IFS=$old_ifs
+
+    if [ -n "$best" ] && [ "$best_major" -ge 3 ] &&
+       { [ "$best_major" -gt 3 ] || [ "$best_minor" -ge 10 ]; }; then
+        printf '%s\n' "$best"
+    else
+        command -v python3
     fi
-done
+}
+
+PYTHON=$(find_python)
 
 if command -v "$PYTHON" >/dev/null 2>&1; then
     if "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then

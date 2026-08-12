@@ -12,19 +12,40 @@ while [ -L "$SOURCE" ]; do
 done
 ROOT=$(CDPATH= cd -P -- "$(dirname -- "$SOURCE")/.." && pwd)
 
-# Prefer the newest 3.10+ interpreter actually on PATH over whatever
-# `python3` happens to resolve to, so codemode's MCP tool calling
-# (grogu_mcp, requires 3.10+) works out of the box even on a machine whose
-# default `python3` is older, with no separate interpreter selection at
-# runtime and no --mcp-style flag needed. Falls back to plain `python3` if
-# none of the versioned names are found (grogu still runs fine on 3.8+;
-# only MCP tool calling needs 3.10+).
-PYTHON=python3
-for candidate in python3.13 python3.12 python3.11 python3.10; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-        PYTHON=$candidate
-        break
+find_python() {
+    best=
+    best_major=-1
+    best_minor=-1
+    old_ifs=$IFS
+    IFS=:
+    for directory in ${PATH:-}; do
+        [ -n "$directory" ] || directory=.
+        for candidate in "$directory"/python3*; do
+            [ -x "$candidate" ] || continue
+            version=$("$candidate" -c 'import sys; print("%d.%d" % (sys.version_info[0], sys.version_info[1]))' 2>/dev/null) || continue
+            major=${version%%.*}
+            minor=${version#*.}
+            case "$major:$minor" in
+                ''|*[!0-9:]*|*:*:*) continue ;;
+            esac
+            if [ "$major" -gt "$best_major" ] ||
+               { [ "$major" -eq "$best_major" ] && [ "$minor" -gt "$best_minor" ]; }; then
+                best=$candidate
+                best_major=$major
+                best_minor=$minor
+            fi
+        done
+    done
+    IFS=$old_ifs
+
+    if [ -n "$best" ] && [ "$best_major" -ge 3 ] &&
+       { [ "$best_major" -gt 3 ] || [ "$best_minor" -ge 10 ]; }; then
+        printf '%s\n' "$best"
+    else
+        command -v python3
     fi
-done
+}
+
+PYTHON=$(find_python)
 
 exec "$PYTHON" "$ROOT/src/grogu_cli.py" "$@"
