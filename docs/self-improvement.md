@@ -33,8 +33,11 @@ telemetry by default.
 2. Group repeated evidence by repository, task, workflow, and Grogu version.
 3. Propose a narrowly scoped harness, instruction, skill, or test change.
 4. Add a regression test or evaluation case that reproduces the weakness.
-5. Implement on a branch, run the relevant repository checks, and open a pull
-   request.
+5. Implement in a dedicated `git worktree` on a branch (never directly in the
+   primary checkout, which must stay on `main` so installed `grogu` launchers
+   always resolve to the latest merged code), run the relevant repository
+   checks, and open a pull request. Remove the worktree once the pull request
+   merges or is abandoned.
 6. Record the result and keep the change only when the evidence improves.
 
 Azure is not used automatically by this loop. Provider and model choices remain

@@ -61,7 +61,16 @@ Use read-only operations by default. Ask for confirmation before destructive cha
 
 When a web interface or browser behavior needs validation, use the configured Playwright MCP capability when available. Prefer isolated/headless checks and targeted assertions; browser access does not authorize external side effects.
 
-Shared Grogu behavior changes belong in a branch and pull request.
+Shared Grogu behavior changes belong in a branch and pull request. When Grogu
+modifies its own source checkout, do the work in a dedicated `git worktree`
+(e.g. `git worktree add ../grogu-worktrees/<branch> -b <branch> main`), never
+by checking out a feature branch directly in the primary checkout. The
+primary checkout is the target that installed `grogu` launchers resolve to;
+it must always stay on `main` and reflect `origin/main` (`git fetch origin &&
+git checkout main && git pull --ff-only origin main` at the start of new work
+or a new session) so that new Grogu launches always run the latest merged
+code, never in-progress changes. Remove the worktree (`git worktree remove
+<path>`) once its pull request merges or is abandoned.
 
 To start another Grogu session that can be opened from GitHub web or mobile,
 run `grogu session new`. Pass Copilot options after `--`, for example
