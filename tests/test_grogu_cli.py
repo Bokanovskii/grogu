@@ -1235,6 +1235,46 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
         # "sender unknown".
         self.assertEqual(results[1]["handle"], grogu_imessage.SELF_HANDLE)
 
+    def test_flatten_puts_actual_matches_first(self):
+        """seaglass returns a ~22-message window, so the message that
+        actually matched can sit anywhere inside it. A caller reading the
+        top few results would otherwise get its neighbours."""
+        payload = {
+            "sessions": [
+                {
+                    "messages": [
+                        {"message_id": 1, "ts": 1.0, "text": "unrelated chatter", "sender": "A", "match_score": 0},
+                        {"message_id": 2, "ts": 2.0, "text": "the classic one", "sender": "B", "match_score": 1},
+                        {"message_id": 3, "ts": 3.0, "text": "more chatter", "sender": "C", "match_score": 0},
+                    ],
+                    "context_messages": [
+                        {"message_id": 4, "ts": 0.5, "text": "before", "sender": "D", "match_score": 0},
+                    ],
+                }
+            ]
+        }
+        ids = [row["id"] for row in grogu_imessage._flatten_seaglass_result(payload)]
+        # Match first, its non-matching neighbours after in conversation
+        # order, and context still trailing every hit.
+        self.assertEqual(ids, [2, 1, 3, 4])
+
+    def test_flatten_keeps_conversation_order_without_match_scores(self):
+        """An older seaglass, or a query whose words are all stopwords,
+        sends no scores -- conversation order is then the best available
+        ordering and must not be disturbed."""
+        payload = {
+            "sessions": [
+                {
+                    "messages": [
+                        {"message_id": 1, "ts": 1.0, "text": "first", "sender": "A"},
+                        {"message_id": 2, "ts": 2.0, "text": "second", "sender": "B"},
+                    ]
+                }
+            ]
+        }
+        ids = [row["id"] for row in grogu_imessage._flatten_seaglass_result(payload)]
+        self.assertEqual(ids, [1, 2])
+
     def test_flatten_leaves_unknown_senders_blank(self):
         """Only `is_from_me` earns the "me" label; a missing sender that is
         not the user's own message stays empty rather than being
@@ -1355,6 +1395,28 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
         status = adapter.status()
         self.assertTrue(status["available"])
         self.assertTrue(status["seaglass"])
+        # Whether the index is current decides whether a search can answer
+        # about the last hour at all, so status must say.
+        self.assertTrue(status["seaglass_index"]["stale"])
+        self.assertEqual(status["seaglass_index"]["n_messages_since_index"], 12)
+
+    def test_a_stale_index_is_reported_on_stderr(self):
+        # A stale result looks exactly like a complete one, so "what did
+        # she just say" would answer with yesterday's conversation.
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            grogu_imessage.search_via_seaglass("__stale__")
+        self.assertIn("12 message(s) behind", stderr.getvalue())
+        self.assertIn("grogu imessage sync", stderr.getvalue())
+
+    def test_a_current_index_says_nothing(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            grogu_imessage.search_via_seaglass("anything")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_sync_runs_the_seaglass_tool(self):
+        self.assertEqual(grogu_imessage.sync_seaglass_index(wait=True)["waited"], True)
 
 
 @unittest.skipUnless(
