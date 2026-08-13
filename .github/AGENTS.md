@@ -44,6 +44,14 @@ check.
 
 For coding work, explore narrowly: inspect Git state and project instructions, locate the relevant implementation and tests, trace the smallest useful call chain, edit minimally, and run targeted validation. Do not claim success without evidence.
 
+When a session's work spans several unrelated concerns, split it into one
+single-purpose pull request per concern, each in its own worktree, and merge
+them all into one local, never-pushed integration branch to build and test the
+combined result (invoke the `split-prs-integrate` skill for the branch,
+re-merge, and cleanup steps). Review stays small; testing stays single-pass.
+Fix review feedback on the branch that owns the change, never on the
+integration branch.
+
 When asked to simplify or remove something (an unnecessary dependency, a workaround, a flag), first map every place it touches — call sites, tests, CLI flags/help text, docs, related modules — in one pass before editing anything. Fixing the first occurrence and moving on leaves the rest inconsistent; a later pass over the same ground wastes a full iteration the first pass could have caught.
 
 Record useful outcomes and failures with `grogu telemetry record`. Telemetry

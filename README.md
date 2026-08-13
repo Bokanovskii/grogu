@@ -426,6 +426,20 @@ grogu worktree prune --dry-run
 grogu worktree prune
 ```
 
+## Splitting work into pull requests
+
+When a session's work spans several unrelated concerns, Grogu splits it into
+one single-purpose pull request per concern — each in its own worktree, each
+independently building and passing tests — and merges them all into a single
+local `integration/all-prs` branch to build, test, and run the combined result.
+Reviewers get small pull requests; testing and device installs happen once
+against everything together.
+
+The integration branch is disposable: never pushed, never reviewed, never
+merged. Review feedback is fixed on the branch that owns the change, then
+re-merged. See the `split-prs-integrate` skill for the branch, re-merge, and
+cleanup steps.
+
 ## The Grogu mark
 
 Grogu marks its sessions with a pixel-art frog child in Copilot's startup banner
