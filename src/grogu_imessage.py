@@ -72,8 +72,9 @@ def _flatten_seaglass_result(payload: dict) -> List[dict]:
     hits can still take the first N per session if they need to.
     """
     flattened: List[dict] = []
+    recent_first = payload.get("ordering") == "recent"
     for session in payload.get("sessions", []):
-        for message in _ordered_session_messages(session):
+        for message in _ordered_session_messages(session, recent_first=recent_first):
             flattened.append(
                 {
                     "id": message.get("message_id"),
@@ -85,8 +86,14 @@ def _flatten_seaglass_result(payload: dict) -> List[dict]:
     return flattened
 
 
-def _ordered_session_messages(session: dict) -> List[dict]:
+def _ordered_session_messages(session: dict, recent_first: bool = False) -> List[dict]:
     """A session's messages, actual matches first.
+
+    When seaglass reports `ordering: "recent"` the query asked for the
+    newest messages ("latest from Adrian") rather than the most relevant
+    ones, and there is no match to rank by. Messages arrive in reading
+    order, so a caller honouring `limit` would otherwise get the *oldest*
+    messages of the newest day -- the opposite of what was asked.
 
     seaglass retrieves a ~22-message window, so every message in it comes
     back as a "hit" and the one that actually matched can sit anywhere
@@ -101,7 +108,10 @@ def _ordered_session_messages(session: dict) -> List[dict]:
     """
     hits = list(session.get("messages", []))
     context = list(session.get("context_messages", []))
-    if any(message.get("match_score") for message in hits + context):
+    if recent_first:
+        hits.sort(key=lambda message: -(message.get("ts") or 0))
+        context.sort(key=lambda message: -(message.get("ts") or 0))
+    elif any(message.get("match_score") for message in hits + context):
         hits.sort(key=lambda message: -(message.get("match_score") or 0))
         context.sort(key=lambda message: -(message.get("match_score") or 0))
     return hits + context

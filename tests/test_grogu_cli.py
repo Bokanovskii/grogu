@@ -1415,6 +1415,12 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
             grogu_imessage.search_via_seaglass("anything")
         self.assertEqual(stderr.getvalue(), "")
 
+    def test_a_recency_query_returns_the_newest_message_first(self):
+        # "latest from Adrian" would otherwise return the oldest messages
+        # of the newest day, because a session arrives in reading order.
+        messages = grogu_imessage.search_via_seaglass("__recent__", limit=1)
+        self.assertEqual(messages[0]["id"], 1001)
+
     def test_sync_runs_the_seaglass_tool(self):
         self.assertEqual(grogu_imessage.sync_seaglass_index(wait=True)["waited"], True)
 
