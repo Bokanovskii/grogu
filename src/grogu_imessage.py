@@ -73,7 +73,7 @@ def _flatten_seaglass_result(payload: dict) -> List[dict]:
     """
     flattened: List[dict] = []
     for session in payload.get("sessions", []):
-        for message in session.get("messages", []) + session.get("context_messages", []):
+        for message in _ordered_session_messages(session):
             flattened.append(
                 {
                     "id": message.get("message_id"),
@@ -83,6 +83,28 @@ def _flatten_seaglass_result(payload: dict) -> List[dict]:
                 }
             )
     return flattened
+
+
+def _ordered_session_messages(session: dict) -> List[dict]:
+    """A session's messages, actual matches first.
+
+    seaglass retrieves a ~22-message window, so every message in it comes
+    back as a "hit" and the one that actually matched can sit anywhere
+    inside. A caller reading the top few results -- which is every caller,
+    since `limit` exists -- would get the match's neighbours instead of the
+    match: searching "classic" returned three messages about render
+    performance from the same afternoon.
+
+    `match_score` counts how many of the query's content words a message
+    contains. Sorting by it is stable, so messages that matched equally
+    keep conversation order, and context messages still trail the hits.
+    """
+    hits = list(session.get("messages", []))
+    context = list(session.get("context_messages", []))
+    if any(message.get("match_score") for message in hits + context):
+        hits.sort(key=lambda message: -(message.get("match_score") or 0))
+        context.sort(key=lambda message: -(message.get("match_score") or 0))
+    return hits + context
 
 
 def _sender_handle(message: dict) -> str:
@@ -121,7 +143,37 @@ def search_via_seaglass(query: str, limit: int = 20) -> List[dict]:
     payload = grogu_mcp.call_tool(
         SEAGLASS_SERVER_NAME, "search_messages", query=query, max_sessions=8
     )
+    _warn_if_stale(payload)
     return _flatten_seaglass_result(payload)[:limit]
+
+
+def _warn_if_stale(payload: dict) -> None:
+    """Say so when the answer came from an index missing recent messages.
+
+    A stale result is indistinguishable from a complete one, so "what did
+    she just say" answers confidently with yesterday's conversation. The
+    count rides along in the search payload, so this costs no extra call.
+    """
+    behind = payload.get("n_messages_since_index") or 0
+    if payload.get("index_stale") and behind:
+        print(
+            f"warning: seaglass index is {behind} message(s) behind; "
+            "run `grogu imessage sync` for the newest messages",
+            file=sys.stderr,
+        )
+
+
+def sync_seaglass_index(wait: bool = True) -> dict:
+    """Bring the seaglass index up to date with the live Messages db."""
+    if not seaglass_available():
+        raise IMessageError("seaglass is not configured for this user")
+    return grogu_mcp.call_tool(SEAGLASS_SERVER_NAME, "sync_index", wait=wait)
+
+
+def seaglass_index_status() -> dict:
+    """seaglass's own view of its index: size, freshness, and whether the
+    live Messages db is readable at all."""
+    return grogu_mcp.call_tool(SEAGLASS_SERVER_NAME, "index_status")
 
 
 class IMessageError(RuntimeError):
@@ -269,12 +321,33 @@ class MacOSIMessageAdapter:
                 "reason": str(error),
                 "database": str(self.database_path),
             }
-        return {
+        status = {
             "available": True,
             "platform": platform.system(),
             "database": str(self.database_path),
             "seaglass": seaglass_available(),
         }
+        if status["seaglass"]:
+            # Whether the index is current decides whether a search can
+            # answer about the last hour at all, so it belongs in status
+            # rather than only in a warning nobody asked for.
+            try:
+                index = seaglass_index_status()
+            except Exception as error:  # noqa: BLE001 - status must never fail
+                status["seaglass_index"] = {"error": str(error)}
+            else:
+                status["seaglass_index"] = {
+                    key: index.get(key)
+                    for key in (
+                        "n_chunks",
+                        "n_messages_since_index",
+                        "stale",
+                        "live_chat_readable",
+                        "served_by",
+                    )
+                    if key in index
+                }
+        return status
 
     def search(self, query: str, limit: int = 20, use_seaglass: bool = True) -> List[dict]:
         """Search message history for `query`.

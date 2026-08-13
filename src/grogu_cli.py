@@ -732,6 +732,11 @@ def imessage_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def imessage_sync(args: argparse.Namespace) -> int:
+    print_json(grogu_imessage.sync_seaglass_index(wait=not args.no_wait))
+    return 0
+
+
 def imessage_search(args: argparse.Namespace) -> int:
     messages = imessage_adapter(args).search(
         args.query, limit=args.limit, use_seaglass=not args.no_seaglass
@@ -1498,6 +1503,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="force the local SQL LIKE scan even if a seaglass MCP server is configured",
     )
     imessage_search_parser.set_defaults(handler=imessage_search)
+    imessage_sync_parser = imessage_subparsers.add_parser(
+        "sync", help="bring the seaglass search index up to date"
+    )
+    imessage_sync_parser.add_argument(
+        "--no-wait", action="store_true", help="start the sync and return immediately"
+    )
+    imessage_sync_parser.set_defaults(handler=imessage_sync)
     imessage_draft_parser = imessage_subparsers.add_parser("draft")
     imessage_draft_parser.add_argument("--recipient", required=True)
     imessage_draft_parser.add_argument("--display-name", default="")

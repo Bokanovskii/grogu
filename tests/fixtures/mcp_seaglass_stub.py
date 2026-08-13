@@ -20,6 +20,11 @@ def search_messages(query: str, max_sessions: int = 8, redact: bool = False) -> 
         "n_sessions": 1,
         "n_results": 1,
         "confidence": "high",
+        # Real seaglass reports how far its index lags the live Messages
+        # db on every result, so a caller can tell a complete answer from
+        # one that is missing the last N messages.
+        "index_stale": query == "__stale__",
+        "n_messages_since_index": 12 if query == "__stale__" else 0,
         "sessions": [
             {
                 "chat_id": 42,
@@ -50,6 +55,22 @@ def search_messages(query: str, max_sessions: int = 8, redact: bool = False) -> 
             }
         ],
     }
+
+
+@server.tool()
+def index_status() -> dict:
+    return {
+        "n_chunks": 7,
+        "n_messages_since_index": 12,
+        "stale": True,
+        "live_chat_readable": True,
+        "served_by": "stub",
+    }
+
+
+@server.tool()
+def sync_index(wait: bool = False) -> dict:
+    return {"ok": True, "waited": wait, "n_messages_since_index": 0}
 
 
 if __name__ == "__main__":
