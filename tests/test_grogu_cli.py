@@ -1224,16 +1224,17 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
         # (IMPROVEMENT-8 fix): previously context_messages were silently
         # dropped even though seaglass's own recall@final metric counts
         # them as hits.
-        self.assertEqual(len(results), 2)
+        self.assertEqual(len(results), 3)
         self.assertEqual(results[0]["id"], 1001)
         self.assertIn("dinner plans", results[0]["text"])
         self.assertEqual(results[0]["handle"], "+15551234567")
-        self.assertEqual(results[1]["id"], 1000)
-        self.assertEqual(results[1]["text"], "context before the hit")
+        # Context trails *every* session's hits, not just its own.
+        self.assertEqual(results[-1]["id"], 1000)
+        self.assertEqual(results[-1]["text"], "context before the hit")
         # seaglass reports the user's own messages with a null sender, which
         # used to flatten to an empty handle -- indistinguishable from
         # "sender unknown".
-        self.assertEqual(results[1]["handle"], grogu_imessage.SELF_HANDLE)
+        self.assertEqual(results[-1]["handle"], grogu_imessage.SELF_HANDLE)
 
     def test_flatten_puts_actual_matches_first(self):
         """seaglass returns a ~22-message window, so the message that
@@ -1295,7 +1296,7 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
     def test_adapter_search_prefers_seaglass_when_configured(self):
         adapter = grogu_imessage.MacOSIMessageAdapter()
         results = adapter.search("dinner plans")
-        self.assertEqual(len(results), 2)
+        self.assertEqual(len(results), 3)
         self.assertIn("dinner plans", results[0]["text"])
 
     def test_adapter_search_can_force_sql_like_path(self):
@@ -1420,6 +1421,13 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
         # of the newest day, because a session arrives in reading order.
         messages = grogu_imessage.search_via_seaglass("__recent__", limit=1)
         self.assertEqual(messages[0]["id"], 1001)
+
+    def test_every_sessions_hits_come_before_any_sessions_context(self):
+        # Otherwise the second session's actual matches sit below the first
+        # session's surrounding chatter, and "the last thing Adrian sent"
+        # answers with Adrian followed by the user's own message.
+        messages = grogu_imessage.search_via_seaglass("anything")
+        self.assertEqual([m["id"] for m in messages], [1001, 2001, 1000])
 
     def test_sync_runs_the_seaglass_tool(self):
         self.assertEqual(grogu_imessage.sync_seaglass_index(wait=True)["waited"], True)

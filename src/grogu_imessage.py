@@ -12,7 +12,7 @@ import sys
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import grogu_mcp
 
@@ -71,23 +71,35 @@ def _flatten_seaglass_result(payload: dict) -> List[dict]:
     are appended after a session's hits, so callers that only want the
     hits can still take the first N per session if they need to.
     """
-    flattened: List[dict] = []
     recent_first = payload.get("ordering") == "recent"
+    hits: List[dict] = []
+    context: List[dict] = []
     for session in payload.get("sessions", []):
-        for message in _ordered_session_messages(session, recent_first=recent_first):
-            flattened.append(
-                {
-                    "id": message.get("message_id"),
-                    "text": message.get("text") or "",
-                    "date": message.get("ts"),
-                    "handle": _sender_handle(message),
-                }
-            )
-    return flattened
+        session_hits, session_context = _ordered_session_messages(
+            session, recent_first=recent_first
+        )
+        hits.extend(session_hits)
+        context.extend(session_context)
+    # Every session's hits before any session's context. Flattening session
+    # by session meant the *second* session's actual matches sat below the
+    # *first* session's surrounding chatter, so "the last thing Adrian
+    # sent" answered with one of Adrian's messages followed by one of the
+    # user's own.
+    return [
+        {
+            "id": message.get("message_id"),
+            "text": message.get("text") or "",
+            "date": message.get("ts"),
+            "handle": _sender_handle(message),
+        }
+        for message in hits + context
+    ]
 
 
-def _ordered_session_messages(session: dict, recent_first: bool = False) -> List[dict]:
-    """A session's messages, actual matches first.
+def _ordered_session_messages(
+    session: dict, recent_first: bool = False
+) -> Tuple[List[dict], List[dict]]:
+    """A session's (hits, context), each in the order a caller should read.
 
     When seaglass reports `ordering: "recent"` the query asked for the
     newest messages ("latest from Adrian") rather than the most relevant
@@ -114,7 +126,7 @@ def _ordered_session_messages(session: dict, recent_first: bool = False) -> List
     elif any(message.get("match_score") for message in hits + context):
         hits.sort(key=lambda message: -(message.get("match_score") or 0))
         context.sort(key=lambda message: -(message.get("match_score") or 0))
-    return hits + context
+    return hits, context
 
 
 def _sender_handle(message: dict) -> str:
