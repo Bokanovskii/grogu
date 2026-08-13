@@ -12,7 +12,7 @@ import sys
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import grogu_mcp
 

@@ -69,7 +69,23 @@ def search_messages(query: str, max_sessions: int = 8, redact: bool = False) -> 
                         "has_attachment": False,
                     }
                 ],
-            }
+            },
+            {
+                "chat_id": 43,
+                "day": "2024-01-02",
+                "score": 0.5,
+                "messages": [
+                    {
+                        "message_id": 2001,
+                        "ts": 1704153600.0,
+                        "is_from_me": False,
+                        "sender": "+15559999999",
+                        "text": "a second session's actual hit",
+                        "has_attachment": False,
+                    }
+                ],
+                "context_messages": [],
+            },
         ],
     }
 
