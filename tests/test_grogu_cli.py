@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -1228,6 +1230,27 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
         self.assertEqual(results[0]["handle"], "+15551234567")
         self.assertEqual(results[1]["id"], 1000)
         self.assertEqual(results[1]["text"], "context before the hit")
+        # seaglass reports the user's own messages with a null sender, which
+        # used to flatten to an empty handle -- indistinguishable from
+        # "sender unknown".
+        self.assertEqual(results[1]["handle"], grogu_imessage.SELF_HANDLE)
+
+    def test_flatten_leaves_unknown_senders_blank(self):
+        """Only `is_from_me` earns the "me" label; a missing sender that is
+        not the user's own message stays empty rather than being
+        misattributed to them."""
+        payload = {
+            "sessions": [
+                {
+                    "messages": [
+                        {"message_id": 1, "ts": 1.0, "text": "a", "sender": None, "is_from_me": False},
+                        {"message_id": 2, "ts": 2.0, "text": "b", "sender": None, "is_from_me": True},
+                    ]
+                }
+            ]
+        }
+        handles = [row["handle"] for row in grogu_imessage._flatten_seaglass_result(payload)]
+        self.assertEqual(handles, ["", grogu_imessage.SELF_HANDLE])
 
     def test_adapter_search_prefers_seaglass_when_configured(self):
         adapter = grogu_imessage.MacOSIMessageAdapter()
@@ -1295,6 +1318,27 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["text"], "contains the __fail__ sentinel text")
         self.assertEqual(results[0]["handle"], "+15559990000")
+
+    def test_seaglass_failure_is_reported_on_stderr(self):
+        """The fallback answers a different question than the query asked,
+        so it must not happen silently: a stale index path in the MCP
+        config degraded every search this way, invisibly."""
+        chat_db = Path(self.directory.name) / "warn.db"
+        connection = sqlite3.connect(chat_db)
+        connection.executescript(
+            """
+            CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, date INTEGER, handle_id INTEGER);
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            """
+        )
+        connection.commit()
+        connection.close()
+        adapter = grogu_imessage.MacOSIMessageAdapter(database_path=chat_db)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            adapter.search("__fail__")
+        self.assertIn("seaglass search failed", stderr.getvalue())
+        self.assertIn("substring scan", stderr.getvalue())
 
     def test_status_reports_seaglass_configured(self):
         real_db = Path(self.directory.name) / "chat.db"

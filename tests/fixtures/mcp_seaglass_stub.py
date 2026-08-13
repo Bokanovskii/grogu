@@ -40,7 +40,9 @@ def search_messages(query: str, max_sessions: int = 8, redact: bool = False) -> 
                         "message_id": 1000,
                         "ts": 1704067100.0,
                         "is_from_me": True,
-                        "sender": "me",
+                        # Real seaglass leaves this null for the user's own
+                        # messages -- there is no contact to resolve.
+                        "sender": None,
                         "text": "context before the hit",
                         "has_attachment": False,
                     }

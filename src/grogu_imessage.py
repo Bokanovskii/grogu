@@ -8,6 +8,7 @@ import os
 import platform
 import sqlite3
 import subprocess
+import sys
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -20,6 +21,10 @@ import grogu_mcp
 # seaglass installed and configured, `search()` prefers it over the naive
 # SQL LIKE scan below -- see README.md's "Messaging skills" section.
 SEAGLASS_SERVER_NAME = "seaglass"
+
+# How a message the user sent themselves is labelled; seaglass leaves its
+# `sender` null, since there is no contact to resolve.
+SELF_HANDLE = "me"
 
 # Apple's `message.date` column mixes seconds and nanoseconds since
 # 2001-01-01 depending on macOS version at write time -- same ambiguity
@@ -74,10 +79,25 @@ def _flatten_seaglass_result(payload: dict) -> List[dict]:
                     "id": message.get("message_id"),
                     "text": message.get("text") or "",
                     "date": message.get("ts"),
-                    "handle": message.get("sender") or "",
+                    "handle": _sender_handle(message),
                 }
             )
     return flattened
+
+
+def _sender_handle(message: dict) -> str:
+    """The sender, as a handle string.
+
+    seaglass reports the user's own messages with a null `sender` (there is
+    no contact to resolve), which flattened to an empty handle -- so half a
+    conversation looked like it came from nobody, and a caller could not
+    tell "sent by the user" apart from "sender unknown". `is_from_me` is
+    the field that actually carries that, so use it.
+    """
+    sender = message.get("sender")
+    if sender:
+        return sender
+    return SELF_HANDLE if message.get("is_from_me") else ""
 
 
 def search_via_seaglass(query: str, limit: int = 20) -> List[dict]:
@@ -276,8 +296,18 @@ class MacOSIMessageAdapter:
         if use_seaglass and seaglass_available():
             try:
                 return search_via_seaglass(query, limit=limit)
-            except Exception:
-                pass  # fall through to the local SQL LIKE scan below
+            except Exception as error:
+                # Say so. The fallback is a substring scan, which answers a
+                # different question entirely: a semantic query returns
+                # nothing, and a literal one returns something that looks
+                # like it worked. A stale index path in the MCP config
+                # degraded every search this way, invisibly, for as long as
+                # nobody thought to compare the two backends by hand.
+                print(
+                    f"grogu: seaglass search failed ({error}); "
+                    "falling back to a plain substring scan",
+                    file=sys.stderr,
+                )
         with self._connect() as database:
             rows = database.execute(
                 """
