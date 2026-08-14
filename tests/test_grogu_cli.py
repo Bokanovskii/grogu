@@ -1654,6 +1654,26 @@ class PlanIdFromEnvironmentTests(unittest.TestCase):
         )
         self.assertIn(self.plan, result.stdout)
 
+    def test_the_plan_id_is_spelled_the_same_way_everywhere(self):
+        # An architect's very first command failed because the spawn prompt
+        # said --id and brief wanted --plan. A fresh agent with one instruction
+        # and no context is the least recoverable place to be wrong, and there
+        # is nothing to be gained by making it guess which of three spellings a
+        # given subcommand happens to take.
+        for command in (["plan", "brief", "--role", "engineer"], ["plan", "status"]):
+            for spelling in (["--plan", self.plan], ["--id", self.plan], [self.plan]):
+                with self.subTest(command=command[1], spelling=spelling[0]):
+                    result = self._run(command + spelling)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(self.plan, result.stdout)
+
+    def test_naming_two_different_plans_is_refused_rather_than_guessed(self):
+        result = self._run(
+            ["plan", "brief", "--role", "engineer", "p-other", "--plan", self.plan]
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("name it once", result.stderr)
+
 
 class AdoptedTasteIsNotReportedAsMissingTests(unittest.TestCase):
     """The user adopted Apple's set and was told nothing was learned."""

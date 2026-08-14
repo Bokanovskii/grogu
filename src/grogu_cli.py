@@ -1521,8 +1521,13 @@ def _plan_id_argument(parser: argparse.ArgumentParser) -> None:
     # every agent learns `--plan` as the convention and then spends a failed
     # call per command discovering that `plan status`, `plan gate` and
     # `plan workstreams` want it positionally. Both spellings work everywhere.
+    # `--id` is here because it is what the spawn prompts kept saying. An
+    # architect's very first command failed on it, which is the least
+    # recoverable moment there is: a fresh agent with no context, whose one
+    # instruction was wrong. Guessing a name for the same value is not a
+    # judgement worth making an agent make.
     parser.add_argument(
-        "--plan", dest="plan_flag", default="", help=argparse.SUPPRESS
+        "--plan", "--id", dest="plan_flag", default="", help=argparse.SUPPRESS
     )
     parser.set_defaults(_plan_id_required=True)
 
@@ -1531,6 +1536,19 @@ def _resolve_plan_id(parsed: argparse.Namespace) -> bool:
     """Fill in the plan id from the environment; False when there is none."""
     if not hasattr(parsed, "id"):
         return True
+    # The commands that spell the id as a flag also accept it positionally, for
+    # the same reason the flag has two names: an agent that has just learned
+    # `plan status <id>` should not have to unlearn it one subcommand later.
+    positional = (getattr(parsed, "plan_positional", "") or "").strip()
+    if positional and not parsed.id:
+        parsed.id = positional
+    elif positional and parsed.id and positional != parsed.id:
+        print(
+            f"grogu: two plans given, {parsed.id!r} and {positional!r}; name "
+            "it once",
+            file=sys.stderr,
+        )
+        return False
     flagged = (getattr(parsed, "plan_flag", "") or "").strip()
     if flagged:
         if parsed.id and parsed.id != flagged:
@@ -3809,7 +3827,7 @@ def build_parser() -> argparse.ArgumentParser:
         "status", help="bounded plan summary with no plan prose", parents=[plan_common]
     )
     plan_status_parser.add_argument("id", nargs="?", default="")
-    plan_status_parser.add_argument("--plan", dest="plan_flag", default="", help=argparse.SUPPRESS)
+    plan_status_parser.add_argument("--plan", "--id", dest="plan_flag", default="", help=argparse.SUPPRESS)
     plan_status_parser.add_argument("--json", action="store_true")
     plan_status_parser.set_defaults(handler=plan_status)
 
@@ -3819,7 +3837,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[plan_common, role_common],
     )
     plan_shape_parser.add_argument("id", nargs="?", default="")
-    plan_shape_parser.add_argument("--plan", dest="plan_flag", default="", help=argparse.SUPPRESS)
+    plan_shape_parser.add_argument("--plan", "--id", dest="plan_flag", default="", help=argparse.SUPPRESS)
     plan_shape_group = plan_shape_parser.add_mutually_exclusive_group(required=True)
     plan_shape_group.add_argument(
         "--add",
@@ -4108,7 +4126,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_steer_parser.add_argument(
         "--note", default="", help="the note, if you would rather not quote it positionally"
     )
-    plan_steer_parser.add_argument("--plan", dest="id", help="scope to one plan")
+    plan_steer_parser.add_argument("--plan", "--id", dest="id", help="scope to one plan")
     plan_steer_parser.add_argument(
         "--relayed",
         action="store_true",
@@ -4175,7 +4193,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="role making the call (default: $GROGU_ROLE)",
     )
     plan_steering_parser.add_argument("plan", nargs="?", default="", help="plan id")
-    plan_steering_parser.add_argument("--plan", dest="id")
+    plan_steering_parser.add_argument("--plan", "--id", dest="id")
+    plan_steering_parser.add_argument("plan_positional", nargs="?", default="", help=argparse.SUPPRESS)
     plan_steering_parser.add_argument(
         "--audit",
         type=int,
@@ -4211,7 +4230,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[plan_common],
     )
     plan_brief_parser.add_argument("--role", choices=grogu_plans.ROLES, required=True)
-    plan_brief_parser.add_argument("--plan", dest="id")
+    plan_brief_parser.add_argument("--plan", "--id", dest="id")
+    plan_brief_parser.add_argument("plan_positional", nargs="?", default="", help=argparse.SUPPRESS)
     plan_brief_parser.add_argument(
         "--full",
         action="store_true",
@@ -4246,7 +4266,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="keep the note in this repository even if it names a grogu command",
     )
-    plan_friction_parser.add_argument("--plan", dest="id")
+    plan_friction_parser.add_argument("--plan", "--id", dest="id")
+    plan_friction_parser.add_argument("plan_positional", nargs="?", default="", help=argparse.SUPPRESS)
     plan_friction_parser.add_argument("--resolve", type=int, metavar="SEQ")
     plan_friction_parser.add_argument("--resolution")
     plan_friction_parser.add_argument("--all", action="store_true")
