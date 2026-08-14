@@ -1671,3 +1671,40 @@ class AdoptedTasteIsNotReportedAsMissingTests(unittest.TestCase):
         self.assertIn("nothing is owed", result.stdout)
         self.assertNotIn("seeded defaults", result.stdout)
         self.assertNotIn("learned from you", result.stdout)
+
+
+class SteerTakesThePlanIdLikeEveryOtherCommandTests(unittest.TestCase):
+    """`plan steer p-... --note x` recorded the plan id as the note."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+
+    def run_cli(self, *arguments):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = str(self.repo / "home")
+        environment.pop("GROGU_ROLE", None)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
+            cwd=self.repo, capture_output=True, text=True, env=environment,
+        )
+
+    def test_a_leading_plan_id_scopes_rather_than_becoming_the_note(self):
+        plan = self.run_cli("plan", "new", "steer shape").stdout.strip()
+        recorded = self.run_cli(
+            "plan", "steer", plan, "--role", "engineer", "--note", "use the real feed"
+        )
+        self.assertIn(f"recorded for engineer on {plan}", recorded.stdout)
+        shown = self.run_cli("plan", "steering", "--plan", plan, "--role", "engineer", "--all")
+        self.assertIn("use the real feed", shown.stdout)
+        self.assertNotIn(f": {plan}", shown.stdout)
+
+    def test_two_notes_at_once_is_refused_rather_than_one_dropped(self):
+        plan = self.run_cli("plan", "new", "steer shape").stdout.strip()
+        result = self.run_cli(
+            "plan", "steer", plan, "positional note", "--note", "flag note"
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("pass the note once", result.stderr)

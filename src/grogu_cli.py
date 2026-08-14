@@ -8,6 +8,7 @@ import dataclasses
 import datetime as dt
 import json
 import os
+import re
 import shutil
 import signal
 import sqlite3
@@ -2031,6 +2032,9 @@ def plan_commission(args: argparse.Namespace) -> int:
     return 0
 
 
+_PLAN_ID = re.compile(r"^p-\d{8}-[0-9a-f]{6}$")
+
+
 def plan_steer(args: argparse.Namespace) -> int:
     store = plan_store(args)
     plan_id = store.resolve(args.id) if args.id else ""
@@ -2043,7 +2047,25 @@ def plan_steer(args: argparse.Namespace) -> int:
                 "has it, so say so directly if it matters"
             )
         return 0
-    text = " ".join(args.text).strip() or (getattr(args, "note", "") or "").strip()
+    words = list(args.text)
+    # Every other plan command takes the id positionally. This one takes
+    # `--plan`, so `grogu plan steer p-... --note "..."` parsed the id as the
+    # note, recorded a plan id as the steering, and dropped the real note
+    # without a word. A leading token shaped like a plan id is a scope.
+    if words and _PLAN_ID.match(words[0]):
+        if not plan_id:
+            plan_id = store.resolve(words[0])
+        words = words[1:]
+    positional = " ".join(words).strip()
+    supplied = (getattr(args, "note", "") or "").strip()
+    if positional and supplied:
+        print(
+            "grogu: two notes given, one positionally and one with --note; "
+            "pass the note once",
+            file=sys.stderr,
+        )
+        return 2
+    text = positional or supplied
     if not text:
         print("grogu: nothing to steer with; pass the note as text or --note", file=sys.stderr)
         return 2
