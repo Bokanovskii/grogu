@@ -382,12 +382,59 @@ make. Agents also record friction directly with `grogu plan friction --note`,
 so "the fixtures take four minutes to build" reaches a review queue instead of a
 final message nobody reads.
 
+## What must not leave
+
+Grogu reads private repositories, mail and messages, and writes to public ones.
+The realistic failure is not that it decides to publish something private; it is
+that private context follows it out through work it was asked to do — a
+credential pasted into a config file and committed, a plan quoting a staging
+connection string and attached to a pull request, a complaint about the harness
+written in a private repository and proposed as an issue in this public one.
+
+So the rule is enforced where the data crosses a boundary, not in a prompt:
+
+| Boundary | Check |
+| --- | --- |
+| a commit | `grogu guard staged`, run by the pre-commit hook `grogu guard install` writes |
+| a published plan | `grogu plan finalize` scans every stage and refuses |
+| harness friction | redacted as it is written, because it is pooled across repositories |
+| arbitrary text | `grogu guard scan <path>` or on stdin |
+
+Findings come in two classes, and the distinction is the whole reason the guard
+is usable. A **credential** blocks everywhere: there is no destination at which
+a live token is fine. **Personal data** — an address, a phone number, a card
+number — blocks only where the destination is published, because a colleague's
+email in a private repository is not a leak, and a guard that fires on it is one
+everybody learns to pass `--no-verify` around. An overridden guard is worse than
+no guard, because it also carries an assurance.
+
+The detectors are tuned for precision over recall for the same reason. They
+recognise vendor credential shapes and hard-coded assignments, and deliberately
+stay quiet on `os.environ[...]`, `${VAR}`, `config(...)` and placeholders like
+`your-api-key-here` — the correct way to write the thing must never be flagged.
+This means the guard will miss a secret with no recognisable shape. It is an
+accident guard, not a security boundary, and the honest framing matters: it
+stops the mistake, not an attacker, and never the user's own judgement about
+what is fit to publish.
+
+Two details are load-bearing. Only *added* lines are scanned, so a commit that
+removes a leaked key is never blocked — blocking it would be blocking the fix.
+And reports print a label and a location, never the value, so the scan output
+is not itself a place the secret now lives.
+
+The escape hatch is per line and stays in the diff. A line that genuinely must
+contain a credential shape — a detector fixture, a documentation example — is
+marked `grogu-allow-secret` in a comment, which a reviewer sees. The alternative
+escape hatch is `git commit --no-verify`, which exempts the entire commit and,
+worse, is a habit; the marker exists so nobody acquires it.
+
 ## Repository-specific roles
 
 The harness carries the pipeline; each repository carries its own knowledge:
 
 ```
 <repo>/.grogu/roles/architect.md
+<repo>/.grogu/roles/designer.md
 <repo>/.grogu/roles/engineer.md
 <repo>/.grogu/roles/tester.md
 ```

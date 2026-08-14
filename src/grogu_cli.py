@@ -30,6 +30,7 @@ import grogu_mcp
 import grogu_memory
 import grogu_personal_memory
 import grogu_plans
+import grogu_privacy
 import grogu_telemetry
 import grogu_tasks
 import grogu_watch
@@ -1180,6 +1181,23 @@ def task_inbox(args: argparse.Namespace) -> int:
     return 0
 
 
+def _emit_notice(banner: str, parsed: argparse.Namespace) -> None:
+    """Deliver an unsolicited notice where its reader will actually see it.
+
+    A human sees both streams in a terminal, so stderr is right there. An agent
+    usually sees only what its tool call captured, and many harnesses capture
+    stdout alone — a steering note the agent never sees is a steering note that
+    was not delivered. So when stdout is redirected, the notice goes there
+    instead, except when the caller asked for JSON and would have to parse it.
+    """
+    try:
+        redirected = not sys.stdout.isatty()
+    except (ValueError, AttributeError):
+        redirected = False
+    wants_json = bool(getattr(parsed, "json", False))
+    print(banner, file=sys.stdout if (redirected and not wants_json) else sys.stderr)
+
+
 def _record_activity(parsed: argparse.Namespace) -> None:
     """Log that a grogu command ran, so `grogu watch` can show who is working.
 
@@ -1266,6 +1284,75 @@ def watch(args: argparse.Namespace) -> int:
             time.sleep(args.interval)
     except KeyboardInterrupt:
         return 0
+
+
+def guard_scan(args: argparse.Namespace) -> int:
+    targets = args.paths or []
+    findings: list = []
+    if not targets:
+        text = sys.stdin.read()
+        findings = grogu_privacy.scan(text, path="<stdin>", personal=not args.secrets_only)
+    for target in targets:
+        path = Path(target).expanduser()
+        if not path.is_file():
+            print(f"grogu: not a file: {target}", file=sys.stderr)
+            return 2
+        if grogu_privacy.dangerous_path(str(path)):
+            findings.append(
+                grogu_privacy.Finding(
+                    grogu_privacy.SECRET, "credential file", 0, path.name, str(path)
+                )
+            )
+        findings.extend(
+            grogu_privacy.scan(
+                path.read_text(encoding="utf8", errors="replace"),
+                path=str(path),
+                personal=not args.secrets_only,
+            )
+        )
+    return _guard_verdict(findings, destination=args.destination, quiet=args.quiet)
+
+
+def guard_staged(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).expanduser() if args.repo else Path.cwd()
+    findings = grogu_privacy.scan_staged(repo, personal=args.personal)
+    return _guard_verdict(findings, destination=args.destination, quiet=args.quiet)
+
+
+def _guard_verdict(findings: list, *, destination: str, quiet: bool) -> int:
+    blocking = grogu_privacy.blocking(findings, destination=destination)
+    if not findings:
+        if not quiet:
+            print("clean")
+        return 0
+    stream = sys.stderr if blocking else sys.stdout
+    print(
+        f"grogu guard: {len(findings)} finding(s), {len(blocking)} blocking",
+        file=stream,
+    )
+    print(grogu_privacy.report(findings), file=stream)
+    if blocking:
+        print(
+            "\nRefusing to continue. Move the value to the environment or a "
+            "secret store, or remove it from the change. If a line genuinely "
+            f"needs to contain this — a test fixture, a documentation example — "
+            f"mark that one line `{grogu_privacy.ALLOW_MARKER_TEXT}` in a "
+            "comment, which stays visible in review. Reach for "
+            "`git commit --no-verify` only when the pattern itself is wrong, "
+            "and say so, so it gets fixed rather than routed around.",
+            file=stream,
+        )
+        return 4
+    return 0
+
+
+def guard_install(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).expanduser() if args.repo else Path.cwd()
+    path = grogu_privacy.install_hook(
+        repo, python=sys.executable, script=str(Path(__file__).resolve())
+    )
+    print(f"installed {path}")
+    return 0
 
 
 def plan_store(args: argparse.Namespace) -> grogu_plans.PlanStore:
@@ -1933,6 +2020,38 @@ def build_parser() -> argparse.ArgumentParser:
     watch_parser.add_argument("--interval", type=float, default=5.0)
     watch_parser.add_argument("--json", action="store_true")
     watch_parser.set_defaults(handler=watch)
+
+    guard = subparsers.add_parser(
+        "guard", help="keep secrets and personal data out of what Grogu publishes"
+    )
+    guard_subparsers = guard.add_subparsers(dest="guard_command", required=True)
+
+    guard_scan_parser = guard_subparsers.add_parser("scan")
+    guard_scan_parser.add_argument("paths", nargs="*")
+    guard_scan_parser.add_argument(
+        "--destination",
+        choices=(grogu_privacy.LOCAL, grogu_privacy.REPOSITORY, grogu_privacy.PUBLISHED),
+        default=grogu_privacy.REPOSITORY,
+        help="how public the destination is; 'published' also blocks personal data",
+    )
+    guard_scan_parser.add_argument("--secrets-only", action="store_true")
+    guard_scan_parser.add_argument("--quiet", action="store_true")
+    guard_scan_parser.set_defaults(handler=guard_scan)
+
+    guard_staged_parser = guard_subparsers.add_parser("staged")
+    guard_staged_parser.add_argument("--repo")
+    guard_staged_parser.add_argument(
+        "--destination",
+        choices=(grogu_privacy.LOCAL, grogu_privacy.REPOSITORY, grogu_privacy.PUBLISHED),
+        default=grogu_privacy.REPOSITORY,
+    )
+    guard_staged_parser.add_argument("--personal", action="store_true")
+    guard_staged_parser.add_argument("--quiet", action="store_true")
+    guard_staged_parser.set_defaults(handler=guard_staged)
+
+    guard_install_parser = guard_subparsers.add_parser("install")
+    guard_install_parser.add_argument("--repo")
+    guard_install_parser.set_defaults(handler=guard_install)
 
     trace = subparsers.add_parser("trace")
     trace_subparsers = trace.add_subparsers(dest="trace_command", required=True)
@@ -2952,6 +3071,7 @@ GROGU_COMMANDS = frozenset(
         "session",
         "worktree",
         "watch",
+        "guard",
     }
 )
 
@@ -3004,7 +3124,7 @@ def main(arguments: list[str]) -> int:
             )
         )
         if banner:
-            print(banner, file=sys.stderr)
+            _emit_notice(banner, parsed)
 
 
 if __name__ == "__main__":

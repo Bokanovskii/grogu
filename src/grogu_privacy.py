@@ -74,7 +74,7 @@ _SECRET_PATTERNS = (
     ("private key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----")),
     ("AWS access key id", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("GitHub token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b")),
-    ("GitHub fine-grained token", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{ancestor}", re.NOFLAG) if False else re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b")),
+    ("GitHub fine-grained token", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b")),
     ("OpenAI key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")),
     ("Anthropic key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
     ("Slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b")),
@@ -103,21 +103,31 @@ _ASSIGNMENT = re.compile(
 
 # Values that look like a credential but are not one. Placeholders outnumber
 # real secrets in source trees by a wide margin, and every one of them that gets
-# reported is a step towards the guard being ignored.
-_PLACEHOLDER = re.compile(
+# reported is a step towards the guard being ignored. Matching is by word rather
+# than by exact shape, because placeholders are endlessly inventive about their
+# suffixes: `your-api-key-here`, `CHANGEME_token`, `<insert key>`.
+_PLACEHOLDER_WORDS = frozenset(
+    """your my our the some example examples sample samples dummy fake mock
+    placeholder redacted changeme change replace insert fill enter here goes
+    todo fixme none null nil undefined empty test testing xxx xxxx yyyy zzzz
+    abc123 secret password token key value string""".split()
+)
+
+_PLACEHOLDER_SHAPES = re.compile(
     r"""^(?:
-        (?:x{3,}|\*{3,}|\.{3,}|-{3,})
-        |(?:your|my|the|some|a)[-_]?(?:api)?[-_]?(?:key|token|secret|password)
-        |(?:change|replace|fill|set)[-_]?(?:me|this|it)
-        |(?:test|dummy|fake|sample|example|placeholder|redacted|dummy)[-_a-z0-9]*
-        |(?:none|null|nil|true|false|undefined|empty)
+        (?:x{3,}|\*{3,}|\.{3,}|-{3,}|<.*>|\{\{.*\}\}|\$\{?[a-z_]+\}?)
         |(?:process\.env|os\.environ|env|config|settings|secrets|vault)\b.*
-        |\$\{?[a-z_]+\}?
-        |<[^>]+>
-        |\{\{.*\}\}
     )$""",
     re.IGNORECASE | re.VERBOSE,
 )
+
+
+def _is_placeholder(value: str) -> bool:
+    value = value.strip().strip("\"'`")
+    if _PLACEHOLDER_SHAPES.match(value):
+        return True
+    words = {word for word in re.split(r"[^A-Za-z0-9]+", value.lower()) if word}
+    return bool(words & _PLACEHOLDER_WORDS)
 
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 # Deliberately North-America-shaped and anchored on separators: a bare run of
@@ -161,7 +171,7 @@ def _looks_like_a_real_secret(value: str) -> bool:
     generated keys sit well above it. The threshold is doing rough work — it only
     has to separate `password = "hunter2"` from `password = os.environ[...]`.
     """
-    if _PLACEHOLDER.match(value.strip()):
+    if _is_placeholder(value):
         return False
     stripped = value.strip("\"'`")
     if len(stripped) < 8:
@@ -189,6 +199,10 @@ def _luhn(digits: str) -> bool:
     return total % 10 == 0
 
 
+ALLOW_MARKER_TEXT = "grogu-allow-secret"
+_ALLOW_MARKER = re.compile(re.escape(ALLOW_MARKER_TEXT), re.IGNORECASE)
+
+
 def scan(text: str, *, path: str = "", personal: bool = True) -> list:
     """Every finding in `text`, in line order.
 
@@ -197,6 +211,12 @@ def scan(text: str, *, path: str = "", personal: bool = True) -> list:
     """
     findings: list = []
     for number, line in enumerate(text.splitlines(), start=1):
+        if _ALLOW_MARKER.search(line):
+            # A deliberate, reviewable, single-line exemption. It exists so that
+            # detector fixtures and documentation examples do not force the only
+            # other escape hatch, which is `--no-verify` on the whole commit —
+            # a habit far more dangerous than the line it was used to pass.
+            continue
         if len(line) > 4000:
             line = line[:4000]  # minified bundles are not worth the backtracking
         for label, pattern in _SECRET_PATTERNS:
@@ -306,7 +326,7 @@ _DANGEROUS_PATHS = re.compile(
         |credentials|\.aws/credentials
         |[A-Za-z0-9_.-]*\.(?:pem|pfx|p12|jks|keystore|ppk)
         |secrets?\.(?:ya?ml|json|toml|ini)
-        |service[-_]account.*\.json
+        |[A-Za-z0-9_.-]*service[-_]?account[A-Za-z0-9_.-]*\.json
     )$""",
     re.IGNORECASE | re.VERBOSE,
 )

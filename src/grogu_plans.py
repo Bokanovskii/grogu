@@ -42,6 +42,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
+import grogu_privacy
 from grogu_tasks import actor, repository_root, session_id
 
 SCHEMA_VERSION = 1
@@ -851,6 +852,7 @@ REQUIRED_DESIGN_SECTIONS = (
     "copy",
     "tokens",
     "accessibility",
+    "layout",
     "acceptance criteria",
     "left to the engineer",
 )
@@ -2283,6 +2285,21 @@ class PlanStore:
                 if not sealed_path.exists():
                     continue
                 body = unseal(sealed_path.read_text(encoding="utf8"))
+                # Finalizing is the moment a plan stops being a local working
+                # file and becomes pull request content. Anything pasted into
+                # it along the way — a token from a failing run, a customer
+                # address from a bug report — publishes here.
+                leaks = grogu_privacy.blocking(
+                    grogu_privacy.scan(body, path=f"{stage}"),
+                    destination=grogu_privacy.PUBLISHED,
+                )
+                if leaks:
+                    raise PlanError(
+                        f"refusing to finalize {plan_id}: the {stage} plan "
+                        "contains data that must not be published.\n"
+                        + grogu_privacy.report(leaks)
+                        + "\nEdit the stage, then finalize again."
+                    )
                 plain = self.plan_dir(plan_id) / f"{stage}.md"
                 plain.write_text(body, encoding="utf8")
                 sealed_path.unlink()
@@ -2457,6 +2474,13 @@ class PlanStore:
             )
         role = role or current_role() or "unknown"
         if target == TARGET_HARNESS:
+            # This note leaves the repository it was written in: it is pooled
+            # across every repository and later proposed as work in the Grogu
+            # checkout, which is public. A complaint quoting the failing command
+            # is exactly how a token from a private repository ends up in an
+            # issue about the harness, so it is redacted on the way out rather
+            # than refused — the complaint is still worth having.
+            note = grogu_privacy.redact(note)
             return self._note_harness_friction(note, plan_id=plan_id, role=role)
         with self.locked():
             payload = self._read_json(self.friction_path)

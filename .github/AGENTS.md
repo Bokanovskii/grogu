@@ -108,7 +108,17 @@ runs `grogu personal confirm`; never confirm a candidate on the user's
 behalf. Use `grogu personal recall` for bounded context instead of dumping
 the whole personal graph into a prompt.
 
-Use read-only operations by default. Ask for confirmation before destructive changes, external messages, sending email, deployment, spending money, or other irreversible side effects. Never expose secrets or personal data in traces.
+Use read-only operations by default. Ask for confirmation before destructive changes, external messages, sending email, deployment, spending money, or other irreversible side effects.
+
+Grogu reads private repositories, mail and messages and writes to public ones,
+so treat every commit, published plan and outbound message as a boundary the
+user's private context must not cross. Run `grogu guard install` once per
+repository so the pre-commit hook scans staged additions, and `grogu guard
+scan` before pasting collected text anywhere it will be published. Never quote
+a credential, address, phone number or account identifier into a plan, issue,
+pull request, commit message, trace or telemetry record; refer to where the
+value lives instead. The guard catches recognisable mistakes, not every one —
+it does not replace deciding what is fit to publish.
 
 When a web interface or browser behavior needs validation, use the configured Playwright MCP capability when available. Prefer isolated/headless checks and targeted assertions; browser access does not authorize external side effects.
 

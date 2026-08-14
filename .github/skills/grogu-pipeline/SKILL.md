@@ -1,9 +1,9 @@
 ---
 name: grogu-pipeline
-description: Route substantial work through the architect, engineer and tester agents using plan artifacts, stage gates, role-scoped steering and the amendment loop.
+description: Route substantial work through the architect, designer, engineer and tester agents using plan artifacts, stage gates, role-scoped steering and the amendment loop.
 ---
 
-Substantial work goes through three roles that hand each other files, not
+Substantial work goes through four roles that hand each other files, not
 conversation. Plans live on disk; agents are given a plan id and a role.
 
 ## Decide whether to plan at all
@@ -148,13 +148,18 @@ check. Dependent steps do not become faster by being given more agents.
 
 ```sh
 grogu plan stage <id> testing complete
+grogu guard staged            # nothing private rides out on the commit
 grogu plan finalize <id>      # unseal every stage so the PR carries the plans
 grogu plan retro <id>         # what this plan cost, and what to change
 grogu plan friction           # signals recurring across plans
 ```
 
+`finalize` scans the plans it is about to publish and refuses to unseal one
+carrying a credential or personal data; fix the plan rather than forcing it.
+
 Accepted amendments, escalations and user steering are all planning misses.
-Fix the repository's role overlays in `.grogu/roles/{architect,engineer,tester}.md`,
+Fix the repository's role overlays in
+`.grogu/roles/{architect,designer,engineer,tester}.md`,
 or the harness itself, rather than only the plan in front of you.
 
 See `docs/pipeline.md` for the design and the reasoning behind each constraint.

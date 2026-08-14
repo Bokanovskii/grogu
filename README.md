@@ -262,6 +262,20 @@ accepted amendments, escalations and user corrections into changes to those
 overlays. `grogu plan finalize` unseals every stage so the pull request carries
 the plans it implements.
 
+`grogu guard` is the egress check. Grogu reads private repositories, mail and
+messages, and publishes to public ones, so the risk is not that it leaks
+deliberately but that private context follows it out through an ordinary
+commit, a plan attached to a pull request, or a complaint about the harness
+pooled from a private repository into this public one. `grogu guard staged`
+scans staged additions only — a commit that *removes* a leaked key must never
+be blocked — and `grogu guard install` writes the pre-commit hook that runs it.
+Findings are split in two: a credential blocks everywhere, while personal data
+blocks only where the destination is published, because a colleague's address
+in a private repository is not a leak and a guard that fires on it teaches
+everybody to pass `--no-verify`. `grogu plan finalize` refuses to publish plans
+containing either, and harness friction is redacted on its way out of the
+repository it was written in.
+
 [docs/pipeline.md](docs/pipeline.md) explains each constraint and why it exists.
 
 ## Tasks, issues, handoff, and history

@@ -129,6 +129,14 @@ can see the whole shape of the work:
 Assigning a different model per workstream is also cheap diversity: two models
 from the same family agree with each other's mistakes.
 
+Be aware of what is enforced and what is not. `--review` is binding: the test
+gate stays shut until a matching review records a pass. `--model` and `--brief`
+are instructions to whoever spawns the agent — `grogu plan workstreams` prints
+them, and the spawning session is expected to honour them, but nothing checks
+afterwards that the workstream actually ran on the model you named. If a piece
+genuinely must not be built by a weak model, say so in the implementation plan
+as well, where the engineer will read it.
+
 ## The loop
 
 The engineer and tester will come back to you. When they do:
