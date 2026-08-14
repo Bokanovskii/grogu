@@ -64,9 +64,32 @@ just multiplies the cost of the same wait.
 grogu plan stage <id> implementation complete
 ```
 
+If the plan has a design stage, you build against it, but you do not get to
+decide whether you matched it. Before the tester runs, spawn the designer to
+look at the interface *running* — not at your diff:
+
+```sh
+grogu plan gate <id> test        # blocked until the designer has signed off
+```
+
+Get it to a state that can actually be looked at, then hand the designer what
+it needs to look: the command to run and the URL or view to open. For a web
+surface that means the `browser-validate` skill and screenshots of each state
+in the spec — default, empty, loading, error, success — because the states you
+never bothered to trigger are exactly the ones that are wrong. For a terminal
+surface, capture the real output. The designer records the verdict with
+`grogu plan design-review`, and a pass requires that evidence.
+
+This is not a formality standing between you and the tester. Code that
+implements a spec correctly clause by clause still routinely looks wrong
+assembled, and you are the worst-placed person to notice, having just spent
+hours deciding it was right.
+
 Then the tester runs. When they route a defect back to you, fix the cause rather
 than the symptom — and if you believe the failure is in the test rather than the
 code, say so and route it back instead of bending the implementation to pass.
+A design defect works the same way: if the spec was ambiguous rather than
+unimplemented, route it to the designer.
 
 ## Shipping
 

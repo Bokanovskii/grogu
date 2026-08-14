@@ -46,26 +46,41 @@ SCHEMA_VERSION = 1
 STORE_DIRNAME = ".grogu"
 PLANS_DIRNAME = "plans"
 
+DESIGN = "design"
 IMPLEMENTATION = "implementation"
 TESTING = "testing"
 EVALUATION = "evaluation"
-STAGES = (IMPLEMENTATION, TESTING, EVALUATION)
+STAGES = (DESIGN, IMPLEMENTATION, TESTING, EVALUATION)
 SEALED_STAGES = frozenset({TESTING, EVALUATION})
 
 ARCHITECT = "architect"
+DESIGNER = "designer"
 ENGINEER = "engineer"
 TESTER = "tester"
 REVIEWER = "reviewer"
-ROLES = (ARCHITECT, ENGINEER, TESTER, REVIEWER)
+ROLES = (ARCHITECT, DESIGNER, ENGINEER, TESTER, REVIEWER)
 
 # The whole point of the split: the engineer must not be able to write to the
 # test, because an implementation shaped by its own unit tests only proves the
 # tests were satisfiable.
 ROLE_READABLE_STAGES = {
     ARCHITECT: frozenset(STAGES),
-    ENGINEER: frozenset({IMPLEMENTATION}),
-    TESTER: frozenset({TESTING, EVALUATION}),
+    DESIGNER: frozenset({DESIGN, IMPLEMENTATION}),
+    ENGINEER: frozenset({IMPLEMENTATION, DESIGN}),
+    TESTER: frozenset({TESTING, EVALUATION, DESIGN}),
     REVIEWER: frozenset(STAGES),
+}
+
+# The design spec is not sealed, and that is not an inconsistency. A test is a
+# *proxy* for correctness, so showing it to the implementer corrupts the proxy;
+# a design spec *is* the requirement, so withholding it just makes the work
+# impossible. What stays sealed is how the design will be judged, which the
+# architect folds into the testing plan.
+STAGE_WRITERS = {
+    DESIGN: frozenset({DESIGNER}),
+    IMPLEMENTATION: frozenset({ARCHITECT}),
+    TESTING: frozenset({ARCHITECT}),
+    EVALUATION: frozenset({ARCHITECT}),
 }
 
 DRAFT = "draft"
@@ -94,7 +109,12 @@ KIND_ESCALATION = "escalation"
 ROUTE_IMPLEMENTATION = "implementation"
 ROUTE_TEST = "test"
 ROUTE_PLAN = "plan"
-DEFECT_ROUTES = (ROUTE_IMPLEMENTATION, ROUTE_TEST, ROUTE_PLAN)
+ROUTE_DESIGN = "design"
+DEFECT_ROUTES = (ROUTE_IMPLEMENTATION, ROUTE_TEST, ROUTE_PLAN, ROUTE_DESIGN)
+
+PASS = "pass"
+CHANGES = "changes"
+DESIGN_VERDICTS = (PASS, CHANGES)
 
 DEFAULT_MAX_ROUNDS = 3
 DEFAULT_MAX_DEFECT_ROUNDS = 3
@@ -189,6 +209,16 @@ _TRIVIAL_PATTERNS = (
 )
 
 
+_DESIGN_PATTERNS = (
+    r"\b(ui|ux|interface|screen|page|view|layout|design)\b",
+    r"\b(button|form|modal|dialog|menu|navigation|nav bar|sidebar)\b",
+    r"\b(dashboard|onboarding|settings page|landing page)\b",
+    r"\b(looks?|feel|visual|styling|theme|dark mode)\b",
+    r"\bcommand output\b",
+    r"\buser[- ]facing\b",
+)
+
+
 def triage(prompt: str) -> dict:
     """Decide whether a request warrants a plan, deterministically.
 
@@ -241,8 +271,14 @@ def triage(prompt: str) -> dict:
         reasons.append("plan requested explicitly")
 
     decision = "plan" if score >= 2 else "direct"
+    design_hits = [
+        pattern for pattern in _DESIGN_PATTERNS if re.search(pattern, lowered)
+    ]
+    if design_hits and decision == "plan":
+        reasons.append("user-visible surface: warrants a design stage")
     return {
         "decision": decision,
+        "design": bool(design_hits) and decision == "plan",
         "score": score,
         "words": words,
         "reasons": reasons,
@@ -335,6 +371,177 @@ def pending_banner(root: Optional[Path] = None) -> str:
         )
     lines.append("───────────────────────────────────────────────────────")
     return "\n".join(lines)
+
+
+# -- design spec structure -------------------------------------------------
+
+# The format question has two bad answers. An HTML mockup is an implementation:
+# it makes the designer the front-end engineer, encodes a hundred incidental
+# decisions the engineer cannot distinguish from deliberate ones, and does not
+# survive a move to a native view or a terminal. Free prose is worse — "clean,
+# modern, Apple-like" is not implementable, so the engineer decides, which is
+# the exact failure this role exists to prevent.
+#
+# What transfers is structured English carrying concrete values: fixed sections
+# so nothing is silently skipped, real numbers and literal strings instead of
+# adjectives, and acceptance criteria the tester can check. Consistent
+# completeness is most of what a weaker model gets wrong, and it is the part a
+# machine can enforce.
+REQUIRED_DESIGN_SECTIONS = (
+    "surfaces",
+    "hierarchy",
+    "states",
+    "flow",
+    "copy",
+    "tokens",
+    "accessibility",
+    "acceptance criteria",
+    "left to the engineer",
+)
+
+# Adjectives that feel like decisions and are not. Each one is a place where the
+# engineer will have to guess, and where the guess will be wrong.
+VAGUE_DESIGN_TERMS = (
+    "clean",
+    "modern",
+    "sleek",
+    "elegant",
+    "polished",
+    "beautiful",
+    "intuitive",
+    "user-friendly",
+    "seamless",
+    "nice",
+    "pretty",
+    "apple-like",
+    "apple-esque",
+    "premium",
+    "slick",
+)
+
+
+def _headings(body: str) -> list:
+    return [
+        line.lstrip("#").strip().lower()
+        for line in body.splitlines()
+        if line.lstrip().startswith("#")
+    ]
+
+
+def missing_design_sections(body: str) -> list:
+    headings = _headings(body)
+    return [
+        section
+        for section in REQUIRED_DESIGN_SECTIONS
+        if not any(section in heading for heading in headings)
+    ]
+
+
+def vague_design_terms(body: str) -> set:
+    """Adjectives used as if they were specifications.
+
+    Allowed inside fenced blocks, which hold literal copy and sample output —
+    the user's own interface may well use the word "clean".
+    """
+    outside = []
+    fenced = False
+    for line in body.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if not fenced:
+            outside.append(line)
+    text = " ".join(outside).lower()
+    return {
+        term for term in VAGUE_DESIGN_TERMS if re.search(rf"\b{re.escape(term)}\b", text)
+    }
+
+
+# Choosing a dependency from memory is the quiet architecture failure: a stale
+# recommendation reads exactly like a current one. This cannot be enforced —
+# nothing here can prove a search happened — but a plan that adopts something
+# external and cites nothing is worth saying out loud.
+_DEPENDENCY_SIGNALS = (
+    r"\b(npm|yarn|pnpm) (install|add)\b",
+    r"\bpip install\b",
+    r"\bgo get\b",
+    r"\bcargo add\b",
+    r"\bbrew install\b",
+    r"\badd (?:a |the )?(?:new )?dependenc(?:y|ies)\b",
+    r"\bnew dependency\b",
+    r"\b(?:use|adopt|switch to) the \w+ (?:library|package|sdk|service)\b",
+)
+
+
+def uncited_dependencies(body: str) -> list:
+    """Dependency adoptions in a plan that cite no source."""
+    lowered = body.lower()
+    hits = [
+        re.search(pattern, lowered).group(0)
+        for pattern in _DEPENDENCY_SIGNALS
+        if re.search(pattern, lowered)
+    ]
+    if not hits or re.search(r"https?://", lowered):
+        return []
+    return hits
+
+
+DESIGN_TEMPLATE = """# {title} — design
+
+## Surfaces
+Every screen, view, command or endpoint this change touches. One line each.
+
+## Hierarchy
+For each surface: the single primary action, what is secondary, what is
+destructive and where it is kept away from the primary.
+
+## States
+Default, empty, loading, error, success — for each surface. Give the literal
+copy for empty and error states; a state without written copy is a state the
+engineer will invent.
+
+## Flow
+The path through the surfaces, including what happens on cancel and on failure.
+
+## Copy
+Exact strings. Labels, buttons, headings, errors, confirmations. Voice: what
+this product sounds like, with one rewritten example.
+
+## Tokens
+Concrete values, not adjectives. Spacing scale, type ramp with sizes and
+weights, the accent colour and what it means, corner radii, motion durations.
+State the scale once and reference it; do not restate padding per element.
+
+## Accessibility
+Contrast ratios, the full keyboard path, focus order, reduced-motion and
+dynamic-type behavior, labels for anything non-textual.
+
+## Layout
+For a visual surface, a rough ASCII box sketch — arrangement and proportion
+only, deliberately low fidelity so nobody treats it as source.
+
+For a terminal or API surface, a fenced block of the exact intended output,
+alignment included. That is the highest-fidelity artifact available here and it
+is directly testable:
+
+```
+$ example command
+  id            status     title
+  p-20260814-a  approved   Rate limiting
+```
+
+## Acceptance criteria
+Checkable statements, one per line, that the tester can confirm or deny
+without asking anyone what was meant.
+
+## Left to the engineer
+What is deliberately not specified, and therefore the engineer's call. Naming
+this is what stops a spec from being read as either gospel or a suggestion.
+"""
+
+
+def design_template(title: str = "<change>") -> str:
+    return DESIGN_TEMPLATE.format(title=title)
 
 
 class PlanStore:
@@ -439,13 +646,18 @@ class PlanStore:
         title: str,
         *,
         task_id: str = "",
+        design: bool = False,
         evaluation: bool = False,
         review_required: bool = False,
         requested_by: str = "",
     ) -> dict:
         with self.locked():
             plan_id = self._new_id()
-            stages = [IMPLEMENTATION, TESTING] + ([EVALUATION] if evaluation else [])
+            stages = (
+                ([DESIGN] if design else [])
+                + [IMPLEMENTATION, TESTING]
+                + ([EVALUATION] if evaluation else [])
+            )
             manifest = {
                 "schema_version": SCHEMA_VERSION,
                 "id": plan_id,
@@ -497,27 +709,60 @@ class PlanStore:
     # -- stage bodies ------------------------------------------------------
 
     def write_stage(self, plan_id: str, stage: str, body: str, *, role: str = "") -> dict:
-        """Only the architect writes plan bodies; everyone else proposes."""
+        """Stages are written by the role that owns them; others propose."""
         role = role or current_role() or ARCHITECT
-        if role != ARCHITECT:
+        writers = STAGE_WRITERS.get(stage, frozenset({ARCHITECT}))
+        if role not in writers:
             raise PlanError(
-                f"role {role!r} may not write plan stages; propose a change with "
-                "`grogu plan amend` and let the architect decide"
+                f"role {role!r} may not write the {stage} stage "
+                f"(owners: {', '.join(sorted(writers))}); propose a change with "
+                "`grogu plan amend` and let the owner decide"
             )
         with self.locked():
             manifest = self.load(plan_id)
             if stage not in manifest.get("stages", []):
                 raise PlanError(
                     f"plan {plan_id} has no {stage} stage; create it with "
-                    "`grogu plan new --eval` when an evaluation is warranted"
+                    "`grogu plan new --design/--eval` when one is warranted"
                 )
             if not body.strip():
                 raise PlanError("refusing to write an empty plan stage")
+            if stage == DESIGN:
+                missing = missing_design_sections(body)
+                if missing:
+                    raise PlanError(
+                        "the design spec is missing required sections: "
+                        + ", ".join(missing)
+                        + ". Run `grogu design template` for the skeleton. A spec "
+                        "that skips states, tokens or acceptance criteria hands "
+                        "those decisions to the engineer by omission."
+                    )
+                vague = vague_design_terms(body)
+                if vague:
+                    raise PlanError(
+                        "the design spec leans on adjectives instead of decisions: "
+                        + ", ".join(sorted(vague))
+                        + ". Replace each with a concrete value — a spacing number, "
+                        "a type size, the literal copy string, the exact output."
+                    )
             path = self.stage_path(plan_id, stage)
             sealed = path.suffix == ".sealed"
             path.write_text(seal(body) if sealed else body, encoding="utf8")
             manifest.setdefault("stage_written", {})[stage] = True
-            return self._save(manifest, "stage_written", stage=stage, bytes=len(body))
+            manifest = self._save(manifest, "stage_written", stage=stage, bytes=len(body))
+            manifest["warnings"] = (
+                [
+                    "this plan adopts something external ("
+                    + ", ".join(uncited_dependencies(body))
+                    + ") and cites no source. Check the current state of it — "
+                    "version, maintenance, licence, cost — and record where you "
+                    "checked, so the engineer can tell a researched choice from a "
+                    "remembered one."
+                ]
+                if stage == IMPLEMENTATION and uncited_dependencies(body)
+                else []
+            )
+            return manifest
 
     def read_stage(self, plan_id: str, stage: str, *, role: str, record: bool = True) -> str:
         if role not in ROLES:
@@ -893,10 +1138,11 @@ class PlanStore:
                     ROUTE_IMPLEMENTATION: ENGINEER,
                     ROUTE_TEST: TESTER,
                     ROUTE_PLAN: ARCHITECT,
+                    ROUTE_DESIGN: DESIGNER,
                 }[route],
             }
             defects.append(defect)
-            if route in (ROUTE_IMPLEMENTATION, ROUTE_TEST):
+            if route in (ROUTE_IMPLEMENTATION, ROUTE_TEST, ROUTE_DESIGN):
                 rounds = manifest.get("defect_rounds", 0) + 1
                 manifest["defect_rounds"] = rounds
                 cap = manifest.get("max_defect_rounds", DEFAULT_MAX_DEFECT_ROUNDS)
@@ -1055,6 +1301,52 @@ class PlanStore:
 
     # -- gates -------------------------------------------------------------
 
+    def design_review(
+        self,
+        plan_id: str,
+        verdict: str,
+        *,
+        notes: str = "",
+        evidence: Optional[list] = None,
+        role: str = "",
+    ) -> dict:
+        """The designer's verdict on the built interface, not the spec.
+
+        A spec survives contact with an implementation about as well as any
+        other plan does. The only way to know whether the result is right is to
+        look at it running, which is why this requires evidence — screenshots,
+        a recording, captured terminal output — rather than an assurance.
+        """
+        role = role or current_role() or DESIGNER
+        if role != DESIGNER:
+            raise PlanError(
+                f"role {role!r} may not sign off on the design; spawn the "
+                "designer to look at the built interface"
+            )
+        if verdict not in DESIGN_VERDICTS:
+            raise PlanError(
+                f"unknown verdict {verdict!r}; expected {' or '.join(DESIGN_VERDICTS)}"
+            )
+        evidence = [item for item in (evidence or []) if item.strip()]
+        if verdict == PASS and not evidence:
+            raise PlanError(
+                "a design pass needs evidence of the built interface — screenshot "
+                "paths, a recording, or captured output. Signing off from the "
+                "diff alone checks that the code looks right, not that the "
+                "interface does"
+            )
+        with self.locked():
+            manifest = self.load(plan_id)
+            if DESIGN not in manifest.get("stages", []):
+                raise PlanError(f"plan {plan_id} has no design stage to review")
+            manifest["design_review"] = {
+                "at": now(),
+                "verdict": verdict,
+                "notes": notes.strip(),
+                "evidence": evidence,
+            }
+            return self._save(manifest, "design_reviewed", verdict=verdict)
+
     def gate(self, plan_id: str, stage_gate: str) -> dict:
         """Whether the pipeline may enter a stage, and why not when it may not.
 
@@ -1099,6 +1391,14 @@ class PlanStore:
         if stage_gate == GATE_TEST:
             if manifest.get("stage_state", {}).get(IMPLEMENTATION) != COMPLETE:
                 blockers.append("implementation stage is not complete")
+            if DESIGN in manifest.get("stages", []):
+                review = manifest.get("design_review") or {}
+                if review.get("verdict") != PASS:
+                    blockers.append(
+                        "the designer has not signed off on the built interface; "
+                        "have the designer look at it running (screenshots or the "
+                        "live surface) and record `grogu plan design-review`"
+                    )
         if stage_gate == GATE_EVALUATE:
             if EVALUATION not in manifest.get("stages", []):
                 blockers.append("this plan has no evaluation stage")
@@ -1270,6 +1570,18 @@ class PlanStore:
                     "detail": "the test harness itself failed, not the code under test",
                 }
             )
+        if by_route.get(ROUTE_DESIGN):
+            findings.append(
+                {
+                    "signal": "design_defects",
+                    "count": by_route[ROUTE_DESIGN],
+                    "target": "design_taste",
+                    "detail": (
+                        "the built result did not match the design intent; the "
+                        "principles the designer worked from may be incomplete"
+                    ),
+                }
+            )
         if by_route.get(ROUTE_PLAN):
             findings.append(
                 {
@@ -1422,6 +1734,14 @@ class PlanStore:
         overlay_path = self.overlay_path(role)
         overlay = overlay_path.read_text(encoding="utf8") if overlay_path.is_file() else ""
         steering = self.steering(role=role, plan_id=plan_id, unread=False)
+        principles: list = []
+        if role == DESIGNER:
+            try:
+                import grogu_design
+
+                principles = grogu_design.DesignStore().recall(limit=25)
+            except Exception:
+                principles = []
         return {
             "role": role,
             "plan": plan_id,
@@ -1430,5 +1750,6 @@ class PlanStore:
             "overlay_path": str(overlay_path),
             "has_overlay": bool(overlay),
             "steering": steering,
+            "design_principles": principles,
             "summary": self.summary(plan_id) if plan_id else {},
         }

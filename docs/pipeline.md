@@ -1,4 +1,4 @@
-# The architect / engineer / tester pipeline
+# The architect / designer / engineer / tester pipeline
 
 The question this answers: how does a request become a change that somebody can
 trust, without three agents talking each other into a confident mistake or
@@ -15,6 +15,7 @@ reference means one authoritative version, and re-reading it costs a file read.
 
 ```
 <repo>/.grogu/plans/<id>/manifest.json     status, stages, loops, steering, audit
+<repo>/.grogu/plans/<id>/design.md         optional, what the result should be
 <repo>/.grogu/plans/<id>/implementation.md the engineer's input
 <repo>/.grogu/plans/<id>/testing.sealed    the tester's input
 <repo>/.grogu/plans/<id>/evaluation.sealed optional, end-to-end quality
@@ -37,6 +38,98 @@ tokens, while skipping a plan on real work costs a rewrite. But questions,
 steering, retrieval and obvious small edits route `direct`, and an explicit
 "just do it" always wins. The failure mode being avoided is a harness that
 solemnly plans its way through "what does this function do".
+
+## Architecture decisions are researched, not recalled
+
+A model's knowledge of libraries, services, APIs, limits and pricing has a
+cutoff, and architecture is where that hurts most: the deprecated dependency,
+the quota that changed, the thing the platform now does for free. The failure is
+quiet, because a stale recommendation is written with exactly the same
+confidence as a current one.
+
+So the architect looks things up before choosing them — `web_search` for the
+current landscape, `web_fetch` for the vendor's own documentation and
+changelog, the GitHub tools for whether a project is still maintained — and
+records the source and the date in the plan. The engineer inherits those
+decisions and cannot otherwise distinguish a researched choice from a
+remembered one.
+
+This is not fully enforceable; nothing on disk can prove a search happened.
+What is checkable is the trace it leaves, so writing an implementation plan
+that adopts something external and cites no source prints a warning. A warning
+rather than a refusal, because the detection is heuristic and a false positive
+that blocks a plan is worse than one that is merely read and dismissed.
+
+## The design stage
+
+Work with a user-visible surface gets a fourth role. `grogu plan triage` flags
+it, `grogu plan new --design` adds the stage, and the designer writes it.
+
+The reason it is a separate role rather than a section of the implementation
+plan is empirical: models are markedly worse at design than at code, and the
+gap is hard to see, because bad design output is fluent and looks finished.
+So the designer runs on the strongest model available, works from a store of
+the user's own taste, and produces a spec that is judged on its own.
+
+### The design spec is not sealed
+
+The testing plan is hidden from the engineer; the design spec is handed to it.
+The two are not inconsistent, because the artifacts are different in kind.
+
+A test is a *proxy* for correctness. Show the proxy and it gets optimised
+against, and the signal is gone. A design spec *is* the requirement. Withholding
+it does not preserve any signal; it just means the engineer invents an interface
+and then gets marked against one it never saw.
+
+What stays hidden is how the design will be *judged*: the architect folds design
+acceptance criteria into the testing plan.
+
+### The format
+
+The spec is structured English carrying concrete values. Not HTML — an HTML
+mockup is an implementation, so it makes the designer a front-end engineer,
+encodes a hundred incidental decisions the engineer cannot distinguish from
+deliberate ones, and does not survive a move to a native view or a terminal. Not
+free prose either: "clean, modern, Apple-like" cannot be built, so the engineer
+decides, which is the failure the role exists to prevent.
+
+`grogu design template` prints the required skeleton, and `grogu plan write <id>
+design` refuses a spec that skips a required section or leans on adjectives.
+That refusal is the point. Consistent completeness — every state, including the
+empty and error ones nobody enjoys writing — is most of what weaker design
+output gets wrong, and it is the part a machine can check.
+
+For a terminal or API surface the highest-fidelity artifact is a fenced block of
+the exact intended output; it is unambiguous and directly testable. For a visual
+surface it is a deliberately rough ASCII sketch, kept low fidelity so nobody
+mistakes it for source. An HTML prototype is allowed only when interaction
+itself is the risk, and then it is labelled behaviour reference, beside the
+spec, never the spec.
+
+### Design taste is learned, and user-scoped
+
+Design preference belongs to a person, not a repository. It lives in
+`$GROGU_HOME/design/` and applies everywhere.
+
+`grogu design remember` records something the user actually said.
+`grogu design suggest` queues something the designer *inferred* — from a
+rejected layout, a rewritten sentence — and it does not apply until the user
+confirms it. That split is the same consent boundary personal memory uses, for
+the same reason: an agent that silently learns a taste the user never expressed
+produces confident work nobody wanted, and afterwards nothing can tell an
+inferred preference from a stated one.
+
+### Signing off on what was built
+
+A spec survives contact with an implementation about as well as any other plan.
+So the designer is spawned a second time, after implementation, to look at the
+interface running — screenshots of every state for a visual surface, captured
+output for a terminal one.
+
+`grogu plan gate <id> --stage test` stays shut until `grogu plan design-review`
+records a pass, and a pass requires evidence. Reviewing the diff instead only
+establishes that the code matches the words in the spec, which was never the
+question.
 
 ## Why the engineer cannot read the test plan
 
@@ -189,6 +282,7 @@ cannot keep them current.
 | Role | Model | Why |
 | --- | --- | --- |
 | architect | `claude-opus-5` | planning errors are cheap to fix here and expensive later |
+| designer | `claude-opus-5` | design is where weak output is hardest to spot and costliest to unwind |
 | engineer | `claude-sonnet-5` | general implementation, escalating when the work warrants it |
 | tester | `grok-4.5` | a different family from the engineer, on purpose |
 

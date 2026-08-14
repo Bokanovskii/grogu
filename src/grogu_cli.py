@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import grogu_banner
 import grogu_codemode
 import grogu_context
+import grogu_design
 import grogu_gmail
 import grogu_imessage
 import grogu_mcp
@@ -1204,6 +1205,7 @@ def plan_new(args: argparse.Namespace) -> int:
     plan = store.create(
         args.title,
         task_id=args.task or "",
+        design=args.design,
         evaluation=args.eval,
         review_required=args.review_required,
     )
@@ -1261,7 +1263,11 @@ def plan_write(args: argparse.Namespace) -> int:
     store = plan_store(args)
     body = _read_body(args)
     plan_id = store.resolve(args.id)
-    store.write_stage(plan_id, args.stage, body, role=getattr(args, "role", "") or "")
+    manifest = store.write_stage(
+        plan_id, args.stage, body, role=getattr(args, "role", "") or ""
+    )
+    for warning in manifest.get("warnings", []):
+        print(f"grogu: {warning}", file=sys.stderr)
     print(f"wrote {args.stage} plan for {plan_id} ({len(body)} bytes)")
     return 0
 
@@ -1319,6 +1325,20 @@ def plan_gate(args: argparse.Namespace) -> int:
         for blocker in result["blockers"]:
             print(f"  - {blocker}")
     return 0 if result["allowed"] else 3
+
+
+def plan_design_review(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    manifest = store.design_review(
+        store.resolve(args.id),
+        args.verdict,
+        notes=args.notes or "",
+        evidence=args.evidence or [],
+        role=args.role or "",
+    )
+    review = manifest["design_review"]
+    print(f"design review recorded: {review['verdict']}")
+    return 0
 
 
 def plan_amend(args: argparse.Namespace) -> int:
@@ -1565,6 +1585,104 @@ def plan_friction(args: argparse.Namespace) -> int:
             f" -> {bucket['target']}"
         )
     print(report["verdict"])
+    return 0
+
+
+def design_store(args: argparse.Namespace) -> grogu_design.DesignStore:
+    return grogu_design.DesignStore(GROGU_HOME)
+
+
+def design_status(args: argparse.Namespace) -> int:
+    status = design_store(args).status()
+    if args.json:
+        print_json(status)
+        return 0
+    print(f"{status['principles']} principle(s), {status['pending']} pending")
+    print(f"  {status['directory']}")
+    if status["scopes"]:
+        print(f"  scopes: {', '.join(status['scopes'])}")
+    return 0
+
+
+def design_remember(args: argparse.Namespace) -> int:
+    principle = design_store(args).remember(
+        " ".join(args.statement),
+        scope=args.scope,
+        rationale=args.rationale or "",
+        examples=args.example or [],
+        anti_examples=args.anti_example or [],
+    )
+    print(principle["id"])
+    return 0
+
+
+def design_suggest(args: argparse.Namespace) -> int:
+    candidate = design_store(args).suggest(
+        " ".join(args.statement),
+        scope=args.scope,
+        rationale=args.rationale or "",
+        evidence=args.evidence or "",
+        source=args.source,
+        confidence=args.confidence,
+    )
+    print(f"{candidate['id']} (pending; needs `grogu design confirm`)")
+    return 0
+
+
+def design_review(args: argparse.Namespace) -> int:
+    candidates = design_store(args).review(limit=args.limit)
+    if args.json:
+        print_json(candidates)
+        return 0
+    for candidate in candidates:
+        print(f"{candidate['id']}  [{candidate['scope']}] {candidate['statement']}")
+        if candidate.get("evidence"):
+            print(f"    observed: {candidate['evidence']}")
+    return 0
+
+
+def design_confirm(args: argparse.Namespace) -> int:
+    principle = design_store(args).confirm(args.id)
+    print(f"confirmed {principle['id']}")
+    return 0
+
+
+def design_reject(args: argparse.Namespace) -> int:
+    print("rejected" if design_store(args).reject(args.id) else "no such candidate")
+    return 0
+
+
+def design_forget(args: argparse.Namespace) -> int:
+    print("forgotten" if design_store(args).forget(args.id) else "no such principle")
+    return 0
+
+
+def design_recall(args: argparse.Namespace) -> int:
+    principles = design_store(args).recall(
+        query=" ".join(args.query) if args.query else "",
+        scope=args.scope or "",
+        limit=args.limit,
+    )
+    if args.json:
+        print_json(principles)
+        return 0
+    for principle in principles:
+        print(f"[{principle['scope']}] {principle['statement']}")
+        if principle.get("rationale"):
+            print(f"    why: {principle['rationale']}")
+    return 0
+
+
+def design_template(args: argparse.Namespace) -> int:
+    sys.stdout.write(grogu_plans.design_template(" ".join(args.title) if args.title else "<change>"))
+    return 0
+
+
+def design_seed(args: argparse.Namespace) -> int:
+    added = design_store(args).seed_apple()
+    print(f"recorded {len(added)} principle(s)")
+    for principle in added:
+        print(f"  [{principle['scope']}] {principle['statement']}")
     return 0
 
 
@@ -2043,6 +2161,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan_new_parser.add_argument("title")
     plan_new_parser.add_argument("--task", help="task id this plan serves")
     plan_new_parser.add_argument(
+        "--design",
+        action="store_true",
+        help="add a design stage for user-visible surfaces",
+    )
+    plan_new_parser.add_argument(
         "--eval",
         action="store_true",
         help="add an evaluation stage for end-to-end or non-deterministic behavior",
@@ -2272,6 +2395,93 @@ def build_parser() -> argparse.ArgumentParser:
     plan_friction_parser.add_argument("--json", action="store_true")
     plan_friction_parser.set_defaults(handler=plan_friction)
 
+    plan_design_review_parser = plan_subparsers.add_parser(
+        "design-review", help="the designer's verdict on the built interface"
+    )
+    plan_design_review_parser.add_argument("id")
+    plan_design_review_parser.add_argument("--repo")
+    plan_design_review_parser.add_argument(
+        "--verdict", required=True, choices=list(grogu_plans.DESIGN_VERDICTS)
+    )
+    plan_design_review_parser.add_argument("--notes")
+    plan_design_review_parser.add_argument(
+        "--evidence",
+        action="append",
+        help="screenshot path, recording or captured output (required to pass)",
+    )
+    plan_design_review_parser.add_argument("--role")
+    plan_design_review_parser.set_defaults(handler=plan_design_review)
+
+    design = subparsers.add_parser(
+        "design", help="design taste the designer works from, and the spec skeleton"
+    )
+    design_subparsers = design.add_subparsers(dest="design_command", required=True)
+
+    design_status_parser = design_subparsers.add_parser("status")
+    design_status_parser.add_argument("--json", action="store_true")
+    design_status_parser.set_defaults(handler=design_status)
+
+    design_remember_parser = design_subparsers.add_parser(
+        "remember", help="record a principle the user stated"
+    )
+    design_remember_parser.add_argument("statement", nargs="+")
+    design_remember_parser.add_argument("--scope", default="all", choices=sorted(grogu_design.SCOPES))
+    design_remember_parser.add_argument("--rationale")
+    design_remember_parser.add_argument("--example", action="append")
+    design_remember_parser.add_argument("--anti-example", action="append", dest="anti_example")
+    design_remember_parser.set_defaults(handler=design_remember)
+
+    design_suggest_parser = design_subparsers.add_parser(
+        "suggest", help="queue an inferred preference for the user to confirm"
+    )
+    design_suggest_parser.add_argument("statement", nargs="+")
+    design_suggest_parser.add_argument("--scope", default="all", choices=sorted(grogu_design.SCOPES))
+    design_suggest_parser.add_argument("--rationale")
+    design_suggest_parser.add_argument("--evidence")
+    design_suggest_parser.add_argument("--source", default="observed")
+    design_suggest_parser.add_argument("--confidence", type=float, default=0.5)
+    design_suggest_parser.set_defaults(handler=design_suggest)
+
+    design_review_parser = design_subparsers.add_parser(
+        "review", help="list pending inferred preferences"
+    )
+    design_review_parser.add_argument("--limit", type=int, default=50)
+    design_review_parser.add_argument("--json", action="store_true")
+    design_review_parser.set_defaults(handler=design_review)
+
+    design_confirm_parser = design_subparsers.add_parser("confirm")
+    design_confirm_parser.add_argument("id")
+    design_confirm_parser.set_defaults(handler=design_confirm)
+
+    design_reject_parser = design_subparsers.add_parser("reject")
+    design_reject_parser.add_argument("id")
+    design_reject_parser.set_defaults(handler=design_reject)
+
+    design_forget_parser = design_subparsers.add_parser("forget")
+    design_forget_parser.add_argument("id")
+    design_forget_parser.set_defaults(handler=design_forget)
+
+    design_recall_parser = design_subparsers.add_parser(
+        "recall", help="the principles that apply to a surface"
+    )
+    design_recall_parser.add_argument("query", nargs="*")
+    design_recall_parser.add_argument("--scope")
+    design_recall_parser.add_argument("--limit", type=int, default=20)
+    design_recall_parser.add_argument("--json", action="store_true")
+    design_recall_parser.set_defaults(handler=design_recall)
+
+    design_template_parser = design_subparsers.add_parser(
+        "template", help="print the required design spec skeleton"
+    )
+    design_template_parser.add_argument("title", nargs="*")
+    design_template_parser.set_defaults(handler=design_template)
+
+    design_seed_parser = design_subparsers.add_parser(
+        "seed", help="record the baseline Apple-leaning principles"
+    )
+    design_seed_parser.add_argument("--apple", action="store_true")
+    design_seed_parser.set_defaults(handler=design_seed)
+
     session = subparsers.add_parser(
         "session", help="start and manage Grogu sessions"
     )
@@ -2466,6 +2676,7 @@ GROGU_COMMANDS = frozenset(
         "banner",
         "task",
         "plan",
+        "design",
         "session",
         "worktree",
     }
@@ -2489,6 +2700,9 @@ def main(arguments: list[str]) -> int:
         return launch_copilot(arguments)
     try:
         return parsed.handler(parsed)
+    except grogu_design.DesignError as error:
+        print(f"grogu: {error}", file=sys.stderr)
+        return 2
     except grogu_plans.PlanError as error:
         print(f"grogu: {error}", file=sys.stderr)
         return 3

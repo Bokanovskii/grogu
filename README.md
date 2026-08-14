@@ -192,16 +192,16 @@ so Grogu can start a separate remote session without replacing the current one.
   instruction directories, not substituted for the user's own.
 * **Skills** live in `.github/skills/<name>/SKILL.md`. Add a directory, add a
   skill; nothing needs to be registered.
-* **Agents** live in `.github/agents/<role>.md`. The architect, engineer and
-  tester roles are defined there, and `grogu plan brief` uses the same files as
+* **Agents** live in `.github/agents/<role>.md`. The architect, designer,
+  engineer and tester roles are defined there, and `grogu plan brief` uses the same files as
   the base of each role's prompt.
 * **Commands** live in `src/grogu_cli.py` as a subparser plus a handler, and are
   added to `GROGU_COMMANDS` so the launcher does not forward them to Copilot.
   Any argument Grogu does not recognise belongs to Copilot.
 
-## Planning: architect, engineer, tester
+## Planning: architect, designer, engineer, tester
 
-Substantial work goes through three roles that hand each other files rather than
+Substantial work goes through four roles that hand each other files rather than
 conversation. Plans are artifacts on disk; agents get a plan id and a role.
 
 ```sh
@@ -212,7 +212,16 @@ grogu plan gate <id> --stage implement             # exit 3 = do not start
 grogu plan show <id> --stage implementation --role engineer
 ```
 
-Four things make this more than a naming scheme:
+Work with a user-visible surface adds a design stage:
+
+```sh
+grogu plan new "Settings page" --design
+grogu design recall --scope web                    # the user's own taste
+grogu design template "Settings page"              # the required structure
+grogu plan design-review <id> --verdict pass --evidence shot.png
+```
+
+Five things make this more than a naming scheme:
 
 * **Not everything is planned.** `grogu plan triage` is deterministic and free.
   Questions, steering and obvious small edits route `direct`, because spending a
@@ -224,12 +233,16 @@ Four things make this more than a naming scheme:
 * **Gates are state, not advice.** When the user asks for a plan directly,
   `--review-required` makes `grogu plan gate` refuse work until they approve.
   Autopilot does not waive user review.
+* **Design is specified, then verified by eye.** The designer writes concrete
+  values rather than adjectives — the store rejects "clean" and "modern" — and
+  is spawned again after implementation to look at the result running. The test
+  gate stays shut until it signs off with evidence.
 * **The loops end somewhere.** The engineer and tester escalate to the architect,
   who must verify claims against the code itself (`--verified`) before changing
   the plan. Only questions of intent reach the user.
 
 Each repository supplies its own role context in
-`.grogu/roles/{architect,engineer,tester}.md`, which `grogu plan brief` merges
+`.grogu/roles/{architect,designer,engineer,tester}.md`, which `grogu plan brief` merges
 with the shared contract. `grogu plan steer` records role-scoped steering that
 reaches agents spawned later and rides out on the output of any `grogu` command a
 running agent happens to run. `grogu plan retro` and `grogu plan friction` turn

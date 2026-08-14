@@ -10,6 +10,11 @@ sys.path.insert(0, str(ROOT / "src"))
 import grogu_plans  # noqa: E402
 
 
+def valid_design_spec() -> str:
+    spec = grogu_plans.design_template("Test plan")
+    return spec + "\n- the table renders with a 16px row gap\n"
+
+
 class PlanStoreTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -22,9 +27,13 @@ class PlanStoreTests(unittest.TestCase):
     def plan(self, **kwargs):
         plan = self.store.create("Test plan", **kwargs)
         for stage in plan["stages"]:
-            self.store.write_stage(
-                plan["id"], stage, f"# {stage} body\n", role=grogu_plans.ARCHITECT
+            owner = sorted(grogu_plans.STAGE_WRITERS[stage])[0]
+            body = (
+                valid_design_spec()
+                if stage == grogu_plans.DESIGN
+                else f"# {stage} body\n"
             )
+            self.store.write_stage(plan["id"], stage, body, role=owner)
         return plan["id"]
 
     # -- role isolation ----------------------------------------------------
@@ -435,6 +444,143 @@ class PlanStoreTests(unittest.TestCase):
         self.assertEqual(len(report["notes"]), 1)
         self.store.resolve_friction(1, note="cached the fixtures")
         self.assertEqual(self.store.friction()["notes"], [])
+
+
+    # -- design stage ------------------------------------------------------
+
+    def test_designer_writes_the_design_stage_and_architect_may_not(self):
+        plan = self.store.create("Surface work", design=True)
+        self.assertEqual(plan["stages"][0], grogu_plans.DESIGN)
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.write_stage(
+                plan["id"],
+                grogu_plans.DESIGN,
+                valid_design_spec(),
+                role=grogu_plans.ARCHITECT,
+            )
+        self.store.write_stage(
+            plan["id"],
+            grogu_plans.DESIGN,
+            valid_design_spec(),
+            role=grogu_plans.DESIGNER,
+        )
+
+    def test_engineer_may_read_the_design_spec(self):
+        plan_id = self.plan(design=True)
+        body = self.store.read_stage(
+            plan_id, grogu_plans.DESIGN, role=grogu_plans.ENGINEER
+        )
+        self.assertIn("## Acceptance criteria", body)
+
+    def test_design_spec_missing_sections_refused(self):
+        plan = self.store.create("Surface work", design=True)
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.write_stage(
+                plan["id"],
+                grogu_plans.DESIGN,
+                "# Spec\n\n## Surfaces\nOne page.\n",
+                role=grogu_plans.DESIGNER,
+            )
+        self.assertIn("states", str(caught.exception))
+
+    def test_design_spec_adjectives_refused(self):
+        plan = self.store.create("Surface work", design=True)
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.write_stage(
+                plan["id"],
+                grogu_plans.DESIGN,
+                valid_design_spec() + "\nMake it clean and modern.\n",
+                role=grogu_plans.DESIGNER,
+            )
+        self.assertIn("clean", str(caught.exception))
+
+    def test_adjectives_allowed_inside_literal_output_blocks(self):
+        plan = self.store.create("Surface work", design=True)
+        body = valid_design_spec() + "\n```\n$ grogu clean --modern\n```\n"
+        self.store.write_stage(
+            plan["id"], grogu_plans.DESIGN, body, role=grogu_plans.DESIGNER
+        )
+
+    def test_test_gate_waits_for_the_designer_to_see_it_running(self):
+        plan_id = self.plan(design=True)
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+        )
+        gate = self.store.gate(plan_id, grogu_plans.GATE_TEST)
+        self.assertFalse(gate["allowed"])
+        self.assertTrue(any("signed off" in blocker for blocker in gate["blockers"]))
+        self.store.design_review(
+            plan_id,
+            grogu_plans.PASS,
+            evidence=["/tmp/empty.png"],
+            role=grogu_plans.DESIGNER,
+        )
+        self.assertTrue(self.store.gate(plan_id, grogu_plans.GATE_TEST)["allowed"])
+
+    def test_design_pass_requires_evidence(self):
+        plan_id = self.plan(design=True)
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.design_review(
+                plan_id, grogu_plans.PASS, role=grogu_plans.DESIGNER
+            )
+        self.store.design_review(
+            plan_id,
+            grogu_plans.CHANGES,
+            notes="row gap is 8, spec says 16",
+            role=grogu_plans.DESIGNER,
+        )
+
+    def test_only_the_designer_signs_off(self):
+        plan_id = self.plan(design=True)
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.design_review(
+                plan_id,
+                grogu_plans.PASS,
+                evidence=["/tmp/a.png"],
+                role=grogu_plans.ENGINEER,
+            )
+
+    def test_design_defects_route_to_the_designer(self):
+        plan_id = self.plan(design=True)
+        defect = self.store.report_defect(
+            plan_id,
+            report="empty state copy is missing",
+            route=grogu_plans.ROUTE_DESIGN,
+            raised_by=grogu_plans.TESTER,
+        )
+        self.assertEqual(defect["owner"], grogu_plans.DESIGNER)
+
+    def test_uncited_dependency_warns_but_does_not_block(self):
+        plan = self.store.create("Rate limiting")
+        manifest = self.store.write_stage(
+            plan["id"],
+            grogu_plans.IMPLEMENTATION,
+            "# plan\n\nAdd a new dependency: pip install slowapi.\n",
+            role=grogu_plans.ARCHITECT,
+        )
+        self.assertTrue(manifest["warnings"])
+
+    def test_cited_dependency_does_not_warn(self):
+        plan = self.store.create("Rate limiting")
+        manifest = self.store.write_stage(
+            plan["id"],
+            grogu_plans.IMPLEMENTATION,
+            "# plan\n\npip install slowapi (0.1.9, checked "
+            "https://pypi.org/project/slowapi/ on 2026-08-14).\n",
+            role=grogu_plans.ARCHITECT,
+        )
+        self.assertEqual(manifest["warnings"], [])
+
+    def test_triage_flags_design_for_user_visible_work(self):
+        visible = grogu_plans.triage(
+            "build a settings page with a dark mode toggle and per-repo overrides "
+            "that persist across sessions"
+        )
+        self.assertTrue(visible["design"])
+        internal = grogu_plans.triage(
+            "refactor the storage layer to support multiple backends"
+        )
+        self.assertFalse(internal["design"])
 
 
 if __name__ == "__main__":

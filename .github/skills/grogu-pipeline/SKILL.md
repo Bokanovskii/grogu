@@ -20,7 +20,7 @@ explicit "just do it" from the user always wins.
 ## Architect
 
 ```sh
-grogu plan new "<title>" --task <task-id> [--eval] [--review-required]
+grogu plan new "<title>" --task <task-id> [--design] [--eval] [--review-required]
 grogu plan brief --role architect --plan <id>
 grogu plan write <id> implementation --role architect --file -
 grogu plan write <id> testing        --role architect --file -
@@ -32,8 +32,48 @@ behavior. Use `--review-required` whenever the user asked for a plan directly �
 the gates then refuse work until `grogu plan approve` runs, and autopilot does
 not waive that.
 
+Add `--design` when the change has a user-visible surface; `grogu plan triage`
+flags this as `design: true`.
+
+Research anything external before committing to it — `web_search` for current
+state, `web_fetch` for the vendor's own docs, the GitHub tools for whether a
+project is still alive — and cite the source and date in the plan. Model
+recall of versions, limits, pricing and deprecations goes stale silently, and a
+stale recommendation reads exactly like a current one. Writing an
+implementation plan that adopts something external with no citation prints a
+warning.
+
 The architect runs on the strongest model available; being wrong here is
 cheapest to fix and most expensive to leave.
+
+## Designer
+
+```sh
+grogu plan brief --role designer --plan <id>
+grogu design recall --scope cli|web|ios|macos|api
+grogu design template "<change>"
+grogu plan write <id> design --role designer --file -
+```
+
+Only the designer writes the design stage, and the engineer *may* read it — a
+test is a proxy for correctness so showing it corrupts the signal, while a
+design spec is the requirement, so withholding it just guarantees the wrong
+interface. The store rejects a spec that skips a required section or leans on
+adjectives; give numbers, literal copy and exact output instead.
+
+Design taste is user-scoped and cross-repository. `grogu design remember` is for
+what the user said; `grogu design suggest` is for what you inferred, and it does
+not apply until they confirm it.
+
+After implementation, the designer is spawned again to look at the interface
+running — screenshots of every state for a visual surface, captured output for a
+terminal one — and records the verdict:
+
+```sh
+grogu plan design-review <id> --verdict pass --evidence shot-empty.png
+```
+
+The test gate stays shut until that pass exists, and a pass requires evidence.
 
 ## Engineer
 
@@ -58,13 +98,14 @@ grogu plan amend <id> --role engineer --claim "..." --evidence "..."
 ```sh
 grogu plan gate <id> --stage test
 grogu plan show <id> --stage testing --role tester
-grogu plan defect <id> --role tester --route implementation|test|plan --report "..."
+grogu plan defect <id> --role tester --route implementation|test|plan|design --report "..."
 ```
 
 Run the tester on a different model family from the engineer; it is auditing
 work, and same-family models share blind spots. Routing is the part that
 matters: code wrong goes to the engineer, harness wrong stays with the tester,
-plan wrong goes to the architect. "Passes but the acceptance criteria are
+plan wrong goes to the architect, and an interface that does not match the spec
+goes to the designer. "Passes but the acceptance criteria are
 unverifiable" is a plan defect, not a pass.
 
 ## The loops, and where they end
