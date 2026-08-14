@@ -20,12 +20,34 @@ def search_messages(query: str, max_sessions: int = 8, redact: bool = False) -> 
         "n_sessions": 1,
         "n_results": 1,
         "confidence": "high",
+        # Real seaglass reports how far its index lags the live Messages
+        # db on every result, so a caller can tell a complete answer from
+        # one that is missing the last N messages.
+        "ordering": "recent" if query == "__recent__" else "relevance",
+        "index_stale": query == "__stale__",
+        "n_messages_since_index": 12 if query == "__stale__" else 0,
         "sessions": [
             {
                 "chat_id": 42,
                 "day": "2024-01-01",
                 "score": 0.9,
                 "messages": [
+                    # A recency query gets a second, *older* hit so the
+                    # ordering assertion has something to reorder.
+                    *(
+                        [
+                            {
+                                "message_id": 999,
+                                "ts": 1704060000.0,
+                                "is_from_me": False,
+                                "sender": "+15551234567",
+                                "text": "an older message from the same day",
+                                "has_attachment": False,
+                            }
+                        ]
+                        if query == "__recent__"
+                        else []
+                    ),
                     {
                         "message_id": 1001,
                         "ts": 1704067200.0,
@@ -47,9 +69,41 @@ def search_messages(query: str, max_sessions: int = 8, redact: bool = False) -> 
                         "has_attachment": False,
                     }
                 ],
-            }
+            },
+            {
+                "chat_id": 43,
+                "day": "2024-01-02",
+                "score": 0.5,
+                "messages": [
+                    {
+                        "message_id": 2001,
+                        "ts": 1704153600.0,
+                        "is_from_me": False,
+                        "sender": "+15559999999",
+                        "text": "a second session's actual hit",
+                        "has_attachment": False,
+                    }
+                ],
+                "context_messages": [],
+            },
         ],
     }
+
+
+@server.tool()
+def index_status() -> dict:
+    return {
+        "n_chunks": 7,
+        "n_messages_since_index": 12,
+        "stale": True,
+        "live_chat_readable": True,
+        "served_by": "stub",
+    }
+
+
+@server.tool()
+def sync_index(wait: bool = False) -> dict:
+    return {"ok": True, "waited": wait, "n_messages_since_index": 0}
 
 
 if __name__ == "__main__":

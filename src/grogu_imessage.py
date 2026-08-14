@@ -12,7 +12,7 @@ import sys
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import grogu_mcp
 
@@ -286,6 +286,7 @@ def search_via_seaglass(query: str, limit: int = 20) -> List[dict]:
     cannot make back.
     """
     payload = _seaglass_call(query, sessions=SEAGLASS_SESSIONS)
+    _warn_if_stale(payload)
     if not isinstance(payload, dict):
         return []
     if payload.get("ordering") != "recent":
@@ -332,6 +333,35 @@ def _seaglass_call(query: str, *, sessions: int, offset: int = 0) -> object:
     if offset:
         kwargs["offset"] = offset
     return grogu_mcp.call_tool(SEAGLASS_SERVER_NAME, "search_messages", **kwargs)
+
+
+def _warn_if_stale(payload: dict) -> None:
+    """Say so when the answer came from an index missing recent messages.
+
+    A stale result is indistinguishable from a complete one, so "what did
+    she just say" answers confidently with yesterday's conversation. The
+    count rides along in the search payload, so this costs no extra call.
+    """
+    behind = payload.get("n_messages_since_index") or 0
+    if payload.get("index_stale") and behind:
+        print(
+            f"warning: seaglass index is {behind} message(s) behind; "
+            "run `grogu imessage sync` for the newest messages",
+            file=sys.stderr,
+        )
+
+
+def sync_seaglass_index(wait: bool = True) -> dict:
+    """Bring the seaglass index up to date with the live Messages db."""
+    if not seaglass_available():
+        raise IMessageError("seaglass is not configured for this user")
+    return grogu_mcp.call_tool(SEAGLASS_SERVER_NAME, "sync_index", wait=wait)
+
+
+def seaglass_index_status() -> dict:
+    """seaglass's own view of its index: size, freshness, and whether the
+    live Messages db is readable at all."""
+    return grogu_mcp.call_tool(SEAGLASS_SERVER_NAME, "index_status")
 
 
 class IMessageError(RuntimeError):
@@ -479,12 +509,33 @@ class MacOSIMessageAdapter:
                 "reason": str(error),
                 "database": str(self.database_path),
             }
-        return {
+        status = {
             "available": True,
             "platform": platform.system(),
             "database": str(self.database_path),
             "seaglass": seaglass_available(),
         }
+        if status["seaglass"]:
+            # Whether the index is current decides whether a search can
+            # answer about the last hour at all, so it belongs in status
+            # rather than only in a warning nobody asked for.
+            try:
+                index = seaglass_index_status()
+            except Exception as error:  # noqa: BLE001 - status must never fail
+                status["seaglass_index"] = {"error": str(error)}
+            else:
+                status["seaglass_index"] = {
+                    key: index.get(key)
+                    for key in (
+                        "n_chunks",
+                        "n_messages_since_index",
+                        "stale",
+                        "live_chat_readable",
+                        "served_by",
+                    )
+                    if key in index
+                }
+        return status
 
     def search(self, query: str, limit: int = 20, use_seaglass: bool = True) -> List[dict]:
         """Search message history for `query`.
