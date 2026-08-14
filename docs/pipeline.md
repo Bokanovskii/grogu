@@ -605,7 +605,7 @@ cannot keep them current.
 | Role | Model | Why |
 | --- | --- | --- |
 | architect | `claude-opus-5` | planning errors are cheap to fix here and expensive later |
-| designer | `claude-opus-5` | design is where weak output is hardest to spot and costliest to unwind |
+| designer | `claude-sonnet-5` | its output is byte-exact blocks, which is edit fidelity rather than reasoning |
 | engineer | `claude-sonnet-5` | general implementation, escalating when the work warrants it |
 | tester | `grok-4.5` | a different family from the engineer, on purpose |
 
@@ -627,14 +627,20 @@ established is a measured bug-catch delta for a cross-family tester in a
 write-and-run-tests role specifically; the mechanism is evidenced, the
 end-to-end ablation is not.
 
-Two things about this table are still unmeasured. The designer is on Opus for
-reasoning, but its actual output is byte-exact fenced blocks — an edit-fidelity
-task, which is the dimension Aider's architect/editor results attribute to
-Sonnet rather than to the heavier reasoning models
-(`aider.chat/2024/09/26/architect.html`). And the engineer-never-sees-the-test-
-plan isolation, the most novel thing here, has no published ablation behind it
-at all. It is software-engineering intuition about coding-to-the-test,
-extrapolated to models.
+The designer moved down to Sonnet for that reason. It was on Opus because
+design is high-stakes, which is true but is an argument about the *cost of being
+wrong*, not about which model is better at the work. What a designer actually
+emits is byte-exact fenced blocks — the literal strings and widths the engineer
+copies — and edit fidelity is the dimension Aider's architect/editor results
+attribute to the Sonnet class rather than to the heavier reasoners
+(`aider.chat/2024/09/26/architect.html`). It is also 2.5× cheaper. This is a
+reasoned swap, not a measured one: if design quality visibly drops, the seed
+suggestions get vaguer or the spec starts deferring decisions to the engineer,
+move it back.
+
+The engineer-never-sees-the-test-plan isolation, the most novel thing here, has
+no published ablation behind it at all. It is software-engineering intuition
+about coding-to-the-test, extrapolated to models.
 
 The round caps sit at the low end of published practice, which is the right
 end: Aider retries an edit 3 times, Claude Code surfaces to the user after
