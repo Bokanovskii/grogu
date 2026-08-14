@@ -1207,6 +1207,11 @@ def task_inbox(args: argparse.Namespace) -> int:
     return 0
 
 
+# Commands only the user may run. Running one is evidence the caller is not an
+# agent, regardless of which role last bound this working directory.
+USER_ONLY_COMMANDS = frozenset({"approve"})
+
+
 def _notice_for(parsed: argparse.Namespace) -> str:
     """The unsolicited notice this command should carry, if any.
 
@@ -1228,6 +1233,7 @@ def _notice_for(parsed: argparse.Namespace) -> str:
         return grogu_plans.pending_banner(
             Path(parsed.repo).expanduser() if getattr(parsed, "repo", None) else None,
             plan_hint=hint if isinstance(hint, str) else "",
+            user_command=getattr(parsed, "plan_command", "") in USER_ONLY_COMMANDS,
         )
     except Exception:  # a notice must never be why a command fails
         return ""

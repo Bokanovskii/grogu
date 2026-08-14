@@ -874,7 +874,9 @@ def mark_delivered() -> None:
         pass  # an ack must never be why a command fails
 
 
-def pending_banner(root: Optional[Path] = None, plan_hint: str = "") -> str:
+def pending_banner(
+    root: Optional[Path] = None, plan_hint: str = "", user_command: bool = False
+) -> str:
     """Unread steering for the calling agent, as a block to append to any output.
 
     A running subagent cannot be interrupted from outside: nothing can push text
@@ -896,6 +898,14 @@ def pending_banner(root: Optional[Path] = None, plan_hint: str = "") -> str:
     # only the variable meant an engineer following its own instructions was
     # never handed plan-scoped steering at all.
     plan_id = os.environ.get("GROGU_PLAN", "").strip() or plan_hint.strip()
+    if user_command and not role:
+        # A user-only command is proof the caller is the user, whatever role
+        # last fetched a brief in this directory. Without this, running
+        # `plan approve` after reading a tester's brief recorded the tester as
+        # present and put it on the watch board -- so the board said an agent
+        # was working when it was the user approving, and the undelivered
+        # steering count started tracking a tester that had gone home.
+        return harness_friction_banner(root)
     try:
         store = PlanStore(root)
         if not role:

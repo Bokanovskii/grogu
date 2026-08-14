@@ -2463,3 +2463,29 @@ class AttachmentTests(unittest.TestCase):
         self.assertTrue(
             (self.store.plan_dir(self.plan) / "attachments" / "escape.py").is_file()
         )
+
+
+class UserCommandPresenceTests(unittest.TestCase):
+    """Approving is not agent work, whatever role last read a brief here."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("status line", review_required=True)["id"]
+
+    def test_a_bound_role_does_not_make_the_user_an_agent(self):
+        self.store.brief("tester", plan_id=self.plan)
+        grogu_plans.pending_banner(
+            Path(self.temporary.name), plan_hint=self.plan, user_command=True
+        )
+        seen = self.store.load(self.plan).get("agents_seen", {})
+        self.assertEqual(seen, {})
+
+    def test_an_agent_command_still_records_presence(self):
+        self.store.brief("tester", plan_id=self.plan)
+        grogu_plans.pending_banner(Path(self.temporary.name), plan_hint=self.plan)
+        seen = self.store.load(self.plan).get("agents_seen", {})
+        self.assertTrue(any(key.startswith("tester") for key in seen))
