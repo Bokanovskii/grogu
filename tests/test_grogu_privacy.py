@@ -337,3 +337,18 @@ class ActorAndDestinationTests(unittest.TestCase):
             self.assertFalse(
                 grogu_privacy._looks_like_a_real_secret(value), value
             )
+
+
+class CardFalsePositiveTests(unittest.TestCase):
+    """A plan id blocked its own plan from being finalized."""
+
+    def test_a_plan_id_is_not_a_card_number(self):
+        findings = grogu_privacy.scan("Plan `p-20260814-619058` finalized.", path="record")
+        self.assertEqual(
+            [finding for finding in findings if "card" in finding.label], []
+        )
+
+    def test_a_real_card_number_is_still_caught(self):
+        card = "4111 1111 1111 1111"  # grogu-allow-secret: the published test card
+        findings = grogu_privacy.scan(f"charge {card} today", path="notes")
+        self.assertTrue(any("card" in finding.label for finding in findings))

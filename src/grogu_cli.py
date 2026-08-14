@@ -2384,6 +2384,28 @@ class _SubcommandAwareParser(argparse.ArgumentParser):
         return parser
 
 
+def _confidence(value: str) -> float:
+    """Accept the words an agent actually reaches for.
+
+    `--confidence` was an undocumented float, and a designer that passed
+    `high` got a raw argparse type error. The words are what a model writes;
+    the number is what the store wants.
+    """
+    words = {"certain": 0.95, "high": 0.8, "medium": 0.5, "low": 0.25, "guess": 0.1}
+    if value.strip().lower() in words:
+        return words[value.strip().lower()]
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a number between 0 and 1, or one of "
+            f"{', '.join(sorted(words))}; got {value!r}"
+        )
+    if not 0.0 <= number <= 1.0:
+        raise argparse.ArgumentTypeError("confidence is between 0 and 1")
+    return number
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = _SubcommandAwareParser(prog="grogu")
     parser.add_argument("--version", action="version", version=f"grogu {VERSION}")
@@ -2560,14 +2582,14 @@ def build_parser() -> argparse.ArgumentParser:
     remember.add_argument("--summary", required=True)
     remember.add_argument("--path", action="append")
     remember.add_argument("--tag", action="append")
-    remember.add_argument("--confidence", type=float, default=0.8)
+    remember.add_argument("--confidence", type=_confidence, default=0.8, help="0-1, or certain/high/medium/low/guess")
     remember.add_argument("--provenance", default="user")
     remember.set_defaults(handler=memory_remember)
     link = memory_subparsers.add_parser("link", parents=[memory_common])
     link.add_argument("source")
     link.add_argument("target")
     link.add_argument("--kind", required=True)
-    link.add_argument("--confidence", type=float, default=0.8)
+    link.add_argument("--confidence", type=_confidence, default=0.8, help="0-1, or certain/high/medium/low/guess")
     link.add_argument("--provenance", default="user")
     link.set_defaults(handler=memory_link)
 
@@ -2687,14 +2709,14 @@ def build_parser() -> argparse.ArgumentParser:
     personal_remember_parser.add_argument("--name", required=True)
     personal_remember_parser.add_argument("--summary", required=True)
     personal_remember_parser.add_argument("--tag", action="append")
-    personal_remember_parser.add_argument("--confidence", type=float, default=0.8)
+    personal_remember_parser.add_argument("--confidence", type=_confidence, default=0.8, help="0-1, or certain/high/medium/low/guess")
     personal_remember_parser.add_argument("--provenance", default="user")
     personal_remember_parser.set_defaults(handler=personal_remember)
     personal_link_parser = personal_subparsers.add_parser("link")
     personal_link_parser.add_argument("source")
     personal_link_parser.add_argument("target")
     personal_link_parser.add_argument("--kind", required=True)
-    personal_link_parser.add_argument("--confidence", type=float, default=0.8)
+    personal_link_parser.add_argument("--confidence", type=_confidence, default=0.8, help="0-1, or certain/high/medium/low/guess")
     personal_link_parser.add_argument("--provenance", default="user")
     personal_link_parser.set_defaults(handler=personal_link)
     personal_forget_parser = personal_subparsers.add_parser(
@@ -2729,7 +2751,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--source", required=True, help="where this candidate was observed, e.g. gmail, imessage"
     )
     personal_suggest_parser.add_argument("--tag", action="append")
-    personal_suggest_parser.add_argument("--confidence", type=float, default=0.5)
+    personal_suggest_parser.add_argument("--confidence", type=_confidence, default=0.5, help="0-1, or certain/high/medium/low/guess")
     personal_suggest_parser.set_defaults(handler=personal_suggest)
     personal_review_parser = personal_subparsers.add_parser(
         "review", help="list candidate facts awaiting confirmation"
@@ -3359,7 +3381,7 @@ def build_parser() -> argparse.ArgumentParser:
     design_suggest_parser.add_argument("--rationale")
     design_suggest_parser.add_argument("--evidence")
     design_suggest_parser.add_argument("--source", default="observed")
-    design_suggest_parser.add_argument("--confidence", type=float, default=0.5)
+    design_suggest_parser.add_argument("--confidence", type=_confidence, default=0.5, help="0-1, or certain/high/medium/low/guess")
     design_suggest_parser.set_defaults(handler=design_suggest)
 
     design_review_parser = design_subparsers.add_parser(

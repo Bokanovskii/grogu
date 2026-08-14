@@ -145,6 +145,7 @@ HARNESS_FRICTION_THRESHOLD = 3
 FRICTION_STALE_DAYS = 30
 
 TARGET_REPO = "repo"
+HOLLOW_SECTION_CHARS = 80
 TARGET_HARNESS = "harness"
 # A note that quotes a grogu command, or names the harness or one of its
 # roles' commands, is about the harness no matter which bucket the caller
@@ -1073,6 +1074,41 @@ def _sections(body: str) -> dict:
     return sections
 
 
+def hollow_design_sections(body: str) -> list:
+    """Sections that say nothing while avoiding every banned word.
+
+    The first designer ever run was asked to try to get a bad spec past the
+    validator and did it on the second attempt, at exit 0: all eleven
+    headings, one sentence under each -- "It works." "It is accessible."
+    "No tokens are needed here." -- 463 bytes, no fenced block anywhere on a
+    terminal surface. The adjective ban is a vocabulary filter, so vagueness
+    that avoids the wordlist sails through. These are the three checks it
+    said would have caught it, in its own words.
+    """
+    sections = _sections(body)
+    hollow = []
+    for heading, lines in sections.items():
+        text = " ".join(line.strip() for line in lines).strip()
+        if not text:
+            continue
+        fenced = any(line.lstrip().startswith("```") for line in lines)
+        if heading.lower().startswith("layout"):
+            # The one section whose whole purpose is a literal artifact.
+            if not fenced:
+                hollow.append(f"{heading} (no fenced block: what does it look like?)")
+            continue
+        if heading.lower().startswith("acceptance"):
+            criteria = [
+                line for line in lines if line.strip() and not line.startswith("#")
+            ]
+            if len(criteria) < 2:
+                hollow.append(f"{heading} (fewer than two checkable statements)")
+            continue
+        if not fenced and len(text) < HOLLOW_SECTION_CHARS:
+            hollow.append(f"{heading} ({len(text)} characters)")
+    return hollow
+
+
 def unfilled_design_sections(body: str) -> list:
     """Sections still holding the template's instructions instead of a decision.
 
@@ -1084,7 +1120,8 @@ def unfilled_design_sections(body: str) -> list:
     """
     skeleton = _sections(design_template())
     submitted = _sections(body)
-    unfilled = []
+    unfilled: list = []
+    empty: list = []
     for heading, template_lines in skeleton.items():
         lines = submitted.get(heading)
         if lines is None:
@@ -1092,10 +1129,10 @@ def unfilled_design_sections(body: str) -> list:
         template_text = {line.strip() for line in template_lines if line.strip()}
         written = {line.strip() for line in lines if line.strip()}
         if not written:
-            unfilled.append(heading)
+            empty.append(heading)
         elif template_text and written <= template_text:
             unfilled.append(heading)
-    return unfilled
+    return unfilled + [f"{heading} (empty)" for heading in empty]
 
 
 def vague_design_terms(body: str) -> set:
@@ -1584,6 +1621,15 @@ class PlanStore:
                         + ". The skeleton passes every other check by "
                         "construction, so writing it back unchanged is how an "
                         "unwritten spec reaches the user for approval."
+                    )
+                hollow = hollow_design_sections(body)
+                if hollow:
+                    raise PlanError(
+                        "these design sections say nothing a tester could "
+                        "check: "
+                        + ", ".join(hollow)
+                        + ". Every one of them is a decision the engineer will "
+                        "otherwise make by default."
                     )
                 vague = vague_design_terms(body)
                 if vague:

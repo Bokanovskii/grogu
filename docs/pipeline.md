@@ -108,6 +108,12 @@ arrives in the designer's brief under the architect's name.
 An unwritten design stage blocks the *implement* gate, not only the test gate:
 there is no point building against a spec that does not exist yet.
 
+The design stage runs *before* the user's review, and is exempt from the review
+hold. That looks backwards until you try it the other way: `plan approve`
+refuses while any stage body is missing, so a held plan whose designer could not
+finish would deadlock, and a plan reviewed without its spec is a plan reviewed
+without the part the user has the most opinions about.
+
 The reason it is a separate role rather than a section of the implementation
 plan is empirical: models are markedly worse at design than at code, and the
 gap is hard to see, because bad design output is fluent and looks finished.

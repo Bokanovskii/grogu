@@ -267,6 +267,16 @@ def scan(text: str, *, path: str = "", personal: bool = True) -> list:
             )
         for match in _CARD.finditer(line):
             digits = re.sub(r"[ -]", "", match.group(0))
+            # A plan id is a date and six hex digits, and one of them passed
+            # Luhn during a test run and blocked its own plan from being
+            # finalized. A card number is not glued to a letter on either
+            # side; an identifier usually is.
+            text = match.group(0)
+            end = match.end() - (len(text) - len(text.rstrip(" -")))
+            before = line[: match.start()][-1:]
+            after = line[end:][:1]
+            if before.isalnum() or after.isalnum() or before == "-" or after == "-":
+                continue
             if 13 <= len(digits) <= 19 and _luhn(digits):
                 findings.append(
                     Finding(PERSONAL, "payment card number", number, "**** **** **** " + digits[-4:], path)

@@ -13,10 +13,15 @@ finished either way.
 
 ```sh
 grogu plan brief --role designer --plan <id>
-grogu design recall --scope <cli|web|ios|macos|api> --limit 20
 ```
 
-`grogu design recall` returns the user's confirmed design principles. These are
+That one call carries the architect's commission — your statement of work — and
+the user's confirmed design principles. Do not follow it with `grogu design
+recall`; it prints the same principles again, and the first designer to run
+this pipeline spent a call finding that out. Use `recall --scope` only when you
+want a scope the brief did not cover.
+
+The principles are
 not suggestions to weigh — they are the standing answer to "what does good look
 like here", and they were learned from this specific person's corrections. Read
 them before you decide anything.

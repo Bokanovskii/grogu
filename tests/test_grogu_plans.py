@@ -27,8 +27,20 @@ def valid_design_spec() -> str:
     body = ["# Test plan — design spec", ""]
     for section in sections:
         body.append(f"## {section}")
-        body.append(f"Decided for {section.lower()}: the table renders with a")
-        body.append("16px row gap and the id column is 12 characters wide.")
+        if section.startswith("Acceptance"):
+            body.append("- the id column is 12 characters wide")
+            body.append("- the row gap is 16px at every breakpoint")
+        elif section.startswith("Layout"):
+            body.append("```")
+            body.append("  name       count  state")
+            body.append("  widget         3  ready")
+            body.append("```")
+        else:
+            body.append(
+                f"Decided for {section.lower()}: the table renders with a 16px row "
+                "gap, the id column is 12 characters wide, and the status column "
+                "is left-aligned at 10 characters."
+            )
         body.append("")
     return "\n".join(body)
 
@@ -2356,3 +2368,48 @@ class TemplateSpecTests(unittest.TestCase):
             self.store.set_stage_state(
                 self.plan, "implementation", "complete", role="engineer"
             )
+
+
+class HollowSpecTests(unittest.TestCase):
+    """A spec can say nothing without using a single banned adjective."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("hollow", design=True)["id"]
+
+    def _spec(self, sentence):
+        sections = [
+            line[3:].strip()
+            for line in grogu_plans.design_template("hollow").splitlines()
+            if line.startswith("## ")
+        ]
+        body = ["# hollow — design spec", ""]
+        for section in sections:
+            body.extend([f"## {section}", sentence, ""])
+        return "\n".join(body)
+
+    def test_one_hollow_sentence_per_heading_is_refused(self):
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.write_stage(
+                self.plan, "design", self._spec("It works."), role="designer"
+            )
+        self.assertIn("say nothing a tester could check", str(caught.exception))
+
+    def test_a_layout_section_without_a_fenced_block_is_refused(self):
+        spec = valid_design_spec().replace("```\n  name       count  state\n  widget         3  ready\n```", "It looks right.")
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.write_stage(self.plan, "design", spec, role="designer")
+        self.assertIn("Layout", str(caught.exception))
+
+    def test_an_empty_section_is_named_as_empty_not_as_the_template(self):
+        spec = valid_design_spec()
+        spec = spec.replace(
+            "## Flow\nDecided for flow:", "## Flow\n\n## Was flow:"
+        )
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.write_stage(self.plan, "design", spec, role="designer")
+        self.assertIn("empty", str(caught.exception))
