@@ -1306,7 +1306,11 @@ def plan_supersede(args: argparse.Namespace) -> int:
 
 def plan_finalize(args: argparse.Namespace) -> int:
     store = plan_store(args)
-    result = store.finalize(store.resolve(args.id), note=args.note or "")
+    result = store.finalize(
+        store.resolve(args.id), note=args.note or "", force=args.force
+    )
+    for blocker in result.get("shipped_incomplete", []):
+        print(f"grogu: shipped incomplete: {blocker}", file=sys.stderr)
     print(f"finalized {result['plan']}")
     for path in result["emitted"]:
         print(f"  unsealed {path}")
@@ -1440,8 +1444,17 @@ def plan_workstream(args: argparse.Namespace) -> int:
         name=args.name,
         paths=args.path,
         depends_on=args.depends_on or [],
+        model=args.model or "",
+        review=args.review or "",
+        brief=args.brief or "",
     )
-    print(f"workstream {stream['name']}: {', '.join(stream['paths'])}")
+    detail = "".join(
+        [
+            f" model={stream['model']}" if stream["model"] else "",
+            f" review={stream['review']}" if stream["review"] else "",
+        ]
+    )
+    print(f"workstream {stream['name']}: {', '.join(stream['paths'])}{detail}")
     return 0
 
 
@@ -1453,14 +1466,49 @@ def plan_workstreams(args: argparse.Namespace) -> int:
     if args.json:
         print_json({"batches": batches, "conflicts": conflicts})
     else:
+        streams = {
+            stream["name"]: stream
+            for stream in store.load(plan_id).get("workstreams", [])
+        }
         for index, batch in enumerate(batches, start=1):
             print(f"wave {index}: {', '.join(batch)}")
+            for name in batch:
+                stream = streams.get(name, {})
+                bits = [f"paths {' '.join(stream.get('paths', []))}"]
+                if stream.get("model"):
+                    bits.append(f"model {stream['model']}")
+                if stream.get("review"):
+                    reviewed = any(
+                        review.get("verdict") == "pass"
+                        for review in stream.get("reviews", [])
+                    )
+                    bits.append(
+                        f"review {stream['review']}"
+                        + (" (done)" if reviewed else " (outstanding)")
+                    )
+                print(f"    {name}: {'; '.join(bits)}")
+                if stream.get("brief"):
+                    print(f"      {stream['brief']}")
         for conflict in conflicts:
             left, right = conflict["workstreams"]
             print(f"conflict: {left} and {right} both claim {' / '.join(conflict['paths'])}")
         if not conflicts and len(batches) and max(len(batch) for batch in batches) > 1:
             print("file sets are disjoint; these waves may run in parallel worktrees")
     return 3 if (conflicts and args.check) else 0
+
+
+def plan_review(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    record = store.record_review(
+        store.resolve(args.id),
+        args.workstream,
+        verdict=args.verdict,
+        model=args.model or "",
+        findings=" ".join(args.findings) if args.findings else "",
+        kind=args.kind or "",
+    )
+    print(f"{record['kind']} review of {args.workstream}: {record['verdict']}")
+    return 0
 
 
 def plan_steer(args: argparse.Namespace) -> int:
@@ -1505,7 +1553,10 @@ def plan_brief(args: argparse.Namespace) -> int:
     if args.json:
         print_json(brief)
         return 0
-    if brief["base"]:
+    # The role prompt itself is already the agent's system prompt; reprinting it
+    # here would spend a hundred lines of context restating what the agent was
+    # instantiated from. --full exists for inspecting a brief from outside.
+    if args.full and brief["base"]:
         print(brief["base"].rstrip())
     if brief["overlay"]:
         print(f"\n## Repository specifics ({brief['overlay_path']})\n")
@@ -1515,11 +1566,24 @@ def plan_brief(args: argparse.Namespace) -> int:
             f"\n(no repository overlay at {brief['overlay_path']}; "
             "write one to give this role repository-specific context)"
         )
+    principles = brief.get("design_principles") or []
+    if principles:
+        print("\n## The user's design principles\n")
+        for principle in principles:
+            print(f"- [{principle['scope']}] {principle['statement']}")
     notes = brief["steering"].get("repository", []) + brief["steering"].get("plan", [])
     if notes:
         print("\n## Standing steering from the user\n")
         for note in notes:
-            print(f"- {note['text']}")
+            binding = " [requires replan]" if note.get("requires_replan") else ""
+            print(f"- {note['text']}{binding}")
+    summary = brief.get("summary") or {}
+    if summary:
+        print(
+            f"\nPlan {summary.get('id')}: status {summary.get('status')}, "
+            f"{len(summary.get('open_amendments') or [])} open amendment(s), "
+            f"{len(summary.get('open_defects') or [])} open defect(s)"
+        )
     return 0
 
 
@@ -2235,6 +2299,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_finalize_parser.add_argument("id")
     plan_finalize_parser.add_argument("--note")
+    plan_finalize_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="finalize despite open defects, amendments or incomplete stages",
+    )
     plan_finalize_parser.set_defaults(handler=plan_finalize)
 
     plan_gate_parser = plan_subparsers.add_parser(
@@ -2316,6 +2385,17 @@ def build_parser() -> argparse.ArgumentParser:
     plan_workstream_parser.add_argument("--name", required=True)
     plan_workstream_parser.add_argument("--path", action="append", required=True)
     plan_workstream_parser.add_argument("--depends-on", action="append")
+    plan_workstream_parser.add_argument(
+        "--model", help="model this workstream should be implemented on"
+    )
+    plan_workstream_parser.add_argument(
+        "--review",
+        choices=list(grogu_plans.REVIEW_KINDS),
+        help="a review this workstream must pass before testing",
+    )
+    plan_workstream_parser.add_argument(
+        "--brief", help="what this engineer should know that the others need not"
+    )
     plan_workstream_parser.set_defaults(handler=plan_workstream)
 
     plan_workstreams_parser = plan_subparsers.add_parser(
@@ -2328,6 +2408,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_workstreams_parser.add_argument("--json", action="store_true")
     plan_workstreams_parser.set_defaults(handler=plan_workstreams)
+
+    plan_review_parser = plan_subparsers.add_parser(
+        "review", help="record a review the architect asked for"
+    )
+    plan_review_parser.add_argument("id")
+    plan_review_parser.add_argument("--repo")
+    plan_review_parser.add_argument("--workstream", required=True)
+    plan_review_parser.add_argument(
+        "--verdict", required=True, choices=list(grogu_plans.DESIGN_VERDICTS)
+    )
+    plan_review_parser.add_argument("--kind", choices=list(grogu_plans.REVIEW_KINDS))
+    plan_review_parser.add_argument("--model")
+    plan_review_parser.add_argument("--findings", nargs="*")
+    plan_review_parser.set_defaults(handler=plan_review)
 
     plan_steer_parser = plan_subparsers.add_parser(
         "steer", help="record steering that reaches agents spawned later",
@@ -2365,6 +2459,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_brief_parser.add_argument("--role", choices=grogu_plans.ROLES, required=True)
     plan_brief_parser.add_argument("--plan", dest="id")
+    plan_brief_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="include the shared role contract (already the agent's own prompt)",
+    )
     plan_brief_parser.add_argument("--json", action="store_true")
     plan_brief_parser.set_defaults(handler=plan_brief)
 

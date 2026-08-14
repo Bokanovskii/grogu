@@ -27,6 +27,23 @@ The task store already lives at `<repo>/.grogu/tasks/`; plans sit beside it for
 the same reason — one file per unit, trivial to merge, reviewable in a pull
 request.
 
+## Most requests are not this at all
+
+Grogu is a general assistant. Most of what it is asked to do — look something
+up, read a thread, draft a note, think through a decision — is not work on the
+repository, and none of it wants an architect.
+
+`grogu plan triage` answers this first and separately from how substantial the
+request is, because the two questions are independent and the second is
+meaningless when the first is no. It reports `software: false` and stops there.
+
+The test is deliberately asymmetric. Listing what software work looks like fails
+badly — "a plan for the new indexer" matches no vocabulary and is real work — so
+the check runs the other way: name the domains that are plainly not this
+repository, and route direct only when no software signal is present either.
+Being wrong toward "personal" would silently disable the pipeline on real work,
+which costs far more than an occasional needless planning cycle.
+
 ## Not everything needs a plan
 
 `grogu plan triage "<request>"` decides deterministically. Spending a model call
@@ -224,6 +241,25 @@ sequence-numbered notes, and delivery has three paths:
 
 Ack watermarks are per role rather than per agent, which is why the brief ships
 the complete set and only mid-flight polling uses the delta.
+
+## The architect assigns, it does not just describe
+
+A workstream carries more than a file set. It carries the model it should be
+built on and, optionally, a review it must pass before the tester sees it.
+
+Both are things only the architect can judge. From inside a workstream every
+part looks equally important; from above, one is a mechanical rename and another
+is the concurrency that will quietly corrupt data in production. So the stronger
+model and the second pair of eyes go where they are worth paying for, rather
+than uniformly (expensive) or nowhere (worse).
+
+Assigning different models across workstreams is also cheap diversity: two
+instances of the same model agree with each other's mistakes.
+
+`grogu plan review` records the outcome, and refuses a passing verdict that says
+nothing about what was examined — a bare pass is indistinguishable from a review
+that never happened. Until each required review has one, `gate --stage test`
+stays shut.
 
 ## Parallelism is declared, not inferred
 

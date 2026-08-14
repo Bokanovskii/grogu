@@ -34,6 +34,7 @@ import fnmatch
 import json
 import os
 import re
+import subprocess
 import secrets
 import zlib
 from contextlib import contextmanager
@@ -114,6 +115,10 @@ DEFECT_ROUTES = (ROUTE_IMPLEMENTATION, ROUTE_TEST, ROUTE_PLAN, ROUTE_DESIGN)
 
 PASS = "pass"
 CHANGES = "changes"
+REVIEW_RUBBER_DUCK = "rubber-duck"
+REVIEW_CODE = "code-review"
+REVIEW_SECURITY = "security-review"
+REVIEW_KINDS = (REVIEW_RUBBER_DUCK, REVIEW_CODE, REVIEW_SECURITY)
 DESIGN_VERDICTS = (PASS, CHANGES)
 
 DEFAULT_MAX_ROUNDS = 3
@@ -142,6 +147,20 @@ def max_rounds() -> int:
 def max_defect_rounds() -> int:
     raw = os.environ.get("GROGU_PLAN_MAX_DEFECT_ROUNDS", "")
     return int(raw) if raw.isdigit() and int(raw) > 0 else DEFAULT_MAX_DEFECT_ROUNDS
+
+
+def head_commit(root: Optional[Path] = None) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(root or Path.cwd()),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def current_role() -> str:
@@ -209,6 +228,64 @@ _TRIVIAL_PATTERNS = (
 )
 
 
+# The pipeline exists to build software in this repository. Grogu is also a
+# general assistant — research, email, messages, errands, thinking out loud —
+# and none of that wants an architect. "Plan a trip to Japan" and "help me plan
+# my week" both contain the word plan and neither is a planning cycle.
+_SOFTWARE_PATTERNS = (
+    r"\b(code|codebase|repo|repository|branch|commit|pull request|pr)\b",
+    r"\b(function|class|module|file|script|package|library|dependency)\b",
+    r"\b(api|endpoint|cli|command|database|schema|migration|query|server)\b",
+    r"\b(test|tests|testing|lint|build|compile|deploy|ci|pipeline)\b",
+    r"\b(bug|crash|stack trace|exception|regression|refactor|rewrite)\b",
+    r"\b(feature|implement|implementation|ship|release|harness|agent)\b",
+    r"\b(ui|ux|interface|screen|page|component|frontend|backend)\b",
+    r"\b(grogu|python|typescript|javascript|rust|go|swift|sql)\b",
+    r"\.(py|ts|tsx|js|jsx|go|rs|swift|sh|md|json|ya?ml)\b",
+)
+
+
+# Listing what software work looks like fails in the wrong direction: "a plan
+# for the new indexer" contains no vocabulary from any list and is real work.
+# The default context is a code repository, so the sound test is the reverse —
+# name the domains that are plainly *not* this repository, and require that no
+# software signal is present before believing it.
+_PERSONAL_PATTERNS = (
+    r"\b(trip|flight|flights|hotel|airbnb|itinerary|vacation|holiday)\b",
+    r"\b(restaurant|dinner|lunch|recipe|groceries|cook)\b",
+    r"\b(email|e-mail|text|texted|imessage|message[ds]?|reply to|draft (?:a|an) (?:note|email|reply))\b",
+    r"\b(landlord|dentist|doctor|appointment|insurance|rent|taxes)\b",
+    r"\b(gym|workout|sleep|calendar|errand|birthday|gift)\b",
+    r"\b(buy|purchase|price|cheapest|under \$?\d+|headphones|mattress)\b",
+    r"\bmy (?:week|day|schedule|budget|finances|wife|kid|dog|cat)\b",
+)
+
+
+def is_software_work(prompt: str) -> bool:
+    """Whether this is work on the repository, rather than life admin.
+
+    Biased toward yes: Grogu runs inside a repository, so anything without a
+    clear personal-domain signal is treated as software work and left to normal
+    triage. Getting this wrong toward "personal" would silently disable the
+    pipeline on real work, which is far worse than an occasional needless
+    planning cycle.
+    """
+    lowered = " ".join(prompt.split()).lower()
+    if any(re.search(pattern, lowered) for pattern in _SOFTWARE_PATTERNS):
+        return True
+    return not any(re.search(pattern, lowered) for pattern in _PERSONAL_PATTERNS)
+
+
+_DIRECT_OVERRIDE = (
+    r"\b(?:just|please just) do it\b"
+    r"|\bno plan\b|\bwithout a plan\b|\bskip (?:the )?plan(?:ning)?\b"
+    r"|\bdon'?t plan\b|\bno need (?:for|to) plan\b"
+)
+_PLAN_OVERRIDE = (
+    r"\b(?:make|write|draft|give me|build|create) (?:me )?(?:a|the) plan\b"
+    r"|\bplan (?:this|it) out\b|\bplan first\b|\bi want a plan\b"
+)
+
 _DESIGN_PATTERNS = (
     r"\b(ui|ux|interface|screen|page|view|layout|design)\b",
     r"\b(button|form|modal|dialog|menu|navigation|nav bar|sidebar)\b",
@@ -233,19 +310,67 @@ def triage(prompt: str) -> dict:
     score = 0
     plan_hits = 0
 
+    def note(reason: str) -> None:
+        if reason not in reasons:
+            reasons.append(reason)
+
+    if not is_software_work(lowered):
+        return {
+            "decision": "direct",
+            "design": False,
+            "software": False,
+            "override": False,
+            "score": 0,
+            "words": len(lowered.split()),
+            "reasons": ["not software work in this repository"],
+            "explanation": (
+                "Answer this directly. The architect/engineer/tester pipeline is "
+                "for building software here; research, correspondence, errands "
+                "and thinking out loud are not it, whatever the word 'plan' is "
+                "doing in the sentence."
+            ),
+        }
+
+    # Stated intent is not a signal to be weighed against other signals; it is
+    # the answer. Scoring "just do it: build ..." on its verbs reaches the
+    # opposite conclusion from the one the user just gave in words.
+    override = ""
+    if re.search(_DIRECT_OVERRIDE, lowered):
+        override = "direct"
+    elif re.search(_PLAN_OVERRIDE, lowered):
+        override = "plan"
+    if override:
+        return {
+            "decision": override,
+            "design": override == "plan" and bool(
+                [p for p in _DESIGN_PATTERNS if re.search(p, lowered)]
+            ),
+            "score": 0,
+            "software": True,
+            "words": len(lowered.split()),
+            "reasons": ["the request states its own routing explicitly"],
+            "override": True,
+            "explanation": (
+                "The user asked for a plan; route through the architect and stop "
+                "for their review."
+                if override == "plan"
+                else "The user asked for this directly; do not spend a planning cycle."
+            ),
+        }
+
     for pattern in _DIRECT_PATTERNS:
         if re.search(pattern, lowered):
             score -= 2
-            reasons.append(f"direct signal: {pattern}")
+            note("direct signal")
     for pattern in _PLAN_PATTERNS:
         if re.search(pattern, lowered):
             score += 2
             plan_hits += 1
-            reasons.append(f"planning signal: {pattern}")
+            note("planning signal")
     for pattern in _TRIVIAL_PATTERNS:
         if re.search(pattern, lowered):
             score -= 2
-            reasons.append(f"trivial-change signal: {pattern}")
+            note("trivial-change signal")
 
     words = len(lowered.split())
     if words > 60:
@@ -271,6 +396,7 @@ def triage(prompt: str) -> dict:
         reasons.append("plan requested explicitly")
 
     decision = "plan" if score >= 2 else "direct"
+    _override = False
     design_hits = [
         pattern for pattern in _DESIGN_PATTERNS if re.search(pattern, lowered)
     ]
@@ -279,6 +405,8 @@ def triage(prompt: str) -> dict:
     return {
         "decision": decision,
         "design": bool(design_hits) and decision == "plan",
+        "software": True,
+        "override": _override,
         "score": score,
         "words": words,
         "reasons": reasons,
@@ -337,15 +465,22 @@ def pending_banner(root: Optional[Path] = None) -> str:
     delivery. The agent is already running `grogu` constantly — heartbeats,
     gates, status, aggregate — and steering rides along with whatever it ran.
 
-    Returns an empty string unless the caller declared a role, so the user's own
-    session never sees its own notes echoed back.
+    The role comes from GROGU_ROLE when the spawning environment set it, and
+    otherwise from the binding `grogu plan brief` recorded for this working
+    directory — because a subagent's first act is to fetch its brief, and no
+    mechanism here can set an environment variable inside a session it does not
+    own. Nothing is delivered when neither exists, so the user's own session
+    does not see its own notes echoed back.
     """
     role = current_role()
-    if not role:
-        return ""
     plan_id = os.environ.get("GROGU_PLAN", "").strip()
     try:
         store = PlanStore(root)
+        if not role:
+            bound = store.session_binding()
+            role, plan_id = bound.get("role", ""), plan_id or bound.get("plan", "")
+        if not role:
+            return ""
         pending = store.steering(role=role, plan_id=plan_id, unread=True)
     except (PlanError, OSError):
         return ""  # steering must never be the reason a command fails
@@ -749,6 +884,17 @@ class PlanStore:
             sealed = path.suffix == ".sealed"
             path.write_text(seal(body) if sealed else body, encoding="utf8")
             manifest.setdefault("stage_written", {})[stage] = True
+            for amendment in manifest.get("amendments", []):
+                if (
+                    amendment.get("status") == ACCEPTED
+                    and amendment.get("stage") == stage
+                    and not amendment.get("incorporated")
+                ):
+                    amendment["incorporated"] = True
+                    amendment["incorporated_at"] = now()
+            manifest.setdefault("design_review", None)
+            if stage == DESIGN and manifest.get("design_review"):
+                manifest["design_review"] = None
             manifest = self._save(manifest, "stage_written", stage=stage, bytes=len(body))
             manifest["warnings"] = (
                 [
@@ -803,6 +949,19 @@ class PlanStore:
     # -- lifecycle ---------------------------------------------------------
 
     def approve(self, plan_id: str, *, note: str = "") -> dict:
+        """Approval is the user's, and a subagent cannot stand in for them.
+
+        Every spawned role declares itself through GROGU_ROLE; the user's own
+        session does not. That is a weak signal — an agent could unset it — but
+        it turns "autopilot does not waive review" from a sentence in a prompt
+        into something that has to be deliberately circumvented rather than
+        merely forgotten.
+        """
+        if current_role():
+            raise PlanError(
+                f"the {current_role()} may not approve a plan on the user's "
+                "behalf; approval is the user's alone. Present the plan and stop"
+            )
         with self.locked():
             manifest = self.load(plan_id)
             missing = [
@@ -1065,6 +1224,11 @@ class PlanStore:
             amendment["resolved_by"] = actor()
             amendment["reason"] = reason.strip()
             amendment["verified"] = True
+            if outcome == ACCEPTED:
+                # An accepted amendment says the plan is wrong. Reopening the
+                # gate before the stage is rewritten sends the engineer back at
+                # the same known-wrong text with official approval.
+                amendment["incorporated"] = False
             still_open = any(
                 other.get("status") == PENDING for other in manifest["amendments"]
             )
@@ -1150,7 +1314,7 @@ class PlanStore:
                 # longer converging. That is a question about the plan, and the
                 # architect owns the plan — so it goes up one level, not out to
                 # the user.
-                escalate = rounds > cap and not manifest.get("escalated")
+                escalate = rounds >= cap and not manifest.get("escalated")
                 defect["round"] = rounds
             self._save(manifest, "defect_raised", defect=defect["id"], route=route)
 
@@ -1211,8 +1375,25 @@ class PlanStore:
     # -- workstreams -------------------------------------------------------
 
     def add_workstream(
-        self, plan_id: str, *, name: str, paths: list, depends_on: Optional[list] = None
+        self,
+        plan_id: str,
+        *,
+        name: str,
+        paths: list,
+        depends_on: Optional[list] = None,
+        model: str = "",
+        review: str = "",
+        brief: str = "",
     ) -> dict:
+        """Declare a piece of parallel work, and who should do it how.
+
+        The architect knows things the engineer cannot infer from a file list:
+        that one workstream is fiddly enough to want a stronger model, that
+        another is subtle enough to want a second pair of eyes before the tester
+        sees it. Left in prose, that intent is advisory and gets skipped under
+        time pressure. Declared here, it is part of the assignment the engineer
+        reads and part of what the gate checks.
+        """
         if not name.strip():
             raise PlanError("a workstream needs a name")
         if not paths:
@@ -1232,14 +1413,62 @@ class PlanStore:
             ]
             if unknown:
                 raise PlanError(f"unknown workstream dependency: {', '.join(unknown)}")
+            if review and review not in REVIEW_KINDS:
+                raise PlanError(
+                    f"unknown review {review!r}; expected one of "
+                    + ", ".join(REVIEW_KINDS)
+                )
             workstream = {
                 "name": name,
                 "paths": list(paths),
                 "depends_on": list(depends_on or []),
+                "model": model.strip(),
+                "review": review,
+                "brief": brief.strip(),
+                "reviews": [],
             }
             workstreams.append(workstream)
             self._save(manifest, "workstream_added", workstream=name)
             return workstream
+
+    def record_review(
+        self,
+        plan_id: str,
+        workstream: str,
+        *,
+        verdict: str,
+        model: str = "",
+        findings: str = "",
+        kind: str = "",
+    ) -> dict:
+        """A review the architect asked for, and what it found."""
+        if verdict not in DESIGN_VERDICTS:
+            raise PlanError(
+                f"unknown verdict {verdict!r}; expected {' or '.join(DESIGN_VERDICTS)}"
+            )
+        with self.locked():
+            manifest = self.load(plan_id)
+            for stream in manifest.get("workstreams", []):
+                if stream["name"] == workstream:
+                    break
+            else:
+                raise PlanError(f"plan {plan_id} has no workstream {workstream!r}")
+            if verdict == PASS and not findings.strip():
+                raise PlanError(
+                    "a passing review needs to say what was actually examined; "
+                    "a bare pass is indistinguishable from a review that did not "
+                    "happen"
+                )
+            record = {
+                "at": now(),
+                "kind": kind or stream.get("review") or REVIEW_RUBBER_DUCK,
+                "verdict": verdict,
+                "model": model.strip(),
+                "findings": findings.strip(),
+            }
+            stream.setdefault("reviews", []).append(record)
+            self._save(manifest, "workstream_reviewed", workstream=workstream)
+            return record
 
     def workstream_conflicts(self, plan_id: str) -> list:
         """Overlapping file sets between workstreams that could run together."""
@@ -1339,12 +1568,23 @@ class PlanStore:
             manifest = self.load(plan_id)
             if DESIGN not in manifest.get("stages", []):
                 raise PlanError(f"plan {plan_id} has no design stage to review")
-            manifest["design_review"] = {
+            if verdict == PASS and manifest.get("stage_state", {}).get(
+                IMPLEMENTATION
+            ) != COMPLETE:
+                raise PlanError(
+                    "the implementation is not marked complete, so there is "
+                    "nothing settled to sign off on yet"
+                )
+            history = manifest.setdefault("design_reviews", [])
+            review = {
                 "at": now(),
                 "verdict": verdict,
                 "notes": notes.strip(),
                 "evidence": evidence,
+                "commit": head_commit(self.root),
             }
+            history.append(review)
+            manifest["design_review"] = review
             return self._save(manifest, "design_reviewed", verdict=verdict)
 
     def gate(self, plan_id: str, stage_gate: str) -> dict:
@@ -1383,22 +1623,77 @@ class PlanStore:
         if missing:
             blockers.append(f"plan stages not written: {', '.join(missing)}")
 
+        unincorporated = [
+            amendment["id"]
+            for amendment in manifest.get("amendments", [])
+            if amendment.get("status") == ACCEPTED
+            and not amendment.get("incorporated")
+        ]
+        if unincorporated:
+            blockers.append(
+                f"amendment(s) {', '.join(unincorporated)} were accepted but the "
+                "affected stage has not been rewritten; the plan still says the "
+                "thing the architect agreed was wrong"
+            )
+
         open_defects = [
             defect
             for defect in manifest.get("defects", [])
             if defect.get("status") == PENDING
         ]
+        blocking_defects = [
+            defect
+            for defect in open_defects
+            if defect.get("route") in (ROUTE_IMPLEMENTATION, ROUTE_DESIGN)
+        ]
+        if stage_gate in (GATE_TEST, GATE_EVALUATE) and blocking_defects:
+            blockers.append(
+                f"{len(blocking_defects)} defect(s) are still open "
+                f"({', '.join(defect['id'] for defect in blocking_defects)}); "
+                "retesting around a known failure buries it"
+            )
         if stage_gate == GATE_TEST:
+            unreviewed = [
+                stream["name"]
+                for stream in manifest.get("workstreams", [])
+                if stream.get("review")
+                and not any(
+                    review.get("verdict") == PASS
+                    for review in stream.get("reviews", [])
+                )
+            ]
+            if unreviewed:
+                blockers.append(
+                    "the architect asked for a review of: "
+                    + ", ".join(unreviewed)
+                    + "; run it and record `grogu plan review`"
+                )
             if manifest.get("stage_state", {}).get(IMPLEMENTATION) != COMPLETE:
                 blockers.append("implementation stage is not complete")
             if DESIGN in manifest.get("stages", []):
                 review = manifest.get("design_review") or {}
                 if review.get("verdict") != PASS:
+                    detail = (
+                        f" Last verdict: {review['notes']}"
+                        if review.get("notes")
+                        else ""
+                    )
                     blockers.append(
                         "the designer has not signed off on the built interface; "
                         "have the designer look at it running (screenshots or the "
-                        "live surface) and record `grogu plan design-review`"
+                        "live surface) and record `grogu plan design-review`."
+                        + detail
                     )
+                else:
+                    # A sign-off is about a specific build. Code moved since means
+                    # nobody has looked at what is actually about to be tested.
+                    current = head_commit(self.root)
+                    if current and review.get("commit") and current != review["commit"]:
+                        blockers.append(
+                            "the code has changed since the designer signed off "
+                            f"({review['commit'][:8]} -> {current[:8]}); the review "
+                            "was of a different build"
+                        )
         if stage_gate == GATE_EVALUATE:
             if EVALUATION not in manifest.get("stages", []):
                 blockers.append("this plan has no evaluation stage")
@@ -1413,7 +1708,20 @@ class PlanStore:
                     f"{len(routed)} defect(s) routed to the plan are unresolved"
                 )
 
+        # Repository-wide binding steering outlives any one plan, so a plan
+        # created before it was recorded must still answer for it.
         unread = self.steering(role="all", plan_id=plan_id, unread=False)
+        binding_repo = [
+            note
+            for note in unread.get("repository", [])
+            if note.get("requires_replan")
+            and note.get("at", "") > manifest.get("planned_at", manifest.get("at", ""))
+        ]
+        if binding_repo:
+            blockers.append(
+                f"{len(binding_repo)} binding repository steering note(s) postdate "
+                "this plan; the architect must fold them in and re-approve"
+            )
         if unread.get("requires_replan") and status != APPROVED:
             blockers.append("binding steering has not been folded into the plan")
 
@@ -1476,7 +1784,7 @@ class PlanStore:
             },
         }
 
-    def finalize(self, plan_id: str, *, note: str = "") -> dict:
+    def finalize(self, plan_id: str, *, note: str = "", force: bool = False) -> dict:
         """Unseal every stage so the finished plan ships in the pull request.
 
         Sealing exists to keep the engineer from writing to the test while the
@@ -1486,6 +1794,41 @@ class PlanStore:
         """
         with self.locked():
             manifest = self.load(plan_id)
+            blockers = []
+            open_defects = [
+                defect["id"]
+                for defect in manifest.get("defects", [])
+                if defect.get("status") == PENDING
+            ]
+            if open_defects:
+                blockers.append(f"open defect(s): {', '.join(open_defects)}")
+            open_amendments = [
+                amendment["id"]
+                for amendment in manifest.get("amendments", [])
+                if amendment.get("status") == PENDING
+            ]
+            if open_amendments:
+                blockers.append(
+                    f"unresolved amendment(s): {', '.join(open_amendments)}"
+                )
+            unfinished = [
+                stage
+                for stage in manifest.get("stages", [])
+                if stage in (IMPLEMENTATION, TESTING, EVALUATION)
+                and manifest.get("stage_state", {}).get(stage) != COMPLETE
+            ]
+            if unfinished:
+                blockers.append(f"stage(s) not complete: {', '.join(unfinished)}")
+            if blockers and not force:
+                raise PlanError(
+                    "refusing to finalize "
+                    + plan_id
+                    + ": "
+                    + "; ".join(blockers)
+                    + ". Finalizing writes the plan into the pull request as the "
+                    "account of what was done; pass --force only when you mean to "
+                    "ship it knowingly incomplete."
+                )
             emitted = []
             for stage in manifest.get("stages", []):
                 sealed_path = self.plan_dir(plan_id) / f"{stage}.sealed"
@@ -1499,8 +1842,14 @@ class PlanStore:
             manifest["status"] = COMPLETE
             manifest["finalized_at"] = now()
             manifest["sealed"] = False
-            self._save(manifest, "finalized", note=note)
-            return {"plan": plan_id, "emitted": emitted, "status": COMPLETE}
+            manifest["finalized_incomplete"] = blockers if force else []
+            self._save(manifest, "finalized", note=note, forced=bool(blockers and force))
+            return {
+                "plan": plan_id,
+                "emitted": emitted,
+                "status": COMPLETE,
+                "shipped_incomplete": blockers if force else [],
+            }
 
     def stage_path(self, plan_id: str, stage: str) -> Path:
         if stage not in STAGES:
@@ -1716,6 +2065,30 @@ class PlanStore:
         """Where a target repository customises a role's prompt."""
         return self.store / "roles" / f"{role}.md"
 
+    def bind_session(self, role: str, plan_id: str = "") -> None:
+        """Record which role is working in this directory.
+
+        Steering has to reach an agent whose environment we cannot set. A
+        subagent's first command is its brief, so the brief is where the role
+        becomes discoverable; every later `grogu` call in that directory can
+        then carry steering without the model being asked to poll for it.
+        """
+        path = self.state_dir / "session-roles.json"
+        payload = self._read_json(path) if path.exists() else {}
+        payload[str(Path.cwd().resolve())] = {
+            "role": role,
+            "plan": plan_id,
+            "at": now(),
+        }
+        self._write_json(path, payload)
+
+    def session_binding(self) -> dict:
+        path = self.state_dir / "session-roles.json"
+        if not path.exists():
+            return {}
+        payload = self._read_json(path)
+        return payload.get(str(Path.cwd().resolve()), {})
+
     def brief(self, role: str, *, plan_id: str = "", base_dir: Optional[Path] = None) -> dict:
         """Assemble a role's prompt: shared contract + repository overlay.
 
@@ -1733,6 +2106,10 @@ class PlanStore:
                 base = candidate.read_text(encoding="utf8")
         overlay_path = self.overlay_path(role)
         overlay = overlay_path.read_text(encoding="utf8") if overlay_path.is_file() else ""
+        try:
+            self.bind_session(role, plan_id)
+        except OSError:
+            pass
         steering = self.steering(role=role, plan_id=plan_id, unread=False)
         principles: list = []
         if role == DESIGNER:

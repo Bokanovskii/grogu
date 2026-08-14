@@ -86,7 +86,9 @@ evidence counts as proof. Vague test plans are where this pipeline fails.
 If the plan has genuinely independent pieces, declare them:
 
 ```sh
-grogu plan workstream <id> --name api --path 'src/api/**'
+grogu plan workstream <id> --name api --path 'src/api/**' \
+  --model gpt-5.6-sol --review rubber-duck \
+  --brief "the token bucket refill is the subtle part"
 grogu plan workstream <id> --name store --path 'src/store/**'
 grogu plan workstreams <id> --check
 ```
@@ -94,6 +96,24 @@ grogu plan workstreams <id> --check
 Declare a workstream only when its file set is disjoint from the others. The
 check is mechanical and it is what authorises fan-out; do not describe parallel
 work in prose and hope the engineer infers it.
+
+You also decide *how* each piece is built, because you are the only role that
+can see the whole shape of the work:
+
+* `--model` — put the fiddly, high-consequence or unusually subtle workstream on
+  a stronger model and leave the mechanical one on the default. The engineer
+  cannot make this call sensibly; from inside a workstream everything looks
+  equally important.
+* `--review rubber-duck|code-review|security-review` — require a second pair of
+  eyes before the tester sees it. Use it where a mistake would be quiet: the
+  concurrency, the migration, the auth path, anything where the tests you
+  specified could plausibly pass while the logic is wrong. The test gate stays
+  shut until `grogu plan review` records a pass, and a pass has to say what was
+  examined.
+* `--brief` — the one thing this engineer needs and the others do not.
+
+Assigning a different model per workstream is also cheap diversity: two models
+from the same family agree with each other's mistakes.
 
 ## The loop
 

@@ -53,7 +53,24 @@ Work stops on that part of the plan until it does.
 ## Parallel work
 
 If the plan declares workstreams, `grogu plan workstreams <id>` prints which may
-run at once. Fan out only along those lines, one worktree per workstream, and
+run at once and, for each, the model the architect assigned, any review it
+must pass, and its brief. Spawn to that: it is an assignment, not a suggestion,
+and the architect made it seeing the whole shape of the work while you see one
+piece of it.
+
+Where a workstream carries `review`, run that review before marking the stage
+complete and record it:
+
+```sh
+grogu plan review <id> --workstream api --verdict pass \
+  --findings "walked the refill path and the 429 branch"
+```
+
+A bare pass is refused, because a review that records nothing is
+indistinguishable from one that never happened. The test gate stays shut until
+each required review has one.
+
+Fan out only along those lines, one worktree per workstream, and
 only when the conflict check is clean. Independent workstreams are worth
 parallelising; a sequence of dependent steps is not, and spawning agents for it
 just multiplies the cost of the same wait.
@@ -69,7 +86,7 @@ decide whether you matched it. Before the tester runs, spawn the designer to
 look at the interface *running* — not at your diff:
 
 ```sh
-grogu plan gate <id> test        # blocked until the designer has signed off
+grogu plan gate <id> --stage test   # blocked until the designer has signed off
 ```
 
 Get it to a state that can actually be looked at, then hand the designer what

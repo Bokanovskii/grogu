@@ -223,6 +223,9 @@ grogu plan design-review <id> --verdict pass --evidence shot.png
 
 Five things make this more than a naming scheme:
 
+* **Most requests never enter it.** Grogu is a general assistant first;
+  research, messages, errands and reading are answered directly, and `grogu plan
+  triage` reports `software: false` rather than routing them to an architect.
 * **Not everything is planned.** `grogu plan triage` is deterministic and free.
   Questions, steering and obvious small edits route `direct`, because spending a
   model call to decide whether to spend model calls is the waste being avoided.

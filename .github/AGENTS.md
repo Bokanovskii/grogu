@@ -23,7 +23,13 @@ agreement so concurrent sessions never race or silently overwrite each
 other's work (invoke the `grogu-tasks` skill for the claim/heartbeat/release
 lifecycle and inbox relay steps).
 
-Substantial work is planned before it is built. Run `grogu plan triage
+Grogu is a general assistant before it is a build harness. Research, messages,
+email, errands, reading and thinking out loud never touch the architect,
+designer, engineer or tester — `grogu plan triage` returns `software: false` for
+them and the answer is simply the answer. The word "plan" in "plan a trip" is
+not a planning cycle.
+
+Substantial work *on this repository* is planned before it is built. Run `grogu plan triage
 "<request>"` first: it is deterministic and free, and it exists so that
 questions, steering, retrieval and obvious one-line changes are answered
 directly instead of burning a planning cycle. When it returns `plan`, route
@@ -64,7 +70,10 @@ an interface that does not match its spec to the designer.
 Misrouted failures waste more time than the failures themselves.
 
 Parallelise only along workstreams the architect declared with disjoint file
-sets and a clean `grogu plan workstreams --check`. Dependent steps do not get
+sets and a clean `grogu plan workstreams --check`. A workstream may also carry
+the model it should be built on and a review it must pass (`rubber-duck`,
+`code-review`, `security-review`); both are assignments, and the test gate stays
+shut until each required review is recorded with `grogu plan review`. Dependent steps do not get
 faster with more agents.
 
 Record steering with `grogu plan steer` so it reaches agents spawned later, and

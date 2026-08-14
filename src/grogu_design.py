@@ -20,9 +20,12 @@ one after the fact.
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
+import functools
 import json
 import os
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Optional
 
@@ -135,6 +138,22 @@ APPLE_PRINCIPLES = [
 ]
 
 
+def serialised(method):
+    """Run a read-modify-write under the store lock.
+
+    Two agents can be recording taste at the same time, and an unlocked
+    read-modify-write loses one of them silently — which is the worst way to
+    lose a preference, since nothing looks broken afterwards.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self.locked():
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class DesignStore:
     """Cross-repository design principles, learned deliberately."""
 
@@ -143,6 +162,7 @@ class DesignStore:
             home or os.environ.get("GROGU_HOME", Path.home() / ".grogu")
         ).expanduser()
         self.directory = self.home / "design"
+        self._lock_depth = 0
         self.principles_path = self.directory / "principles.json"
         self.pending_path = self.directory / "pending.json"
 
@@ -159,6 +179,32 @@ class DesignStore:
         payload.setdefault("schema_version", SCHEMA_VERSION)
         payload.setdefault("candidates", [])
         return payload
+
+    @contextmanager
+    def locked(self):
+        """Serialise mutations; two agents may be recording taste at once.
+
+        Reentrant, because flock is per-descriptor rather than per-process: a
+        method that takes the lock and calls another that does the same would
+        otherwise wait on itself forever.
+        """
+        if getattr(self, "_lock_depth", 0):
+            self._lock_depth += 1
+            try:
+                yield
+            finally:
+                self._lock_depth -= 1
+            return
+        self.directory.mkdir(parents=True, exist_ok=True)
+        handle = os.open(self.directory / ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+        self._lock_depth = 1
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
+        finally:
+            self._lock_depth = 0
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
 
     def status(self) -> dict:
         principles = self._principles()["principles"]
@@ -181,6 +227,7 @@ class DesignStore:
 
     # -- explicit capture --------------------------------------------------
 
+    @serialised
     def remember(
         self,
         statement: str,
@@ -211,6 +258,7 @@ class DesignStore:
         _write_json(self.principles_path, payload)
         return principle
 
+    @serialised
     def forget(self, principle_id: str) -> bool:
         payload = self._principles()
         remaining = [item for item in payload["principles"] if item["id"] != principle_id]
@@ -222,6 +270,7 @@ class DesignStore:
 
     # -- inferred candidates -----------------------------------------------
 
+    @serialised
     def suggest(
         self,
         statement: str,
@@ -260,6 +309,7 @@ class DesignStore:
     def review(self, limit: int = 50) -> List[dict]:
         return self._pending()["candidates"][:limit]
 
+    @serialised
     def confirm(self, candidate_id: str) -> dict:
         payload = self._pending()
         for candidate in payload["candidates"]:
@@ -278,6 +328,7 @@ class DesignStore:
             source=f"confirmed:{candidate['source']}",
         )
 
+    @serialised
     def reject(self, candidate_id: str) -> bool:
         payload = self._pending()
         remaining = [item for item in payload["candidates"] if item["id"] != candidate_id]
@@ -315,6 +366,7 @@ class DesignStore:
             ) or principles
         return principles[:limit]
 
+    @serialised
     def seed_apple(self) -> List[dict]:
         """Record the Apple-style patterns the user asked for, once."""
         existing = {item["statement"] for item in self._principles()["principles"]}

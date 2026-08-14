@@ -36,6 +36,12 @@ class PlanStoreTests(unittest.TestCase):
             self.store.write_stage(plan["id"], stage, body, role=owner)
         return plan["id"]
 
+    def complete_all(self, plan_id):
+        manifest = self.store.load(plan_id)
+        for stage in manifest["stages"]:
+            if stage in (grogu_plans.IMPLEMENTATION, grogu_plans.TESTING, grogu_plans.EVALUATION):
+                self.store.set_stage_state(plan_id, stage, grogu_plans.COMPLETE)
+
     # -- role isolation ----------------------------------------------------
 
     def test_engineer_reads_only_the_implementation_plan(self):
@@ -200,7 +206,7 @@ class PlanStoreTests(unittest.TestCase):
 
     def test_stalled_engineer_tester_loop_escalates_to_the_architect(self):
         plan_id = self.plan()
-        for index in range(grogu_plans.DEFAULT_MAX_DEFECT_ROUNDS):
+        for index in range(grogu_plans.DEFAULT_MAX_DEFECT_ROUNDS - 1):
             defect = self.store.report_defect(
                 plan_id,
                 report=f"still failing {index}",
@@ -384,6 +390,7 @@ class PlanStoreTests(unittest.TestCase):
 
     def test_finalize_unseals_every_stage_for_review(self):
         plan_id = self.plan(evaluation=True)
+        self.complete_all(plan_id)
         result = self.store.finalize(plan_id)
         self.assertEqual(len(result["emitted"]), 2)
         for stage in (grogu_plans.TESTING, grogu_plans.EVALUATION):
@@ -391,8 +398,153 @@ class PlanStoreTests(unittest.TestCase):
             self.assertIn(f"{stage} body", path.read_text())
             self.assertFalse((self.store.plan_dir(plan_id) / f"{stage}.sealed").exists())
 
+    def test_finalize_refuses_while_work_is_open(self):
+        plan_id = self.plan()
+        self.store.report_defect(
+            plan_id,
+            report="still failing",
+            route=grogu_plans.ROUTE_IMPLEMENTATION,
+            raised_by="tester",
+        )
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.finalize(plan_id)
+        result = self.store.finalize(plan_id, force=True)
+        self.assertTrue(result["shipped_incomplete"])
+
+    def test_accepted_amendment_blocks_until_the_stage_is_rewritten(self):
+        plan_id = self.plan()
+        self.store.approve(plan_id)
+        amendment = self.store.amend(
+            plan_id,
+            claim="the plan names a module that does not exist",
+            evidence="src/nope.py is absent",
+            stage=grogu_plans.IMPLEMENTATION,
+            raised_by="engineer",
+        )
+        self.store.resolve_amendment(
+            plan_id,
+            amendment["id"],
+            outcome=grogu_plans.ACCEPTED,
+            reason="confirmed against the tree",
+            verified=True,
+        )
+        gate = self.store.gate(plan_id, grogu_plans.GATE_IMPLEMENT)
+        self.assertFalse(gate["allowed"])
+        self.store.write_stage(
+            plan_id,
+            grogu_plans.IMPLEMENTATION,
+            "# implementation body, corrected\n",
+            role=grogu_plans.ARCHITECT,
+        )
+        self.assertTrue(self.store.gate(plan_id, grogu_plans.GATE_IMPLEMENT)["allowed"])
+
+    def test_an_agent_may_not_approve_for_the_user(self):
+        plan_id = self.plan()
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        self.addCleanup(os.environ.pop, "GROGU_ROLE", None)
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.approve(plan_id)
+        os.environ.pop("GROGU_ROLE")
+        self.store.approve(plan_id)
+
+    def test_personal_requests_never_reach_the_pipeline(self):
+        for request in (
+            "plan a trip to japan in april: flights from sfo, two weeks in "
+            "kyoto and tokyo, with a daily itinerary and a budget",
+            "help me plan my week: three deadlines, a dentist appointment and "
+            "four trips to the gym",
+            "research the best noise cancelling headphones under 400 dollars",
+            "draft an email to my landlord about the broken dishwasher",
+        ):
+            result = grogu_plans.triage(request)
+            self.assertEqual(result["decision"], "direct", request)
+            self.assertFalse(result["software"], request)
+
+    def test_software_requests_still_plan(self):
+        result = grogu_plans.triage(
+            "make me a plan for adding rate limiting to the api"
+        )
+        self.assertEqual(result["decision"], "plan")
+        self.assertTrue(result["software"])
+
+    def test_explicit_intent_overrides_triage_scoring(self):
+        self.assertEqual(
+            grogu_plans.triage(
+                "just do it: build a settings page with dark mode and overrides"
+            )["decision"],
+            "direct",
+        )
+        self.assertEqual(
+            grogu_plans.triage("please make me a plan for fixing the readme typo")[
+                "decision"
+            ],
+            "plan",
+        )
+
+    def test_open_defects_block_the_test_gate(self):
+        plan_id = self.plan()
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+        )
+        defect = self.store.report_defect(
+            plan_id,
+            report="crashes on empty input",
+            route=grogu_plans.ROUTE_IMPLEMENTATION,
+            raised_by="tester",
+        )
+        self.assertFalse(self.store.gate(plan_id, grogu_plans.GATE_TEST)["allowed"])
+        self.store.resolve_defect(plan_id, defect["id"], note="guarded the empty case")
+        self.assertTrue(self.store.gate(plan_id, grogu_plans.GATE_TEST)["allowed"])
+
+    def test_brief_binds_the_session_so_steering_finds_it(self):
+        plan_id = self.plan()
+        self.store.brief(grogu_plans.ENGINEER, plan_id=plan_id)
+        self.assertEqual(
+            self.store.session_binding()["role"], grogu_plans.ENGINEER
+        )
+
+    def test_architect_assigns_model_and_review_per_workstream(self):
+        plan_id = self.plan()
+        stream = self.store.add_workstream(
+            plan_id,
+            name="api",
+            paths=["src/api/**"],
+            model="gpt-5.6-sol",
+            review=grogu_plans.REVIEW_RUBBER_DUCK,
+            brief="the rate limiter is the subtle part",
+        )
+        self.assertEqual(stream["model"], "gpt-5.6-sol")
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+        )
+        gate = self.store.gate(plan_id, grogu_plans.GATE_TEST)
+        self.assertFalse(gate["allowed"])
+        self.assertTrue(any("review of: api" in blocker for blocker in gate["blockers"]))
+        self.store.record_review(
+            plan_id,
+            "api",
+            verdict=grogu_plans.PASS,
+            model="claude-opus-5",
+            findings="walked the token bucket refill and the 429 path",
+        )
+        self.assertTrue(self.store.gate(plan_id, grogu_plans.GATE_TEST)["allowed"])
+
+    def test_a_bare_passing_review_is_refused(self):
+        plan_id = self.plan()
+        self.store.add_workstream(plan_id, name="api", paths=["src/api/**"])
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.record_review(plan_id, "api", verdict=grogu_plans.PASS)
+
+    def test_unknown_review_kind_refused(self):
+        plan_id = self.plan()
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.add_workstream(
+                plan_id, name="api", paths=["src/api/**"], review="vibes"
+            )
+
     def test_finalized_stages_stay_readable(self):
         plan_id = self.plan()
+        self.complete_all(plan_id)
         self.store.finalize(plan_id)
         body = self.store.read_stage(plan_id, grogu_plans.TESTING, role=grogu_plans.TESTER)
         self.assertIn("testing body", body)
