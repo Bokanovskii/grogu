@@ -612,3 +612,35 @@ cannot keep them current.
 The tester's model is not arbitrary. It audits the engineer's work, and two
 models from the same family share the same blind spots — including the
 comfortable ones.
+
+That was a guess when it was made; the literature since supports it. Judge
+models score their own output higher even when the origin is hidden, because
+the mechanism is perplexity — they prefer text that reads like something they
+would have written (Wataoka et al., *Self-Preference Bias in LLM-as-a-Judge*,
+NeurIPS 2024, arXiv:2410.21819). The bias runs at the level of the model
+*family*, not the individual checkpoint (Spiliopoulou et al., arXiv:2508.06709,
+August 2025; also EMNLP 2025 main.86), which is precisely the case of a Sonnet
+tester reading Sonnet code. Worse, agreement from an apparent peer flips
+correct answers to incorrect ones at high rates, and the effect is pretrained
+rather than an artifact of alignment (arXiv:2605.12991). What is *not*
+established is a measured bug-catch delta for a cross-family tester in a
+write-and-run-tests role specifically; the mechanism is evidenced, the
+end-to-end ablation is not.
+
+Two things about this table are still unmeasured. The designer is on Opus for
+reasoning, but its actual output is byte-exact fenced blocks — an edit-fidelity
+task, which is the dimension Aider's architect/editor results attribute to
+Sonnet rather than to the heavier reasoning models
+(`aider.chat/2024/09/26/architect.html`). And the engineer-never-sees-the-test-
+plan isolation, the most novel thing here, has no published ablation behind it
+at all. It is software-engineering intuition about coding-to-the-test,
+extrapolated to models.
+
+The round caps sit at the low end of published practice, which is the right
+end: Aider retries an edit 3 times, Claude Code surfaces to the user after
+about 5 self-correction rounds, OpenHands allows 30 environment steps per run.
+Grogu bounces 3 times and holds at 6 pending defects. What Grogu has no
+equivalent of is a **spend ceiling** — round counts bound the number of loops,
+not the cost of one, and an architect doing real external research can consume
+a large context per round. The harness currently sees no token or cost figures
+at all, so this cannot be enforced today; it is a known gap, not a decision.
