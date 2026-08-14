@@ -2245,7 +2245,18 @@ def design_status(args: argparse.Namespace) -> int:
     if args.json:
         print_json(status)
         return 0
-    print(f"{status['principles']} principle(s), {status['pending']} pending")
+    print(
+        f"{status['principles']} principle(s) "
+        f"({status.get('learned', 0)} learned from you, "
+        f"{status.get('seeded', 0)} seeded defaults), "
+        f"{status['pending']} pending"
+    )
+    if not status.get("learned"):
+        print(
+            "  nothing here was learned from you yet: a designer reading this "
+            "is applying general taste, not yours. `grogu design remember` and "
+            "`grogu design confirm` are how that changes."
+        )
     print(f"  {status['directory']}")
     if status["scopes"]:
         print(f"  scopes: {', '.join(status['scopes'])}")

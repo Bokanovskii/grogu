@@ -208,9 +208,21 @@ class DesignStore:
 
     def status(self) -> dict:
         principles = self._principles()["principles"]
+        # The first designer to run said the most useful thing anyone has
+        # said about this store: all thirteen principles were seeds, nothing
+        # had ever been learned from this user, and it was therefore
+        # inventing taste while sounding like it was recalling it. A store
+        # that cannot tell you that invites exactly that mistake.
+        seeded = [
+            item
+            for item in principles
+            if str(item.get("source", "")).startswith("user:apple-patterns")
+        ]
         return {
             "directory": str(self.directory),
             "principles": len(principles),
+            "seeded": len(seeded),
+            "learned": len(principles) - len(seeded),
             "pending": len(self._pending()["candidates"]),
             "scopes": sorted({item["scope"] for item in principles}),
         }

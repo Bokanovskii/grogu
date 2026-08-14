@@ -21,6 +21,12 @@ recall`; it prints the same principles again, and the first designer to run
 this pipeline spent a call finding that out. Use `recall --scope` only when you
 want a scope the brief did not cover.
 
+Run `grogu design status` once. If it says nothing has been learned from this
+user yet, then the principles you are reading are general taste wearing the
+user's name, and the honest thing is to say in your report which decisions you
+inferred rather than recalled — and to file them with `grogu design suggest` as
+pending rather than asserting them as the user's.
+
 The principles are
 not suggestions to weigh — they are the standing answer to "what does good look
 like here", and they were learned from this specific person's corrections. Read
