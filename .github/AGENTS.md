@@ -23,6 +23,49 @@ agreement so concurrent sessions never race or silently overwrite each
 other's work (invoke the `grogu-tasks` skill for the claim/heartbeat/release
 lifecycle and inbox relay steps).
 
+Substantial work is planned before it is built. Run `grogu plan triage
+"<request>"` first: it is deterministic and free, and it exists so that
+questions, steering, retrieval and obvious one-line changes are answered
+directly instead of burning a planning cycle. When it returns `plan`, route
+through the architect, engineer and tester roles rather than implementing
+straight away (invoke the `grogu-pipeline` skill for the stage, gate and loop
+steps, and see `docs/pipeline.md` for the design).
+
+Every plan produces at least an implementation plan and a testing plan, plus an
+evaluation plan when a green test suite would not tell you the change was worth
+making. The testing and evaluation plans are sealed from the engineer: an
+implementation written against its own tests only proves the tests were
+satisfiable. Never decode a sealed stage to route around that.
+
+Treat `grogu plan gate` as binding. It is a state check rather than advice, and
+when the user asked for a plan directly it refuses work until they approve it —
+autopilot does not waive user review.
+
+The architect owns the plan and is the only role that may change it. It must
+verify an amendment against the code itself before resolving it; taking another
+agent's word for it is how a wrong plan becomes an agreed plan. When the
+engineer and tester stop converging, the escalation goes to the architect, not
+to the user; only disagreements about intent reach the user.
+
+Route every test failure to whoever owns it — implementation defects to the
+engineer, a broken harness to the tester, an unverifiable plan to the architect.
+Misrouted failures waste more time than the failures themselves.
+
+Parallelise only along workstreams the architect declared with disjoint file
+sets and a clean `grogu plan workstreams --check`. Dependent steps do not get
+faster with more agents.
+
+Record steering with `grogu plan steer` so it reaches agents spawned later, and
+relay it to running subagents by pointing at the command rather than pasting the
+text. Give each repository its own role context in
+`.grogu/roles/{architect,engineer,tester}.md` instead of putting
+repository-specific knowledge in the harness.
+
+After work lands, run `grogu plan finalize` so the pull request carries the plans
+it implements, then `grogu plan retro` and `grogu plan friction`. Accepted
+amendments, escalations and user steering are planning misses: fix the role
+overlay or the harness, not just the plan in front of you.
+
 Record and query the cross-project relationship catalog with `grogu project
 {init, list, relate, graph}`, not by hand-tracking which repositories depend
 on each other.

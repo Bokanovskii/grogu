@@ -27,6 +27,7 @@ import grogu_imessage
 import grogu_mcp
 import grogu_memory
 import grogu_personal_memory
+import grogu_plans
 import grogu_telemetry
 import grogu_tasks
 import grogu_worktrees
@@ -1176,6 +1177,397 @@ def task_inbox(args: argparse.Namespace) -> int:
     return 0
 
 
+def plan_store(args: argparse.Namespace) -> grogu_plans.PlanStore:
+    return grogu_plans.PlanStore(Path(args.repo).expanduser() if args.repo else None)
+
+
+def _plan_role(args: argparse.Namespace) -> str:
+    role = getattr(args, "role", "") or grogu_plans.current_role()
+    if not role:
+        raise grogu_plans.PlanError(
+            "pass --role, or export GROGU_ROLE. Plan access is role-scoped: "
+            "who is asking decides what may be read."
+        )
+    return role
+
+
+def _read_body(args: argparse.Namespace) -> str:
+    if getattr(args, "file", None):
+        if args.file == "-":
+            return sys.stdin.read()
+        return Path(args.file).expanduser().read_text(encoding="utf8")
+    return args.body or ""
+
+
+def plan_new(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan = store.create(
+        args.title,
+        task_id=args.task or "",
+        evaluation=args.eval,
+        review_required=args.review_required,
+    )
+    print(plan["id"] if not args.json else json.dumps(plan, indent=2, sort_keys=True))
+    return 0
+
+
+def plan_list(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plans = store.list_plans()
+    if args.status:
+        plans = [plan for plan in plans if plan.get("status") == args.status]
+    elif not args.all:
+        plans = [plan for plan in plans if plan.get("status") != grogu_plans.SUPERSEDED]
+    plans.sort(key=lambda plan: plan["id"])
+    if args.json:
+        print_json([store.summary(plan["id"]) for plan in plans])
+        return 0
+    for plan in plans:
+        review = " [awaiting review]" if plan.get("review_required") and plan.get("status") != grogu_plans.APPROVED else ""
+        task = f" ({plan['task_id']})" if plan.get("task_id") else ""
+        print(f"{plan['id']}  {plan.get('status', '?'):<12}{task} {plan.get('title', '')}{review}")
+    return 0
+
+
+def plan_status(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    summary = store.summary(store.resolve(args.id))
+    if args.json:
+        print_json(summary)
+        return 0
+    print(f"{summary['id']}  {summary['status']}  {summary['title']}")
+    print(f"  stages: " + ", ".join(
+        f"{stage}={summary['stage_state'].get(stage, '?')}" for stage in summary["stages"]
+    ))
+    print(f"  amendment rounds: {summary['rounds']}   engineer/tester rounds: {summary['defect_rounds']}")
+    if summary.get("escalated"):
+        print("  escalated to the architect: the engineer/tester loop stopped converging")
+    if summary["review_required"] and summary["status"] != grogu_plans.APPROVED:
+        print("  the user asked for this plan; it needs `grogu plan approve` before work starts")
+    for stream in summary["workstreams"]:
+        depends = f" after {', '.join(stream['depends_on'])}" if stream["depends_on"] else ""
+        print(f"  workstream {stream['name']}: {', '.join(stream['paths'])}{depends}")
+    for amendment in summary["open_amendments"]:
+        print(f"  amendment {amendment['id']} from {amendment['raised_by']}: {amendment['claim']}")
+    for defect in summary["open_defects"]:
+        print(f"  defect {defect['id']} -> {defect['owner']} ({defect['route']}): {defect['report']}")
+    pending = {role: count for role, count in summary["steering_pending"].items() if count}
+    for role, count in sorted(pending.items()):
+        print(f"  {count} unread steering note(s) for the {role}")
+    return 0
+
+
+def plan_write(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    body = _read_body(args)
+    plan_id = store.resolve(args.id)
+    store.write_stage(plan_id, args.stage, body, role=getattr(args, "role", "") or "")
+    print(f"wrote {args.stage} plan for {plan_id} ({len(body)} bytes)")
+    return 0
+
+
+def plan_show(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id)
+    sys.stdout.write(store.read_stage(plan_id, args.stage, role=_plan_role(args)))
+    return 0
+
+
+def plan_approve(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan = store.approve(store.resolve(args.id), note=args.note or "")
+    print(f"approved {plan['id']}")
+    return 0
+
+
+def plan_stage(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan = store.set_stage_state(
+        store.resolve(args.id), args.stage, args.state, note=args.note or ""
+    )
+    print(f"{plan['id']} {args.stage}={args.state}")
+    return 0
+
+
+def plan_supersede(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan = store.set_status(
+        store.resolve(args.id), grogu_plans.SUPERSEDED, note=args.note or ""
+    )
+    print(f"superseded {plan['id']}")
+    return 0
+
+
+def plan_finalize(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    result = store.finalize(store.resolve(args.id), note=args.note or "")
+    print(f"finalized {result['plan']}")
+    for path in result["emitted"]:
+        print(f"  unsealed {path}")
+    print("  stage the plan directory so the pull request carries the plans it implements")
+    return 0
+
+
+def plan_gate(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    result = store.gate(store.resolve(args.id), args.stage)
+    if args.json:
+        print_json(result)
+    else:
+        verdict = "allowed" if result["allowed"] else "blocked"
+        print(f"{result['plan']} {result['gate']}: {verdict} (status {result['status']})")
+        for blocker in result["blockers"]:
+            print(f"  - {blocker}")
+    return 0 if result["allowed"] else 3
+
+
+def plan_amend(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id)
+    amendment = store.amend(
+        plan_id,
+        claim=args.claim,
+        evidence=args.evidence or "",
+        stage=args.stage,
+        raised_by=getattr(args, "role", "") or "",
+    )
+    print(f"raised {amendment['id']} on {plan_id}; the architect must verify and resolve it")
+    return 0
+
+
+def plan_amendments(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    manifest = store.load(store.resolve(args.id))
+    amendments = manifest.get("amendments", [])
+    if not args.all:
+        amendments = [item for item in amendments if item.get("status") == grogu_plans.PENDING]
+    if args.json:
+        print_json(amendments)
+        return 0
+    for amendment in amendments:
+        print(f"{amendment['id']}  {amendment['status']:<9} {amendment['raised_by']}: {amendment['claim']}")
+        if amendment.get("evidence"):
+            print(f"    evidence: {amendment['evidence']}")
+        if amendment.get("reason"):
+            print(f"    resolution: {amendment['reason']}")
+    return 0
+
+
+def plan_resolve(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id)
+    if args.guidance:
+        outcome, reason = grogu_plans.GUIDED, args.guidance
+    elif args.accept:
+        outcome, reason = grogu_plans.ACCEPTED, args.reason or ""
+    else:
+        outcome, reason = grogu_plans.REJECTED, args.reason or ""
+    amendment = store.resolve_amendment(
+        plan_id,
+        args.amendment,
+        outcome=outcome,
+        reason=reason,
+        verified=args.verified,
+        role=getattr(args, "role", "") or "",
+    )
+    print(f"{amendment['id']} {amendment['status']}")
+    if outcome == grogu_plans.GUIDED:
+        print("  guidance queued as steering for the engineer and the tester")
+    return 0
+
+
+def plan_defect(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id)
+    defect = store.report_defect(
+        plan_id,
+        report=args.report,
+        route=args.route,
+        evidence=args.evidence or "",
+        raised_by=getattr(args, "role", "") or "",
+    )
+    print(f"raised {defect['id']} on {plan_id}, routed to the {defect['owner']}")
+    return 0
+
+
+def plan_defects(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    manifest = store.load(store.resolve(args.id))
+    defects = manifest.get("defects", [])
+    if not args.all:
+        defects = [item for item in defects if item.get("status") == grogu_plans.PENDING]
+    if args.json:
+        print_json(defects)
+        return 0
+    for defect in defects:
+        print(f"{defect['id']}  {defect['status']:<9} -> {defect.get('owner')} ({defect['route']}): {defect['report']}")
+        if defect.get("evidence"):
+            print(f"    evidence: {defect['evidence']}")
+    return 0
+
+
+def plan_defect_resolve(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    defect = store.resolve_defect(store.resolve(args.id), args.defect, note=args.note)
+    print(f"{defect['id']} {defect['status']}")
+    return 0
+
+
+def plan_workstream(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    stream = store.add_workstream(
+        store.resolve(args.id),
+        name=args.name,
+        paths=args.path,
+        depends_on=args.depends_on or [],
+    )
+    print(f"workstream {stream['name']}: {', '.join(stream['paths'])}")
+    return 0
+
+
+def plan_workstreams(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id)
+    conflicts = store.workstream_conflicts(plan_id)
+    batches = store.parallel_batches(plan_id)
+    if args.json:
+        print_json({"batches": batches, "conflicts": conflicts})
+    else:
+        for index, batch in enumerate(batches, start=1):
+            print(f"wave {index}: {', '.join(batch)}")
+        for conflict in conflicts:
+            left, right = conflict["workstreams"]
+            print(f"conflict: {left} and {right} both claim {' / '.join(conflict['paths'])}")
+        if not conflicts and len(batches) and max(len(batch) for batch in batches) > 1:
+            print("file sets are disjoint; these waves may run in parallel worktrees")
+    return 3 if (conflicts and args.check) else 0
+
+
+def plan_steer(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id) if args.id else ""
+    note = store.steer(
+        " ".join(args.text),
+        plan_id=plan_id,
+        role=args.role or "all",
+        requires_replan=args.requires_replan,
+    )
+    scope = plan_id or "repository"
+    print(f"steering #{note['seq']} recorded for {note['role']} on {scope}")
+    if note["requires_replan"]:
+        print("plan moved to needs_review: the architect must fold this in before work continues")
+    return 0
+
+
+def plan_steering(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id) if args.id else ""
+    role = getattr(args, "role", "") or "all"
+    if args.ack:
+        acked = store.ack_steering(role=_plan_role(args), plan_id=plan_id)
+        print(f"acked steering for {acked['role']} (repo {acked['repository_seq']}, plan {acked['plan_seq']})")
+        return 0
+    result = store.steering(role=role, plan_id=plan_id, unread=args.unread)
+    if args.json:
+        print_json(result)
+        return 0
+    for scope in ("repository", "plan"):
+        for note in result.get(scope, []):
+            binding = " [requires replan]" if note.get("requires_replan") else ""
+            print(f"{scope} #{note['seq']}  {note['at']}  ->{note['role']}{binding}: {note['text']}")
+    return 0
+
+
+def plan_brief(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id) if args.id else ""
+    brief = store.brief(args.role, plan_id=plan_id, base_dir=ROOT / ".github" / "agents")
+    if args.json:
+        print_json(brief)
+        return 0
+    if brief["base"]:
+        print(brief["base"].rstrip())
+    if brief["overlay"]:
+        print(f"\n## Repository specifics ({brief['overlay_path']})\n")
+        print(brief["overlay"].rstrip())
+    else:
+        print(
+            f"\n(no repository overlay at {brief['overlay_path']}; "
+            "write one to give this role repository-specific context)"
+        )
+    notes = brief["steering"].get("repository", []) + brief["steering"].get("plan", [])
+    if notes:
+        print("\n## Standing steering from the user\n")
+        for note in notes:
+            print(f"- {note['text']}")
+    return 0
+
+
+def plan_triage(args: argparse.Namespace) -> int:
+    result = grogu_plans.triage(" ".join(args.text))
+    if args.json:
+        print_json(result)
+        return 0
+    print(f"{result['decision']}: {result['explanation']}")
+    for reason in result["reasons"]:
+        print(f"  - {reason}")
+    return 0
+
+
+def plan_retro(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    report = store.retro(store.resolve(args.id))
+    if args.json:
+        print_json(report)
+        return 0
+    print(f"{report['plan']}  {report['status']}  {report['title']}")
+    print(
+        f"  amendment rounds {report['amendment_rounds']}, "
+        f"engineer/tester rounds {report['defect_rounds']}, "
+        f"steering notes {report['steering_notes']}"
+    )
+    if report["clean"]:
+        print("  no friction signals: the plan held")
+        return 0
+    for finding in report["findings"]:
+        print(f"  [{finding['target']}] {finding['signal']} x{finding['count']}: {finding['detail']}")
+        for example in finding.get("examples", []):
+            print(f"      - {example}")
+    print("  fix the overlay or the harness, not just this plan")
+    return 0
+
+
+def plan_friction(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    if args.note:
+        entry = store.note_friction(
+            args.note,
+            plan_id=store.resolve(args.id) if args.id else "",
+            role=getattr(args, "role", "") or "",
+        )
+        print(f"recorded friction #{entry['seq']} from the {entry['role']}")
+        return 0
+    if args.resolve:
+        entry = store.resolve_friction(args.resolve, note=args.resolution or "addressed")
+        print(f"friction #{entry['seq']} resolved")
+        return 0
+    report = store.friction(include_resolved=args.all)
+    if args.json:
+        print_json(report)
+        return 0
+    for entry in report["notes"]:
+        plan = f" ({entry['plan']})" if entry.get("plan") else ""
+        print(f"#{entry['seq']}  {entry['role']}{plan}: {entry['note']}")
+    for bucket in report["signals"]:
+        mark = "*" if bucket["plans"] > 1 else " "
+        print(
+            f"{mark} {bucket['signal']}: {bucket['count']} across {bucket['plans']} plan(s)"
+            f" -> {bucket['target']}"
+        )
+    print(report["verdict"])
+    return 0
+
+
 def session_new(args: argparse.Namespace) -> int:
     """Start a new Grogu session that can be opened from GitHub."""
     arguments = list(args.copilot_arguments)
@@ -1629,6 +2021,257 @@ def build_parser() -> argparse.ArgumentParser:
     inbox.add_argument("--json", action="store_true")
     inbox.set_defaults(handler=task_inbox)
 
+    plan = subparsers.add_parser(
+        "plan", help="architect/engineer/tester plan artifacts and stage gates"
+    )
+    plan_subparsers = plan.add_subparsers(dest="plan_command", required=True)
+    plan_common = argparse.ArgumentParser(add_help=False)
+    plan_common.add_argument(
+        "--repo", help="repository root (default: the enclosing Git work tree)"
+    )
+    role_common = argparse.ArgumentParser(add_help=False)
+    role_common.add_argument(
+        "--role",
+        choices=grogu_plans.ROLES,
+        help="role making the call (default: $GROGU_ROLE)",
+    )
+
+    plan_new_parser = plan_subparsers.add_parser(
+        "new", help="create a plan with implementation and testing stages",
+        parents=[plan_common],
+    )
+    plan_new_parser.add_argument("title")
+    plan_new_parser.add_argument("--task", help="task id this plan serves")
+    plan_new_parser.add_argument(
+        "--eval",
+        action="store_true",
+        help="add an evaluation stage for end-to-end or non-deterministic behavior",
+    )
+    plan_new_parser.add_argument(
+        "--review-required",
+        action="store_true",
+        help="the user asked for this plan; block work until they approve it",
+    )
+    plan_new_parser.add_argument("--json", action="store_true")
+    plan_new_parser.set_defaults(handler=plan_new)
+
+    plan_list_parser = plan_subparsers.add_parser("list", parents=[plan_common])
+    plan_list_parser.add_argument("--status", choices=grogu_plans.PLAN_STATUSES)
+    plan_list_parser.add_argument("--all", action="store_true", help="include superseded")
+    plan_list_parser.add_argument("--json", action="store_true")
+    plan_list_parser.set_defaults(handler=plan_list)
+
+    plan_status_parser = plan_subparsers.add_parser(
+        "status", help="bounded plan summary with no plan prose", parents=[plan_common]
+    )
+    plan_status_parser.add_argument("id")
+    plan_status_parser.add_argument("--json", action="store_true")
+    plan_status_parser.set_defaults(handler=plan_status)
+
+    plan_write_parser = plan_subparsers.add_parser(
+        "write", help="write a plan stage (architect only)",
+        parents=[plan_common, role_common],
+    )
+    plan_write_parser.add_argument("id")
+    plan_write_parser.add_argument("stage", choices=grogu_plans.STAGES)
+    plan_write_parser.add_argument("--body", default="")
+    plan_write_parser.add_argument("--file", help="read the body from a file, or - for stdin")
+    plan_write_parser.set_defaults(handler=plan_write)
+
+    plan_show_parser = plan_subparsers.add_parser(
+        "show", help="read a plan stage the role is allowed to read",
+        parents=[plan_common, role_common],
+    )
+    plan_show_parser.add_argument("id")
+    plan_show_parser.add_argument("--stage", choices=grogu_plans.STAGES, default=grogu_plans.IMPLEMENTATION)
+    plan_show_parser.set_defaults(handler=plan_show)
+
+    plan_approve_parser = plan_subparsers.add_parser("approve", parents=[plan_common])
+    plan_approve_parser.add_argument("id")
+    plan_approve_parser.add_argument("--note")
+    plan_approve_parser.set_defaults(handler=plan_approve)
+
+    plan_stage_parser = plan_subparsers.add_parser(
+        "stage", help="record stage progress", parents=[plan_common]
+    )
+    plan_stage_parser.add_argument("id")
+    plan_stage_parser.add_argument("stage", choices=grogu_plans.STAGES)
+    plan_stage_parser.add_argument("state", choices=grogu_plans.STAGE_STATES)
+    plan_stage_parser.add_argument("--note")
+    plan_stage_parser.set_defaults(handler=plan_stage)
+
+    plan_supersede_parser = plan_subparsers.add_parser("supersede", parents=[plan_common])
+    plan_supersede_parser.add_argument("id")
+    plan_supersede_parser.add_argument("--note")
+    plan_supersede_parser.set_defaults(handler=plan_supersede)
+
+    plan_finalize_parser = plan_subparsers.add_parser(
+        "finalize",
+        help="unseal every stage so the finished plan ships in the pull request",
+        parents=[plan_common],
+    )
+    plan_finalize_parser.add_argument("id")
+    plan_finalize_parser.add_argument("--note")
+    plan_finalize_parser.set_defaults(handler=plan_finalize)
+
+    plan_gate_parser = plan_subparsers.add_parser(
+        "gate", help="may the pipeline enter a stage (exit 3 when blocked)",
+        parents=[plan_common],
+    )
+    plan_gate_parser.add_argument("id")
+    plan_gate_parser.add_argument("--stage", choices=grogu_plans.GATES, required=True)
+    plan_gate_parser.add_argument("--json", action="store_true")
+    plan_gate_parser.set_defaults(handler=plan_gate)
+
+    plan_amend_parser = plan_subparsers.add_parser(
+        "amend", help="ask the architect to change the plan",
+        parents=[plan_common, role_common],
+    )
+    plan_amend_parser.add_argument("id")
+    plan_amend_parser.add_argument("--claim", required=True)
+    plan_amend_parser.add_argument("--evidence", default="")
+    plan_amend_parser.add_argument("--stage", choices=grogu_plans.STAGES, default=grogu_plans.IMPLEMENTATION)
+    plan_amend_parser.set_defaults(handler=plan_amend)
+
+    plan_amendments_parser = plan_subparsers.add_parser("amendments", parents=[plan_common])
+    plan_amendments_parser.add_argument("id")
+    plan_amendments_parser.add_argument("--all", action="store_true")
+    plan_amendments_parser.add_argument("--json", action="store_true")
+    plan_amendments_parser.set_defaults(handler=plan_amendments)
+
+    plan_resolve_parser = plan_subparsers.add_parser(
+        "resolve", help="architect decision on an amendment or escalation",
+        parents=[plan_common, role_common],
+    )
+    plan_resolve_parser.add_argument("id")
+    plan_resolve_parser.add_argument("amendment")
+    outcome_group = plan_resolve_parser.add_mutually_exclusive_group(required=True)
+    outcome_group.add_argument("--accept", action="store_true")
+    outcome_group.add_argument("--reject", action="store_true")
+    outcome_group.add_argument(
+        "--guidance", help="break the deadlock with direction instead of a plan change"
+    )
+    plan_resolve_parser.add_argument("--reason", default="")
+    plan_resolve_parser.add_argument(
+        "--verified",
+        action="store_true",
+        help="the architect checked the claim against the code itself",
+    )
+    plan_resolve_parser.set_defaults(handler=plan_resolve)
+
+    plan_defect_parser = plan_subparsers.add_parser(
+        "defect", help="report a failure and route it to whoever owns it",
+        parents=[plan_common, role_common],
+    )
+    plan_defect_parser.add_argument("id")
+    plan_defect_parser.add_argument("--report", required=True)
+    plan_defect_parser.add_argument(
+        "--route", choices=grogu_plans.DEFECT_ROUTES, required=True
+    )
+    plan_defect_parser.add_argument("--evidence", default="")
+    plan_defect_parser.set_defaults(handler=plan_defect)
+
+    plan_defects_parser = plan_subparsers.add_parser("defects", parents=[plan_common])
+    plan_defects_parser.add_argument("id")
+    plan_defects_parser.add_argument("--all", action="store_true")
+    plan_defects_parser.add_argument("--json", action="store_true")
+    plan_defects_parser.set_defaults(handler=plan_defects)
+
+    plan_defect_resolve_parser = plan_subparsers.add_parser(
+        "defect-resolve", parents=[plan_common]
+    )
+    plan_defect_resolve_parser.add_argument("id")
+    plan_defect_resolve_parser.add_argument("defect")
+    plan_defect_resolve_parser.add_argument("--note", required=True)
+    plan_defect_resolve_parser.set_defaults(handler=plan_defect_resolve)
+
+    plan_workstream_parser = plan_subparsers.add_parser(
+        "workstream", help="declare a parallelisable unit and the files it owns",
+        parents=[plan_common],
+    )
+    plan_workstream_parser.add_argument("id")
+    plan_workstream_parser.add_argument("--name", required=True)
+    plan_workstream_parser.add_argument("--path", action="append", required=True)
+    plan_workstream_parser.add_argument("--depends-on", action="append")
+    plan_workstream_parser.set_defaults(handler=plan_workstream)
+
+    plan_workstreams_parser = plan_subparsers.add_parser(
+        "workstreams", help="parallel waves, and any file-set conflicts between them",
+        parents=[plan_common],
+    )
+    plan_workstreams_parser.add_argument("id")
+    plan_workstreams_parser.add_argument(
+        "--check", action="store_true", help="exit 3 when workstreams overlap"
+    )
+    plan_workstreams_parser.add_argument("--json", action="store_true")
+    plan_workstreams_parser.set_defaults(handler=plan_workstreams)
+
+    plan_steer_parser = plan_subparsers.add_parser(
+        "steer", help="record steering that reaches agents spawned later",
+        parents=[plan_common],
+    )
+    plan_steer_parser.add_argument("text", nargs="+")
+    plan_steer_parser.add_argument("--plan", dest="id", help="scope to one plan")
+    plan_steer_parser.add_argument(
+        "--role", choices=(*grogu_plans.ROLES, "all"), default="all"
+    )
+    plan_steer_parser.add_argument(
+        "--requires-replan",
+        action="store_true",
+        help="block the gates until the architect folds this into the plan",
+    )
+    plan_steer_parser.set_defaults(handler=plan_steer)
+
+    plan_steering_parser = plan_subparsers.add_parser(
+        "steering", help="steering visible to a role", parents=[plan_common, role_common]
+    )
+    plan_steering_parser.add_argument("--plan", dest="id")
+    plan_steering_parser.add_argument(
+        "--unread", action="store_true", help="only notes this role has not acked"
+    )
+    plan_steering_parser.add_argument(
+        "--ack", action="store_true", help="mark everything visible as seen"
+    )
+    plan_steering_parser.add_argument("--json", action="store_true")
+    plan_steering_parser.set_defaults(handler=plan_steering)
+
+    plan_brief_parser = plan_subparsers.add_parser(
+        "brief",
+        help="assemble a role's prompt: shared contract, repository overlay, steering",
+        parents=[plan_common],
+    )
+    plan_brief_parser.add_argument("--role", choices=grogu_plans.ROLES, required=True)
+    plan_brief_parser.add_argument("--plan", dest="id")
+    plan_brief_parser.add_argument("--json", action="store_true")
+    plan_brief_parser.set_defaults(handler=plan_brief)
+
+    plan_triage_parser = plan_subparsers.add_parser(
+        "triage", help="does this request warrant a plan at all",
+    )
+    plan_triage_parser.add_argument("text", nargs="+")
+    plan_triage_parser.add_argument("--json", action="store_true")
+    plan_triage_parser.set_defaults(handler=plan_triage)
+
+    plan_retro_parser = plan_subparsers.add_parser(
+        "retro", help="what this plan cost beyond the work, and what to change",
+        parents=[plan_common],
+    )
+    plan_retro_parser.add_argument("id")
+    plan_retro_parser.add_argument("--json", action="store_true")
+    plan_retro_parser.set_defaults(handler=plan_retro)
+
+    plan_friction_parser = plan_subparsers.add_parser(
+        "friction", help="recorded friction and signals recurring across plans",
+        parents=[plan_common, role_common],
+    )
+    plan_friction_parser.add_argument("--note", help="record friction you just hit")
+    plan_friction_parser.add_argument("--plan", dest="id")
+    plan_friction_parser.add_argument("--resolve", type=int, metavar="SEQ")
+    plan_friction_parser.add_argument("--resolution")
+    plan_friction_parser.add_argument("--all", action="store_true")
+    plan_friction_parser.add_argument("--json", action="store_true")
+    plan_friction_parser.set_defaults(handler=plan_friction)
+
     session = subparsers.add_parser(
         "session", help="start and manage Grogu sessions"
     )
@@ -1822,6 +2465,7 @@ GROGU_COMMANDS = frozenset(
         "gmail",
         "banner",
         "task",
+        "plan",
         "session",
         "worktree",
     }
@@ -1845,12 +2489,23 @@ def main(arguments: list[str]) -> int:
         return launch_copilot(arguments)
     try:
         return parsed.handler(parsed)
+    except grogu_plans.PlanError as error:
+        print(f"grogu: {error}", file=sys.stderr)
+        return 3
     except grogu_tasks.TaskError as error:
         print(f"grogu: {error}", file=sys.stderr)
         return 2
     except (grogu_imessage.IMessageError, grogu_gmail.GmailError, ValueError) as error:
         print(f"grogu: {error}", file=sys.stderr)
         return 2
+    finally:
+        # Steering rides out on whatever the agent already ran, so nobody has to
+        # remember to poll for it.
+        banner = grogu_plans.pending_banner(
+            Path(parsed.repo).expanduser() if getattr(parsed, "repo", None) else None
+        )
+        if banner:
+            print(banner, file=sys.stderr)
 
 
 if __name__ == "__main__":

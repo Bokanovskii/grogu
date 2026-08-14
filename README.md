@@ -192,9 +192,52 @@ so Grogu can start a separate remote session without replacing the current one.
   instruction directories, not substituted for the user's own.
 * **Skills** live in `.github/skills/<name>/SKILL.md`. Add a directory, add a
   skill; nothing needs to be registered.
+* **Agents** live in `.github/agents/<role>.md`. The architect, engineer and
+  tester roles are defined there, and `grogu plan brief` uses the same files as
+  the base of each role's prompt.
 * **Commands** live in `src/grogu_cli.py` as a subparser plus a handler, and are
   added to `GROGU_COMMANDS` so the launcher does not forward them to Copilot.
   Any argument Grogu does not recognise belongs to Copilot.
+
+## Planning: architect, engineer, tester
+
+Substantial work goes through three roles that hand each other files rather than
+conversation. Plans are artifacts on disk; agents get a plan id and a role.
+
+```sh
+grogu plan triage "add rate limiting to the API"   # plan, or answer directly?
+grogu plan new "Rate limiting" --review-required   # implementation + testing plans
+grogu plan write <id> implementation --role architect --file -
+grogu plan gate <id> --stage implement             # exit 3 = do not start
+grogu plan show <id> --stage implementation --role engineer
+```
+
+Four things make this more than a naming scheme:
+
+* **Not everything is planned.** `grogu plan triage` is deterministic and free.
+  Questions, steering and obvious small edits route `direct`, because spending a
+  model call to decide whether to spend model calls is the waste being avoided.
+* **The engineer cannot read the testing plan.** It is sealed on disk, and the
+  store refuses the read. An implementation written against its own tests only
+  proves the tests were satisfiable. Sealing stops accidents, not intent — it is
+  not a security boundary.
+* **Gates are state, not advice.** When the user asks for a plan directly,
+  `--review-required` makes `grogu plan gate` refuse work until they approve.
+  Autopilot does not waive user review.
+* **The loops end somewhere.** The engineer and tester escalate to the architect,
+  who must verify claims against the code itself (`--verified`) before changing
+  the plan. Only questions of intent reach the user.
+
+Each repository supplies its own role context in
+`.grogu/roles/{architect,engineer,tester}.md`, which `grogu plan brief` merges
+with the shared contract. `grogu plan steer` records role-scoped steering that
+reaches agents spawned later and rides out on the output of any `grogu` command a
+running agent happens to run. `grogu plan retro` and `grogu plan friction` turn
+accepted amendments, escalations and user corrections into changes to those
+overlays. `grogu plan finalize` unseals every stage so the pull request carries
+the plans it implements.
+
+[docs/pipeline.md](docs/pipeline.md) explains each constraint and why it exists.
 
 ## Tasks, issues, handoff, and history
 
