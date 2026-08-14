@@ -1940,3 +1940,42 @@ class ArchitectFrictionTests(unittest.TestCase):
             role="engineer", agent="e1",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_polling_for_steering_does_not_print_it_twice(self):
+        """The banner delivers to commands that were about something else.
+
+        `plan steering` already prints the notes, so the banner doubled them
+        in one response -- on the single path built to be token-efficient.
+        """
+        plan = self._plan()
+        self.run_cli("plan", "steer", plan, "--role", "engineer", "--note", "one note only")
+        poll = self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer",
+            role="engineer", agent="e1",
+        )
+        self.assertEqual(poll.stdout.count("one note only"), 1, poll.stdout)
+
+    def test_status_does_not_tell_the_user_notes_are_unread_forever(self):
+        """The pending count is per-caller; the user is not the addressee.
+
+        `plan status` said "1 unread steering note(s) for the engineer" and the
+        count never fell when the engineer read it, because what it actually
+        measured was that the user's own shell had not.
+        """
+        plan = self._plan()
+        self.run_cli("plan", "steer", plan, "--role", "engineer", "--note", "read me")
+        before = self.run_cli("plan", "status", plan)
+        self.assertIn("has not reached", before.stdout)
+        self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer",
+            role="engineer", agent="e1",
+        )
+        after = self.run_cli("plan", "status", plan)
+        self.assertNotIn("unread steering note", after.stdout)
+        self.assertNotIn("has not reached", after.stdout)
+
+    def test_orchestrators_can_still_read_the_pending_count(self):
+        plan = self._plan()
+        self.run_cli("plan", "steer", plan, "--role", "engineer", "--note", "read me")
+        payload = json.loads(self.run_cli("plan", "status", plan, "--json").stdout)
+        self.assertEqual(payload["steering_pending"]["engineer"], 1)

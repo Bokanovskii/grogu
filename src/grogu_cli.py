@@ -1231,10 +1231,14 @@ def _notice_for(parsed: argparse.Namespace) -> str:
     reminder on the one command that did not need it wastes the only prompt the
     user gets.
     """
-    if (
-        getattr(parsed, "command", "") == "plan"
-        and getattr(parsed, "plan_command", "") == "friction"
-    ):
+    # The banner exists to push steering into commands that were about
+    # something else. `plan steering` already prints the notes and marks them
+    # read, so adding the banner printed every note twice in one response --
+    # doubling the tokens of the one path built to be token-efficient, and
+    # making one note look like two agents had said the same thing.
+    if getattr(parsed, "command", "") == "plan" and getattr(
+        parsed, "plan_command", ""
+    ) in {"friction", "steering"}:
         return ""
     hint = ""
     if getattr(parsed, "command", "") == "plan":
@@ -1608,9 +1612,18 @@ def plan_status(args: argparse.Namespace) -> int:
         print(f"  amendment {amendment['id']} from {amendment['raised_by']}: {amendment['claim']}")
     for defect in summary["open_defects"]:
         print(f"  defect {defect['id']} -> {defect['owner']} ({defect['route']}): {defect['report']}")
-    pending = {role: count for role, count in summary["steering_pending"].items() if count}
-    for role, count in sorted(pending.items()):
-        print(f"  {count} unread steering note(s) for the {role}")
+    # `steering_pending` answers "do I have unread notes", and it is computed
+    # against whoever is asking. Printing it to the user meant `plan status`
+    # said "2 unread steering note(s) for the reviewer" forever -- the count
+    # never fell when the reviewer read them, because what it was really
+    # reporting was that the *user's own shell* had not read them. The user's
+    # question is whether the note landed, which is the undelivered list below.
+    if grogu_plans.current_role():
+        pending = {
+            role: count for role, count in summary["steering_pending"].items() if count
+        }
+        for role, count in sorted(pending.items()):
+            print(f"  {count} unread steering note(s) for the {role}")
     # This list is the supervisor's view: which notes have not landed yet. It
     # is clipped to 90 characters because it is a summary of many notes. An
     # agent running `plan status` was shown its *own* pending note through this
