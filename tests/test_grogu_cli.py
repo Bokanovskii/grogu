@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -1226,17 +1228,79 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
         # (IMPROVEMENT-8 fix): previously context_messages were silently
         # dropped even though seaglass's own recall@final metric counts
         # them as hits.
-        self.assertEqual(len(results), 2)
+        self.assertEqual(len(results), 3)
         self.assertEqual(results[0]["id"], 1001)
         self.assertIn("dinner plans", results[0]["text"])
         self.assertEqual(results[0]["handle"], "+15551234567")
-        self.assertEqual(results[1]["id"], 1000)
-        self.assertEqual(results[1]["text"], "context before the hit")
+        # Context trails *every* session's hits, not just its own.
+        self.assertEqual(results[-1]["id"], 1000)
+        self.assertEqual(results[-1]["text"], "context before the hit")
+        # seaglass reports the user's own messages with a null sender, which
+        # used to flatten to an empty handle -- indistinguishable from
+        # "sender unknown".
+        self.assertEqual(results[-1]["handle"], grogu_imessage.SELF_HANDLE)
+
+    def test_flatten_puts_actual_matches_first(self):
+        """seaglass returns a ~22-message window, so the message that
+        actually matched can sit anywhere inside it. A caller reading the
+        top few results would otherwise get its neighbours."""
+        payload = {
+            "sessions": [
+                {
+                    "messages": [
+                        {"message_id": 1, "ts": 1.0, "text": "unrelated chatter", "sender": "A", "match_score": 0},
+                        {"message_id": 2, "ts": 2.0, "text": "the classic one", "sender": "B", "match_score": 1},
+                        {"message_id": 3, "ts": 3.0, "text": "more chatter", "sender": "C", "match_score": 0},
+                    ],
+                    "context_messages": [
+                        {"message_id": 4, "ts": 0.5, "text": "before", "sender": "D", "match_score": 0},
+                    ],
+                }
+            ]
+        }
+        ids = [row["id"] for row in grogu_imessage._flatten_seaglass_result(payload)]
+        # Match first, its non-matching neighbours after in conversation
+        # order, and context still trailing every hit.
+        self.assertEqual(ids, [2, 1, 3, 4])
+
+    def test_flatten_keeps_conversation_order_without_match_scores(self):
+        """An older seaglass, or a query whose words are all stopwords,
+        sends no scores -- conversation order is then the best available
+        ordering and must not be disturbed."""
+        payload = {
+            "sessions": [
+                {
+                    "messages": [
+                        {"message_id": 1, "ts": 1.0, "text": "first", "sender": "A"},
+                        {"message_id": 2, "ts": 2.0, "text": "second", "sender": "B"},
+                    ]
+                }
+            ]
+        }
+        ids = [row["id"] for row in grogu_imessage._flatten_seaglass_result(payload)]
+        self.assertEqual(ids, [1, 2])
+
+    def test_flatten_leaves_unknown_senders_blank(self):
+        """Only `is_from_me` earns the "me" label; a missing sender that is
+        not the user's own message stays empty rather than being
+        misattributed to them."""
+        payload = {
+            "sessions": [
+                {
+                    "messages": [
+                        {"message_id": 1, "ts": 1.0, "text": "a", "sender": None, "is_from_me": False},
+                        {"message_id": 2, "ts": 2.0, "text": "b", "sender": None, "is_from_me": True},
+                    ]
+                }
+            ]
+        }
+        handles = [row["handle"] for row in grogu_imessage._flatten_seaglass_result(payload)]
+        self.assertEqual(handles, ["", grogu_imessage.SELF_HANDLE])
 
     def test_adapter_search_prefers_seaglass_when_configured(self):
         adapter = grogu_imessage.MacOSIMessageAdapter()
         results = adapter.search("dinner plans")
-        self.assertEqual(len(results), 2)
+        self.assertEqual(len(results), 3)
         self.assertIn("dinner plans", results[0]["text"])
 
     def test_adapter_search_can_force_sql_like_path(self):
@@ -1300,6 +1364,27 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
         self.assertEqual(results[0]["text"], "contains the __fail__ sentinel text")
         self.assertEqual(results[0]["handle"], "+15559990000")
 
+    def test_seaglass_failure_is_reported_on_stderr(self):
+        """The fallback answers a different question than the query asked,
+        so it must not happen silently: a stale index path in the MCP
+        config degraded every search this way, invisibly."""
+        chat_db = Path(self.directory.name) / "warn.db"
+        connection = sqlite3.connect(chat_db)
+        connection.executescript(
+            """
+            CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, date INTEGER, handle_id INTEGER);
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            """
+        )
+        connection.commit()
+        connection.close()
+        adapter = grogu_imessage.MacOSIMessageAdapter(database_path=chat_db)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            adapter.search("__fail__")
+        self.assertIn("seaglass search failed", stderr.getvalue())
+        self.assertIn("substring scan", stderr.getvalue())
+
     def test_status_reports_seaglass_configured(self):
         real_db = Path(self.directory.name) / "chat.db"
         connection = sqlite3.connect(real_db)
@@ -1315,11 +1400,416 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
         status = adapter.status()
         self.assertTrue(status["available"])
         self.assertTrue(status["seaglass"])
+        # Whether the index is current decides whether a search can answer
+        # about the last hour at all, so status must say.
+        self.assertTrue(status["seaglass_index"]["stale"])
+        self.assertEqual(status["seaglass_index"]["n_messages_since_index"], 12)
+
+    def test_a_stale_index_is_reported_on_stderr(self):
+        # A stale result looks exactly like a complete one, so "what did
+        # she just say" would answer with yesterday's conversation.
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            grogu_imessage.search_via_seaglass("__stale__")
+        self.assertIn("12 message(s) behind", stderr.getvalue())
+        self.assertIn("grogu imessage sync", stderr.getvalue())
+
+    def test_no_warning_when_seaglass_served_the_gap_from_chat_db(self):
+        """A filters-only query is answered from the live database, so the
+        index being behind costs the answer nothing. Warning anyway would
+        send the user to sync to fix a result that is already complete --
+        and a warning that fires when nothing is wrong is one they learn
+        to scroll past, which is how it gets missed when it matters."""
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            grogu_imessage.search_via_seaglass("__stale_but_covered__")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_a_stale_index_still_warns_when_the_gap_was_not_covered(self):
+        """The silence above must come from the coverage flag, not from
+        having broken the warning outright."""
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            grogu_imessage.search_via_seaglass("__stale__")
+        self.assertIn("12 message(s) behind", stderr.getvalue())
+
+    def test_a_current_index_says_nothing(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            grogu_imessage.search_via_seaglass("anything")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_a_recency_query_returns_the_newest_message_first(self):
+        # "latest from Adrian" would otherwise return the oldest messages
+        # of the newest day, because a session arrives in reading order.
+        #
+        # The newest message in the fixture is 2001 (Jan 2), in the
+        # *second* session; 1001 is Jan 1. This assertion used to name
+        # 1001, because sorting happened within a session and the sessions
+        # were then concatenated in rank order -- so "the newest message"
+        # only meant "the newest message of whichever session ranked
+        # first". Ordering is global now, which is what a recency query
+        # actually asks for.
+        messages = grogu_imessage.search_via_seaglass("__recent__", limit=1)
+        self.assertEqual(messages[0]["id"], 2001)
+
+    def test_a_recency_query_orders_across_sessions_not_just_within_one(self):
+        messages = grogu_imessage.search_via_seaglass("__recent__", limit=3)
+        stamps = [m["date"] for m in messages]
+        self.assertEqual(stamps, sorted(stamps, reverse=True))
+        self.assertEqual([m["id"] for m in messages], [2001, 1001, 999])
+
+    def test_every_sessions_hits_come_before_any_sessions_context(self):
+        # Otherwise the second session's actual matches sit below the first
+        # session's surrounding chatter, and "the last thing Adrian sent"
+        # answers with Adrian followed by the user's own message.
+        messages = grogu_imessage.search_via_seaglass("anything")
+        self.assertEqual([m["id"] for m in messages], [1001, 2001, 1000])
+
+    def test_sync_runs_the_seaglass_tool(self):
+        self.assertEqual(grogu_imessage.sync_seaglass_index(wait=True)["waited"], True)
 
 
 @unittest.skipUnless(
     grogu_mcp.available(), "requires Python 3.10+ with the 'mcp' package installed"
 )
+class SeaglassFlatteningTests(unittest.TestCase):
+    """What Grogu does to seaglass's ranked page before a caller sees it.
+
+    Each of these is a defect seaglass's `behavior --compare` measured
+    over 208 live queries: the app scored 1.00 on every property, Grogu
+    failed 160 of the same queries purely in this flattening step.
+    """
+
+    @staticmethod
+    def payload(sessions, ordering="relevance"):
+        return {"ordering": ordering, "sessions": sessions}
+
+    @staticmethod
+    def session(hits=(), context=()):
+        def rows(items, sender):
+            return [
+                {"message_id": i, "text": f"m{i}", "ts": float(i), "sender": sender}
+                for i in items
+            ]
+
+        return {"messages": rows(hits, "them"), "context_messages": rows(context, "me")}
+
+    def test_every_ranked_session_reaches_the_caller(self):
+        # A 20-message limit used to be spent entirely inside session 0,
+        # which alone holds 50+ messages once context is expanded -- so
+        # seven of the eight sessions we paid to rerank never shipped.
+        payload = self.payload([
+            self.session(hits=range(1, 60), context=range(100, 150)),
+            self.session(hits=range(200, 205)),
+            self.session(hits=range(300, 305)),
+        ])
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=20)
+        self.assertEqual(len(rows), 20)
+        self.assertTrue(any(r["id"] in range(200, 205) for r in rows))
+        self.assertTrue(any(r["id"] in range(300, 305) for r in rows))
+
+    def test_hits_are_spent_before_context(self):
+        payload = self.payload([
+            self.session(hits=[1, 2], context=[10, 11, 12]),
+            self.session(hits=[3, 4], context=[13, 14, 15]),
+        ])
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=4)
+        self.assertEqual({r["id"] for r in rows}, {1, 2, 3, 4})
+        self.assertTrue(all(r["kind"] == "hit" for r in rows))
+
+    def test_the_budget_is_spent_on_messages_that_actually_matched(self):
+        # A session's `messages` are the whole matched stretch of
+        # conversation and only some of them matched; `match_score` is 0
+        # for the rest. In send order a small limit went to whatever the
+        # session opened with -- "what did kaya say about the boat" led
+        # with a winking emoji and pushed the boat below the cut.
+        payload = self.payload([{
+            "messages": [
+                {"message_id": 1, "text": "hi", "ts": 1.0, "sender": "them", "match_score": 0},
+                {"message_id": 2, "text": "the boat", "ts": 2.0, "sender": "them", "match_score": 1},
+            ],
+            "context_messages": [],
+        }])
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=1)
+        self.assertEqual([r["id"] for r in rows], [2])
+
+    def test_context_is_labelled_not_disguised_as_a_match(self):
+        # Context is frequently from the *other* participant or from the
+        # user. Unlabelled it read as a match and dropped sender purity
+        # from 1.00 to 0.23.
+        payload = self.payload([self.session(hits=[1], context=[2])])
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=20)
+        self.assertEqual([r["kind"] for r in rows], ["hit", "context"])
+
+    def test_a_declared_recent_ordering_is_honoured(self):
+        # "recent messages from Kaya" is answered chronologically.
+        # Emitting session by session scrambled it: recency order held
+        # for 1% of the queries where it applied.
+        payload = self.payload(
+            [self.session(hits=[1, 5]), self.session(hits=[9, 3])],
+            ordering="recent",
+        )
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=20)
+        self.assertEqual([r["id"] for r in rows], [9, 5, 3, 1])
+
+    def test_recency_returns_the_newest_run_not_a_sample_of_each_day(self):
+        # Sessions are days under a "recent" ordering. Sharing the budget
+        # across them returned two or three messages from each of eight
+        # days instead of the newest twenty -- and Grogu cannot ask for a
+        # second page, so the rest were unreachable.
+        payload = self.payload(
+            [self.session(hits=[9, 8, 7]), self.session(hits=[6, 5, 4]), self.session(hits=[3, 2, 1])],
+            ordering="recent",
+        )
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=4)
+        self.assertEqual([r["id"] for r in rows], [9, 8, 7, 6])
+
+    def test_recency_still_spends_hits_before_context(self):
+        payload = self.payload(
+            [self.session(hits=[1, 2], context=[80, 90])], ordering="recent"
+        )
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=2)
+        self.assertEqual([r["id"] for r in rows], [2, 1])
+
+    def test_a_chronological_answer_is_asked_again_wider(self):
+        # Seaglass orders whole days, and eight of them do not hold the
+        # twenty newest messages of a contact who texts in bursts: the
+        # narrow ask reached 0.77 of the true newest twenty, dropping
+        # matches that sat in days it never requested.
+        calls = []
+
+        def fake_call_tool(server, tool, **kwargs):
+            calls.append((kwargs.get("max_sessions"), kwargs.get("offset", 0)))
+            return {
+                "ordering": "recent",
+                "has_more": True,
+                "next_offset": 8,
+                "sessions": [{
+                    "messages": [
+                        {"message_id": i, "text": "m", "ts": float(i), "sender": "them"}
+                        for i in range(30)
+                    ],
+                    "context_messages": [],
+                }],
+            }
+
+        original = grogu_imessage.grogu_mcp.call_tool
+        grogu_imessage.grogu_mcp.call_tool = fake_call_tool
+        try:
+            rows = grogu_imessage.search_via_seaglass("latest from sam", limit=20)
+        finally:
+            grogu_imessage.grogu_mcp.call_tool = original
+
+        self.assertEqual(calls, [(8, 0), (20, 0)])
+        self.assertEqual(len(rows), 20)
+        self.assertEqual([r["id"] for r in rows], list(range(29, 9, -1)))
+
+    def test_a_wide_answer_still_short_of_matches_takes_one_page(self):
+        # The sparse-contact case: widening found everything there was on
+        # the first screen and there is genuinely more behind it.
+        calls = []
+
+        def fake_call_tool(server, tool, **kwargs):
+            offset = kwargs.get("offset", 0)
+            calls.append((kwargs.get("max_sessions"), offset))
+            base = 100 - offset
+            return {
+                "ordering": "recent",
+                "has_more": True,
+                "next_offset": offset + 20,
+                "sessions": [{
+                    "messages": [
+                        {"message_id": base - i, "text": "m", "ts": float(base - i),
+                         "sender": "them"}
+                        for i in range(2)
+                    ],
+                    "context_messages": [],
+                }],
+            }
+
+        original = grogu_imessage.grogu_mcp.call_tool
+        grogu_imessage.grogu_mcp.call_tool = fake_call_tool
+        try:
+            rows = grogu_imessage.search_via_seaglass("latest from sam", limit=20)
+        finally:
+            grogu_imessage.grogu_mcp.call_tool = original
+
+        # Widened, then one page -- and no further, because a caller
+        # waiting on a search is not served by crawling back through the
+        # year one screen at a time.
+        self.assertEqual(calls, [(8, 0), (20, 0), (20, 20)])
+        self.assertEqual([r["id"] for r in rows], [100, 99, 80, 79])
+
+    def test_context_does_not_stop_the_paging_for_matches(self):
+        # Page one held one match and plenty of surrounding context.
+        # Counting context toward the limit declared the answer full and
+        # left the matches on page two unread.
+        calls = []
+
+        def fake_call_tool(server, tool, **kwargs):
+            offset = kwargs.get("offset", 0)
+            calls.append(offset)
+            if offset == 0:
+                return {
+                    "ordering": "recent",
+                    "has_more": True,
+                    "next_offset": 8,
+                    "sessions": [{
+                        "messages": [
+                            {"message_id": 1, "text": "m", "ts": 1.0, "sender": "them"}
+                        ],
+                        "context_messages": [
+                            {"message_id": 50 + i, "text": "c", "ts": 50.0 + i, "sender": "me"}
+                            for i in range(5)
+                        ],
+                    }],
+                }
+            return {
+                "ordering": "recent",
+                "has_more": False,
+                "sessions": [{
+                    "messages": [
+                        {"message_id": 10 + i, "text": "m", "ts": 10.0 + i, "sender": "them"}
+                        for i in range(3)
+                    ],
+                    "context_messages": [],
+                }],
+            }
+
+        original = grogu_imessage.grogu_mcp.call_tool
+        grogu_imessage.grogu_mcp.call_tool = fake_call_tool
+        try:
+            rows = grogu_imessage.search_via_seaglass("latest from sam", limit=4)
+        finally:
+            grogu_imessage.grogu_mcp.call_tool = original
+
+        self.assertEqual(calls, [0, 8])
+        self.assertEqual([r["id"] for r in rows], [12, 11, 10, 1])
+        self.assertTrue(all(r["kind"] == "hit" for r in rows))
+
+    def test_context_still_tops_up_an_answer_short_of_matches(self):
+        def fake_call_tool(server, tool, **kwargs):
+            return {
+                "ordering": "recent",
+                "has_more": False,
+                "sessions": [{
+                    "messages": [{"message_id": 1, "text": "m", "ts": 1.0, "sender": "them"}],
+                    "context_messages": [
+                        {"message_id": 2, "text": "c", "ts": 2.0, "sender": "me"}
+                    ],
+                }],
+            }
+
+        original = grogu_imessage.grogu_mcp.call_tool
+        grogu_imessage.grogu_mcp.call_tool = fake_call_tool
+        try:
+            rows = grogu_imessage.search_via_seaglass("latest from sam", limit=4)
+        finally:
+            grogu_imessage.grogu_mcp.call_tool = original
+
+        self.assertEqual([(r["id"], r["kind"]) for r in rows], [(1, "hit"), (2, "context")])
+
+    def test_a_relevance_answer_is_never_paged(self):
+        # Page two is by definition less relevant than the page the
+        # reranker already chose, and paging it costs a second search.
+        calls = []
+
+        def fake_call_tool(server, tool, **kwargs):
+            calls.append(kwargs.get("offset", 0))
+            return {
+                "ordering": "relevance",
+                "has_more": True,
+                "next_offset": 8,
+                "sessions": [{"messages": [
+                    {"message_id": 1, "text": "m", "ts": 1.0, "sender": "them"}
+                ], "context_messages": []}],
+            }
+
+        original = grogu_imessage.grogu_mcp.call_tool
+        grogu_imessage.grogu_mcp.call_tool = fake_call_tool
+        try:
+            rows = grogu_imessage.search_via_seaglass("what did sam say", limit=20)
+        finally:
+            grogu_imessage.grogu_mcp.call_tool = original
+
+        self.assertEqual(calls, [0])
+        self.assertEqual(len(rows), 1)
+
+    def test_relevance_ordering_keeps_sessions_together(self):
+        payload = self.payload([self.session(hits=[1, 2]), self.session(hits=[3, 4])])
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=20)
+        self.assertEqual([r["id"] for r in rows], [1, 2, 3, 4])
+
+    def test_a_message_in_two_sessions_is_returned_once(self):
+        # One live query returned 372 rows for 249 distinct messages.
+        payload = self.payload([self.session(hits=[1, 2]), self.session(hits=[2, 3])])
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=20)
+        self.assertEqual([r["id"] for r in rows], [1, 2, 3])
+
+    def test_a_match_is_not_demoted_by_being_context_elsewhere(self):
+        # Message 5 is context in the first session and a match in the
+        # second. Keeping whichever came first made it context, and since
+        # hits are spent before context it then fell off the limit --
+        # six of one contact's newest twenty vanished exactly this way.
+        payload = self.payload([
+            self.session(hits=[1], context=[5]),
+            self.session(hits=[5]),
+        ])
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=20)
+        self.assertEqual([(r["id"], r["kind"]) for r in rows], [(1, "hit"), (5, "hit")])
+
+    def test_no_limit_returns_everything_once(self):
+        payload = self.payload([self.session(hits=[1, 2], context=[3])])
+        rows = grogu_imessage._flatten_seaglass_result(payload)
+        self.assertEqual([r["id"] for r in rows], [1, 2, 3])
+
+    def test_context_never_outranks_another_sessions_hit(self):
+        """Reading order, not just budget order.
+
+        Grouping the output by session put session 1's context -- usually
+        a message the user sent themselves, matching nothing -- above
+        session 2's actual match, so "the last thing Adrian sent" answered
+        with Adrian followed by the user's own chatter. The budget was
+        already spent hits-first, which is why a set-comparison test
+        passed while the order a caller actually reads was wrong.
+        """
+        payload = self.payload([
+            self.session(hits=[1], context=[10]),
+            self.session(hits=[2]),
+        ])
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=20)
+        self.assertEqual(
+            [(r["id"], r["kind"]) for r in rows],
+            [(1, "hit"), (2, "hit"), (10, "context")],
+        )
+
+    def test_matches_rank_first_even_without_a_limit(self):
+        """`match_score` ordering must not depend on `limit` being set.
+
+        Ranking lived inside the budget-sharing path, so a caller that
+        passed no limit got the session in the order it was sent -- the
+        matching message buried among its neighbours, which is the exact
+        failure the scoring exists to prevent.
+        """
+        session = {
+            "messages": [
+                {"message_id": 1, "ts": 1.0, "text": "chatter", "sender": "a", "match_score": 0},
+                {"message_id": 2, "ts": 2.0, "text": "the match", "sender": "b", "match_score": 3},
+                {"message_id": 3, "ts": 3.0, "text": "more chatter", "sender": "c", "match_score": 0},
+            ],
+            "context_messages": [],
+        }
+        rows = grogu_imessage._flatten_seaglass_result(self.payload([session]))
+        self.assertEqual([r["id"] for r in rows], [2, 1, 3])
+        self.assertEqual(
+            [r["id"] for r in grogu_imessage._flatten_seaglass_result(
+                self.payload([session]), limit=3)],
+            [2, 1, 3],
+            "ordering must not change with or without a limit",
+        )
+
+
 class CodemodeMcpExecTests(unittest.TestCase):
     """Exercises `grogu codemode exec` calling MCP tools end to end via the
     CLI, using the same echo fixture server as GroguMcpTests. No flag is
