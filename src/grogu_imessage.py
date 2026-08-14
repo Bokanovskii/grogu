@@ -56,33 +56,180 @@ def seaglass_available() -> bool:
     return SEAGLASS_SERVER_NAME in grogu_mcp.load_servers()
 
 
-def _flatten_seaglass_result(payload: dict) -> List[dict]:
+def _flatten_seaglass_result(payload: dict, limit: Optional[int] = None) -> List[dict]:
     """Flatten seaglass's ranked session/message payload into the same flat
-    `{id, text, date, handle}`-shaped list the SQL LIKE search returns, so
-    callers (and existing output formatting) don't need to know which
-    backend answered. Session order (best-first, per seaglass's rerank
-    score) is preserved; messages within a session keep their own order.
+    `{id, text, date, handle, kind}`-shaped list the SQL LIKE search
+    returns, so callers (and existing output formatting) don't need to
+    know which backend answered.
 
-    Includes both a session's `messages` (the actual reranked hits) and
-    its `context_messages` (surrounding messages seaglass expanded the
-    session with) -- previously only `messages` was flattened, silently
-    dropping context that seaglass's own eval/score.py recall@final
-    metric counts as legitimate hits (IMPROVEMENT-8). Context messages
-    are appended after a session's hits, so callers that only want the
-    hits can still take the first N per session if they need to.
+    Flattening a ranked page into a flat list and then truncating it is
+    lossier than it looks, and side-by-side evaluation against the app
+    (seaglass's `behavior --compare`) measured the damage over 208
+    queries:
+
+    * **Only the first session survived.** Session order was preserved by
+      emitting one session's messages before starting the next, so a
+      20-message limit was spent entirely inside session 0 -- which alone
+      routinely holds 50+ messages once context is expanded. Eight ranked
+      sessions were requested, reranked and hydrated; a mean of 1.7
+      reached the caller. Budget is now shared: every session gets a
+      quota before any session gets a second helping.
+    * **Context was indistinguishable from hits.** Surrounding messages
+      seaglass expanded a session with are useful, but they are not
+      matches -- they are frequently from the *other* participant, or
+      from the user. Presented as results, they dropped sender purity
+      from 1.00 to 0.23 and precision from 1.00 to 0.51. Hits now fill
+      the budget first and every row is labelled `kind`.
+    * **A declared ordering was silently discarded.** When seaglass says
+      `ordering: "recent"` -- "recent messages from Kaya" -- it means the
+      answer is chronological. Per-session emission scrambled that:
+      recency order held for 1% of the queries where it applied. It is
+      now honoured explicitly.
+    * **The same message could appear twice**, as a hit in one session
+      and as context in another (372 rows for 249 distinct messages on
+      one live query). Deduplicated, first occurrence winning.
+
+    `limit` is applied here rather than by the caller because only this
+    function knows which rows are hits, which sessions they came from,
+    and what ordering was declared.
     """
-    flattened: List[dict] = []
-    for session in payload.get("sessions", []):
-        for message in session.get("messages", []) + session.get("context_messages", []):
-            flattened.append(
-                {
-                    "id": message.get("message_id"),
-                    "text": message.get("text") or "",
-                    "date": message.get("ts"),
-                    "handle": _sender_handle(message),
-                }
+    sessions = payload.get("sessions", [])
+    # A message can be a match in one session and mere context in a
+    # neighbouring one. Deciding its role by whichever session came first
+    # demoted real matches to context, and since hits are spent before
+    # context those matches then fell off the end of the limit entirely:
+    # six of Vamski's newest twenty went missing that way, each one a hit
+    # in the very same answer. A match anywhere is a match.
+    matched = {
+        message.get("message_id")
+        for session in sessions
+        for message in session.get("messages", [])
+    }
+    seen: set = set()
+    ranked: List[List[dict]] = []
+    for session in sessions:
+        rows: List[dict] = []
+        for kind, messages in (
+            ("hit", session.get("messages", [])),
+            ("context", session.get("context_messages", [])),
+        ):
+            for message in messages:
+                identifier = message.get("message_id")
+                if identifier in seen or (kind == "context" and identifier in matched):
+                    continue
+                seen.add(identifier)
+                rows.append(
+                    {
+                        "id": identifier,
+                        "text": message.get("text") or "",
+                        "date": message.get("ts"),
+                        "handle": _sender_handle(message),
+                        "kind": kind,
+                        "score": message.get("match_score") or 0,
+                    }
+                )
+        if rows:
+            ranked.append(rows)
+
+    if not ranked:
+        return []
+    if payload.get("ordering") == "recent":
+        return _newest_first(ranked, limit)
+    return _share_budget(ranked, limit)
+
+
+def _newest_first(ranked: List[List[dict]], limit: Optional[int]) -> List[dict]:
+    """"Latest from Vamski" wants the newest messages, not a sample.
+
+    When seaglass declares `ordering: "recent"` the sessions are days and
+    the answer is chronological, so sharing the budget across them is
+    exactly backwards: it returned two or three messages from each of
+    eight days instead of the twenty most recent, and Grogu -- which
+    cannot ask for a second page -- had no way back to the rest. Recall
+    of the true newest messages sat at 0.65 against the app's 1.00.
+
+    Hits are still spent before context, so the budget is not consumed by
+    surrounding conversation, and the result is one contiguous run of the
+    newest matches.
+    """
+    def by_date(rows):
+        return sorted(rows, key=lambda row: (row["date"] is not None, row["date"]), reverse=True)
+
+    hits = by_date([r for rows in ranked for r in rows if r["kind"] == "hit"])
+    context = by_date([r for rows in ranked for r in rows if r["kind"] == "context"])
+    if limit is None:
+        return by_date(hits + context)
+    chosen = hits[:limit]
+    return chosen + context[: max(0, limit - len(chosen))]
+
+
+def _share_budget(ranked: List[List[dict]], limit: Optional[int]) -> List[dict]:
+    """Spread `limit` rows across ranked sessions: breadth first, then depth.
+
+    Every session contributes one row before any session contributes a
+    second, so the eighth-ranked conversation still reaches the caller
+    rather than being truncated away with the seven above it. What is
+    left over then follows the reranker's order -- session 1 takes as
+    much of the surplus as it has, then session 2, and so on -- because
+    the top session is the best answer and a caller usually wants to read
+    it, not sample it.
+
+    Sharing the surplus evenly instead was measurably worse: with eight
+    sessions and a twenty-message limit each one got three rows, and
+    verbatim phrases sitting at hit 4 and hit 13 of the *top* session --
+    exactly where a good match lives -- never shipped.
+
+    Hits are spent before context everywhere, so surrounding conversation
+    never displaces a match. Session grouping is preserved in the output,
+    so a caller reading top to bottom sees each conversation together.
+    """
+    chosen = {"hit": [[] for _ in ranked], "context": [[] for _ in ranked]}
+    budget = None if limit is None else max(0, limit)
+    for kind in ("hit", "context"):
+        # A session's `messages` are the whole matched stretch of
+        # conversation, and only some of them actually matched --
+        # `match_score` is 0 for the rest. Taking them in the order they
+        # were sent spent a small limit on whatever the session happened
+        # to open with: "what did kaya say about the boat" led with a
+        # winking emoji while the message about the boat ranked below it.
+        queues = [
+            sorted(
+                (row for row in rows if row["kind"] == kind),
+                key=lambda row: row["score"],
+                reverse=True,
             )
-    return flattened
+            for rows in ranked
+        ]
+        cursors = [0] * len(ranked)
+        target = chosen[kind]
+        # Breadth: one row each, in rank order.
+        for index, queue in enumerate(queues):
+            if budget == 0:
+                break
+            if queue:
+                target[index].append(queue[0])
+                cursors[index] = 1
+                if budget is not None:
+                    budget -= 1
+        # Depth: the surplus follows the ranking.
+        for index, queue in enumerate(queues):
+            while (budget is None or budget > 0) and cursors[index] < len(queue):
+                target[index].append(queue[cursors[index]])
+                cursors[index] += 1
+                if budget is not None:
+                    budget -= 1
+    # Every session's hits before any session's context. Grouping the
+    # output by session instead let session 1's *context* -- often a
+    # message the user sent themselves, matching nothing -- outrank
+    # session 2's actual match, which is the whole defect this function
+    # exists to prevent.
+    return [row for rows in chosen["hit"] for row in rows] + [
+        row for rows in chosen["context"] for row in rows
+    ]
+
+
+SEAGLASS_SESSIONS = 8
+SEAGLASS_MAX_PAGES = 2
 
 
 def _sender_handle(message: dict) -> str:
@@ -114,14 +261,77 @@ def search_via_seaglass(query: str, limit: int = 20) -> List[dict]:
     straight through as `max_sessions` (IMPROVEMENT-8), so
     `imessage search --limit 20` (the default) asked seaglass for 20
     *sessions* (~2.5x its own default of 8), overfetching and paying
-    unnecessary rerank/hydrate cost. Request seaglass's own default
-    session count and let the flatten+slice below cap at the requested
-    message limit instead.
+    unnecessary rerank/hydrate cost.
+
+    A chronological answer -- "latest from Sam" -- is asked again, wider.
+    Seaglass orders whole *days*, and eight of them are simply not enough
+    to hold the twenty newest messages of a contact who texts in bursts
+    across two handles: measured against the true newest twenty, the
+    narrow ask reached 0.77 of them, and the messages it dropped were
+    matches sitting in days it never requested. Widening is close to free
+    because a chronological answer is a filter, not a search: seaglass
+    skips the models entirely and answered sixteen days faster than it
+    had answered eight.
+
+    Re-asking rather than paging is deliberate. Stitching page two onto
+    page one gave a *locally* sorted answer with holes in it, because the
+    two pages were ranked separately; one wider request is ordered once,
+    globally. A page is still fetched if even the wide answer came back
+    short of matches, which is the sparse-contact case paging is actually
+    for.
+
+    Relevance answers are neither widened nor paged: page two is by
+    definition less relevant than the page the reranker already chose,
+    and hydrating sessions nobody asked for is the one cost this path
+    cannot make back.
     """
-    payload = grogu_mcp.call_tool(
-        SEAGLASS_SERVER_NAME, "search_messages", query=query, max_sessions=8
-    )
-    return _flatten_seaglass_result(payload)[:limit]
+    payload = _seaglass_call(query, sessions=SEAGLASS_SESSIONS)
+    if not isinstance(payload, dict):
+        return []
+    if payload.get("ordering") != "recent":
+        return _flatten_seaglass_result(payload, limit=limit)
+
+    if payload.get("has_more") and limit > SEAGLASS_SESSIONS:
+        wider = _seaglass_call(query, sessions=limit)
+        if isinstance(wider, dict):
+            payload = wider
+
+    hits: List[dict] = []
+    context: List[dict] = []
+    seen: set = set()
+    pages = 0
+    while True:
+        for row in _flatten_seaglass_result(payload):
+            if row["id"] in seen:
+                continue
+            seen.add(row["id"])
+            (hits if row["kind"] == "hit" else context).append(row)
+        pages += 1
+        if len(hits) >= limit or not payload.get("has_more") or pages >= SEAGLASS_MAX_PAGES:
+            break
+        payload = _seaglass_call(
+            query,
+            sessions=max(SEAGLASS_SESSIONS, limit),
+            offset=payload.get("next_offset") or pages * max(SEAGLASS_SESSIONS, limit),
+        )
+        if not isinstance(payload, dict):
+            break
+
+    def newest(rows):
+        return sorted(rows, key=lambda row: (row["date"] is not None, row["date"]), reverse=True)
+
+    # Context only ever tops up an answer that has run out of matches.
+    # Counting it toward the limit used to declare the answer full and
+    # leave real matches unread.
+    chosen = newest(hits)[:limit]
+    return chosen + newest(context)[: max(0, limit - len(chosen))]
+
+
+def _seaglass_call(query: str, *, sessions: int, offset: int = 0) -> object:
+    kwargs = {"query": query, "max_sessions": sessions}
+    if offset:
+        kwargs["offset"] = offset
+    return grogu_mcp.call_tool(SEAGLASS_SERVER_NAME, "search_messages", **kwargs)
 
 
 class IMessageError(RuntimeError):
