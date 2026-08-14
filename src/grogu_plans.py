@@ -1272,6 +1272,7 @@ class PlanStore:
         marker = self.state_dir / ".gitignore"
         if not marker.exists():
             marker.write_text("*\n", encoding="utf8")
+        self._protect_working_state()
         handle = os.open(self.state_dir / "plans.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(handle, fcntl.LOCK_EX)
@@ -1292,6 +1293,23 @@ class PlanStore:
         except (OSError, json.JSONDecodeError):
             return {}
         return value if isinstance(value, dict) else {}
+
+    # Working state, not the account. `finalize` stages the plan Markdown and
+    # deliberately leaves these behind -- the manifest carries session ids,
+    # actor strings, the full text of every amendment and every steering note,
+    # and the revisions directory holds superseded drafts. That was enforced by
+    # a comment in one function, which a user or an agent running `git add -A`
+    # walks straight past, in a repository that is public.
+    _LOCAL_ONLY = "manifest.json\nrevisions/\n*.sealed\n"
+
+    def _protect_working_state(self) -> None:
+        try:
+            self.plans_dir.mkdir(parents=True, exist_ok=True)
+            marker = self.plans_dir / ".gitignore"
+            if not marker.exists():
+                marker.write_text(self._LOCAL_ONLY, encoding="utf8")
+        except OSError:
+            return
 
     def plan_dir(self, plan_id: str) -> Path:
         return self.plans_dir / plan_id

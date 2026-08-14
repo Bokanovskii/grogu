@@ -2692,3 +2692,42 @@ class VerifierTests(unittest.TestCase):
     def test_a_plan_with_no_verifier_says_so(self):
         with self.assertRaises(grogu_plans.PlanError):
             self.store.run_verifiers(self.plan)
+
+
+class WorkingStateStaysLocalTests(unittest.TestCase):
+    """"The manifest stays local" was enforced by a comment, in a public repo."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.plan = self.store.create("a plan")["id"]
+
+    def test_git_add_everything_does_not_sweep_in_the_manifest(self):
+        subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertNotIn("manifest.json", staged)
+        self.assertIn("implementation.md", staged)
+
+    def test_superseded_drafts_stay_local(self):
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "first draft", role="architect"
+        )
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "second draft", role="architect"
+        )
+        subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertNotIn("revisions/", staged)

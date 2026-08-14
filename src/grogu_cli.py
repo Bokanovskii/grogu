@@ -3362,7 +3362,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan_defect_parser.add_argument("--route", choices=grogu_plans.DEFECT_ROUTES)
     plan_defect_parser.add_argument("--evidence", default="")
     plan_defect_parser.add_argument(
-        "--note", default="", help="what you changed, when closing with --resolve"
+        "--note",
+        "--resolution",
+        default="",
+        dest="note",
+        help="what you changed, when closing with --resolve",
     )
     plan_defect_parser.set_defaults(handler=plan_defect)
 

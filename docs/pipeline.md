@@ -116,6 +116,12 @@ derivable. Attachments are scanned against the published-destination rules on
 the way in, because unlike a plan body they are usually a file lifted whole out
 of a working directory.
 
+`.grogu/plans/.gitignore` keeps `manifest.json`, `revisions/` and sealed stages
+out of the index. The manifest carries session ids, actor strings and the full
+text of every amendment and steering note; the revisions directory holds
+superseded drafts. `finalize` ships the plan Markdown and the attachments, which
+are the account of what was done, and nothing else.
+
 Attach a check with `--verifier` and it stops being a comment: `grogu plan
 verify` runs it, records the result against the commit it ran at, and the test
 gate refuses while an attached verifier has never been run, has failed, or last
