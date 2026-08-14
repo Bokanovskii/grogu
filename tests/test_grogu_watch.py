@@ -253,3 +253,69 @@ class ParallelAgentTests(unittest.TestCase):
         )
         self.assertIn("tester", board)
         self.assertNotIn("tester@", board)
+
+
+class OneAgentOneRowTests(unittest.TestCase):
+    """What the board looked like the first time it had a real day behind it.
+
+    Six agents on one plan rendered as fifteen rows, because role and plan were
+    part of an agent's identity and both change during its life. The board is
+    read at a glance or not at all.
+    """
+
+    def setUp(self):
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        os.environ["GROGU_HOME"] = self.home.name
+
+    def test_picking_up_a_plan_does_not_fork_the_agent_into_two(self):
+        grogu_watch.record(command="plan status", role="engineer", plan="", cwd="/w/a",
+                           agent="ingest")
+        grogu_watch.record(command="plan brief", role="engineer", plan="p-1", cwd="/w/a",
+                           agent="ingest")
+        rows = grogu_watch.sessions()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["plan"], "p-1")
+        self.assertEqual(rows[0]["calls"], 2)
+
+    def test_a_named_agent_that_ran_as_two_roles_is_one_row_that_says_so(self):
+        # This is the user borrowing an agent's shell, or an agent claiming an
+        # authority nobody gave it. Either way it is one process and worth
+        # noticing rather than worth counting twice.
+        grogu_watch.record(command="plan gate", role="engineer", plan="p-1", cwd="/w/a",
+                           agent="scaffold")
+        grogu_watch.record(command="plan approve", role="supervisor", plan="p-1",
+                           cwd="/w/a", agent="scaffold")
+        rows = grogu_watch.sessions()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["role"], "supervisor")
+        self.assertEqual(rows[0]["roles"], ["engineer", "supervisor"])
+        text = grogu_watch.render(grogu_watch.board())
+        self.assertIn("also ran as engineer", text)
+
+    def test_two_named_agents_are_still_two_rows(self):
+        grogu_watch.record(command="plan gate", role="engineer", plan="p-1", cwd="/w/a",
+                           agent="scaffold")
+        grogu_watch.record(command="plan gate", role="engineer", plan="p-1", cwd="/w/a",
+                           agent="ingest")
+        self.assertEqual(len(grogu_watch.sessions()), 2)
+
+    def test_agents_that_went_home_do_not_crowd_out_the_ones_still_working(self):
+        long_ago = time.time() - (grogu_watch.GONE_AFTER_SECONDS + 600)
+        path = grogu_watch.activity_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf8") as handle:
+            for name in ("a", "b", "c", "d"):
+                handle.write(
+                    '{"at": %f, "command": "plan show", "role": "engineer", '
+                    '"plan": "p-1", "cwd": "/w/%s", "agent": "%s", "exit": 0}\n'
+                    % (long_ago, name, name)
+                )
+        grogu_watch.record(command="plan gate", role="tester", plan="p-1", cwd="/w/z",
+                           agent="live")
+        text = grogu_watch.render(grogu_watch.board())
+        working = text.split("quiet for over")[0]
+        self.assertIn("tester@live", working)
+        for name in ("engineer@a", "engineer@b"):
+            self.assertNotIn(name, working)
+            self.assertIn(name, text)

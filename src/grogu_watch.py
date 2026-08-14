@@ -130,15 +130,26 @@ def sessions(
     whole point of the fan-out: two engineers on one plan in one checkout
     collapsed into a single row, so the board could not show the thing it
     exists to show, and the relay hint could not name who to relay to.
+
+    Where a name exists it is the *whole* key, because role and plan both
+    change under one agent during its life and each change forked another row:
+    six agents on one plan rendered as fifteen entries, four of them the same
+    engineer before and after it picked up the plan and once more where it had
+    run a supervisor command. The board exists to be read at a glance, and
+    counting one agent three times is worse than not listing it.
     """
     rows: dict = {}
     for entry in activity(window_minutes=window_minutes, home=home):
-        key = (
-            entry.get("cwd", ""),
-            entry.get("role", ""),
-            entry.get("plan", ""),
-            entry.get("agent", ""),
-        )
+        name = entry.get("agent", "")
+        if name and not name.startswith("/"):
+            key = (entry.get("cwd", ""), name)
+        else:
+            key = (
+                entry.get("cwd", ""),
+                entry.get("role", ""),
+                entry.get("plan", ""),
+                name,
+            )
         row = rows.setdefault(
             key,
             {
@@ -156,13 +167,21 @@ def sessions(
         )
         row["calls"] += 1
         row["first"] = min(row["first"], entry.get("at", 0))
+        # An agent that ran commands under more than one role is worth showing
+        # rather than silently folding: it is either the user borrowing the
+        # agent's shell or an agent claiming an authority it was not given.
+        if entry.get("role"):
+            row.setdefault("roles", set()).add(entry["role"])
         if entry.get("at", 0) >= row["last"]:
             row["last"] = entry.get("at", 0)
             row["last_command"] = entry.get("command", "")
+            row["role"] = entry.get("role", "") or row["role"]
+            row["plan"] = entry.get("plan", "") or row["plan"]
         if entry.get("exit", 0) not in (0, None):
             row["failures"] += 1
     now = time.time()
     for row in rows.values():
+        row["roles"] = sorted(row.get("roles") or ([row["role"]] if row["role"] else []))
         row["idle_seconds"] = int(now - row["last"])
         row["state"] = (
             "gone"
@@ -247,11 +266,21 @@ def render(state: dict, *, window_minutes: int = DEFAULT_WINDOW_MINUTES) -> str:
         for ask in asks:
             lines.append(f"  ! {ask}")
         lines.append("")
-    agents = state.get("agents", [])
-    if not agents:
+    everyone = state.get("agents", [])
+    # An agent that has not run a command in an hour is not "active in the last
+    # 120m" in any sense the reader cares about, and at two lines each the dead
+    # ones pushed the working ones off the top of the board. They still get
+    # named -- one of them going quiet mid-stage is exactly what the user wants
+    # to notice -- but on one line, below the agents that are still going.
+    agents = [row for row in everyone if row.get("state") != "gone"]
+    quiet = [row for row in everyone if row.get("state") == "gone"]
+    if not everyone:
         lines.append(f"No agent has run a grogu command in the last {window_minutes}m.")
+    elif not agents:
+        lines.append(f"No agent has run a grogu command in the last "
+                     f"{GONE_AFTER_SECONDS // 60}m.")
     else:
-        lines.append(f"agents active in the last {window_minutes}m")
+        lines.append("agents working now")
         lines.append("")
         # A fan-out makes this column ragged: `engineer@ingest` is twice the
         # width of `tester`, and a fixed pad chosen for the role names alone
@@ -279,8 +308,26 @@ def render(state: dict, *, window_minutes: int = DEFAULT_WINDOW_MINUTES) -> str:
                 f"  ({row['calls']} call{'' if row['calls'] == 1 else 's'}{failures})"
             )
             where = row["repository"] or row["cwd"]
+            extra = []
             if where:
-                lines.append(f"      {where}")
+                extra.append(where)
+            if len(row.get("roles") or []) > 1:
+                extra.append("also ran as " + ", ".join(
+                    other for other in row["roles"] if other != row["role"]
+                ))
+            if extra:
+                lines.append("      " + "  ".join(extra))
+    if quiet:
+        lines.append("")
+        names = ", ".join(
+            (f"{row['role']}@{row['agent']}"
+             if row.get("agent") and not row["agent"].startswith("/")
+             else row["role"] or "?")
+            + f" {_age(row['idle_seconds'])}"
+            for row in quiet[:12]
+        )
+        more = f", and {len(quiet) - 12} more" if len(quiet) > 12 else ""
+        lines.append(f"quiet for over {GONE_AFTER_SECONDS // 60}m: {names}{more}")
 
     for plan_id, summary in sorted(state.get("plans", {}).items()):
         lines.append("")
