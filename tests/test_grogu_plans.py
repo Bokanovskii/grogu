@@ -292,6 +292,72 @@ class PlanStoreTests(unittest.TestCase):
         claim = self.store.summary(plan_id)["open_amendments"][0]["claim"]
         self.assertIn("stalled rather than bounced", claim)
 
+    def test_endless_one_more_bug_after_green_reaches_the_architect(self):
+        """Every green pass reset the round count, so a plan that produced one
+        fresh bug after every clean run could cycle forever without anyone
+        asking whether the plan itself was the problem."""
+        plan_id = self.plan()
+        for cycle in range(grogu_plans.DEFAULT_MAX_DEFECT_ROUNDS + 2):
+            self.store.report_defect(
+                plan_id, report=f"late bug {cycle}",
+                route=grogu_plans.ROUTE_IMPLEMENTATION, raised_by="tester",
+            )
+            if self.store.load(plan_id).get("escalated"):
+                break
+            self.store.set_stage_state(
+                plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+                role=grogu_plans.ENGINEER,
+            )
+            self.store.set_stage_state(
+                plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE,
+                role=grogu_plans.TESTER,
+            )
+        manifest = self.store.load(plan_id)
+        self.assertTrue(manifest.get("escalated"))
+        self.assertLess(
+            manifest["defect_rounds"],
+            grogu_plans.DEFAULT_MAX_DEFECT_ROUNDS,
+            "the bounce count resets at every green pass, which is the point",
+        )
+        claim = self.store.summary(plan_id)["open_amendments"][0]["claim"]
+        self.assertIn("gone green and come back", claim)
+
+    def test_a_stall_the_architect_has_seen_is_not_raised_again(self):
+        """The engineer clears the pile by completing implementation. A tester
+        filing before that happens should not call the architect straight back
+        for a pile it has already ruled on."""
+        plan_id = self.plan()
+        for index in range(grogu_plans.DEFAULT_MAX_PENDING_DEFECTS):
+            self.store.report_defect(
+                plan_id, report=f"broken {index}",
+                route=grogu_plans.ROUTE_IMPLEMENTATION, raised_by="tester",
+            )
+        escalation = self.store.summary(plan_id)["open_amendments"][0]
+        self.store.resolve_amendment(
+            plan_id, escalation["id"], outcome=grogu_plans.GUIDED,
+            reason="do it differently", verified=True,
+            role=grogu_plans.ARCHITECT,
+        )
+        self.store.report_defect(
+            plan_id, report="one more before the sweep",
+            route=grogu_plans.ROUTE_IMPLEMENTATION, raised_by="tester",
+        )
+        self.assertFalse(self.store.load(plan_id).get("escalated"))
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+            role=grogu_plans.ENGINEER,
+        )
+        self.assertFalse(self.store.load(plan_id).get("stall_held"))
+        for index in range(grogu_plans.DEFAULT_MAX_PENDING_DEFECTS):
+            self.store.report_defect(
+                plan_id, report=f"new pile {index}",
+                route=grogu_plans.ROUTE_IMPLEMENTATION, raised_by="tester",
+            )
+        self.assertTrue(
+            self.store.load(plan_id).get("escalated"),
+            "a genuinely new pile must still reach the architect",
+        )
+
     def test_a_stall_split_across_routes_still_escalates(self):
         """Counted per route the backstop was evadable: five open
         implementation failures and five open test failures is a plan that has

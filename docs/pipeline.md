@@ -243,8 +243,19 @@ escalates as a stall, counted across every route rather than per route, because
 five open implementation failures alongside five open test failures is a plan
 that has plainly stopped. Six is twice the round cap and no better
 justified than that; it is the point past which the next failure report is not
-telling anybody anything new. Both caps are guesses that should be revised once
-real plans have run through the loop.
+telling anybody anything new. Once the architect has ruled on a pile, the stall
+trigger holds until the pile is cleared, so a tester filing before the engineer
+sweeps does not call the architect straight back for something it has already
+seen.
+
+There is a third trigger for the slowest failure of all. A green test pass
+resets the round count, so a plan that produces one fresh bug after every clean
+run bounces forever without anyone asking whether the plan is the problem.
+Three full retest cycles — green, defect, green again — escalates on the next
+failure, with a claim that says the question is the plan rather than the fix.
+
+All three caps are guesses that should be revised once real plans have run
+through the loop.
 
 ## The loops
 

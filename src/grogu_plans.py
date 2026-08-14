@@ -1455,6 +1455,25 @@ class PlanStore:
                     # than bouncing. Counting rounds past this point would
                     # escalate healthy work that simply had several bugs.
                     manifest["defect_rounds"] = 0
+                    # But a green pass that only exists because the last one was
+                    # invalidated is itself a bounce, one level up. Without this
+                    # an endless "one more bug after green" could run forever:
+                    # every cycle reaches green, so every cycle resets the count
+                    # and the architect is never asked whether the plan is the
+                    # problem.
+                    if manifest.pop("retest_pending", False):
+                        manifest["retest_cycles"] = (
+                            manifest.get("retest_cycles", 0) + 1
+                        )
+                pending_now = [
+                    other
+                    for other in manifest.get("defects", [])
+                    if other.get("status") == PENDING
+                ]
+                if len(pending_now) < max_pending_defects():
+                    # The pile the architect was called in about has been dealt
+                    # with, so the stall trigger re-arms.
+                    manifest.pop("stall_held", None)
             return self._save(
                 manifest,
                 "stage_state",
@@ -1480,6 +1499,10 @@ class PlanStore:
                 reopened.append(stage)
         if reopened:
             manifest["verification_invalidated_at"] = now()
+            # The next green pass is a retest rather than a first pass, and
+            # counting those is what catches a plan that keeps producing one
+            # more bug after every clean run.
+            manifest["retest_pending"] = True
         return reopened
 
     @staticmethod
@@ -1784,7 +1807,16 @@ class PlanStore:
                     # The deadlock is broken, so the loop budget resets and the
                     # engineer and tester may try again against new guidance.
                     manifest["defect_rounds"] = 0
+                    manifest["retest_cycles"] = 0
                     manifest["escalated"] = False
+                    if any(
+                        other.get("status") == PENDING
+                        for other in manifest.get("defects", [])
+                    ):
+                        # The architect has seen this pile. Hold the stall
+                        # trigger until it has been cleared, so the next filing
+                        # does not immediately call it back for the same thing.
+                        manifest["stall_held"] = True
             self._save(
                 manifest,
                 "amendment_resolved",
@@ -1898,10 +1930,22 @@ class PlanStore:
                 unresolved = [
                     other for other in defects if other.get("status") == PENDING
                 ]
-                stalled = len(unresolved) >= max_pending_defects()
-                escalate = (rounds >= cap or stalled) and not manifest.get("escalated")
+                stalled = (
+                    len(unresolved) >= max_pending_defects()
+                    # Cleared once the pile drops back under the cap. Without
+                    # it, a tester filing one more before the engineer sweeps
+                    # the previous six re-escalates immediately, and the
+                    # architect is pulled back in for a pile it has already
+                    # seen.
+                    and not manifest.get("stall_held")
+                )
+                churning = manifest.get("retest_cycles", 0) >= cap
+                escalate = (
+                    rounds >= cap or stalled or churning
+                ) and not manifest.get("escalated")
                 defect["round"] = rounds
                 defect["stalled"] = stalled
+                defect["churning"] = churning and not stalled and rounds < cap
             self._save(
                 manifest,
                 "defect_raised",
@@ -1930,6 +1974,13 @@ class PlanStore:
                         f"Latest: {report.strip()}"
                     )
                     if defect.get("stalled")
+                    else (
+                        f"The tests have gone green and come back "
+                        f"{manifest.get('retest_cycles', 0)} times and this is "
+                        f"another failure; the question is the plan, not the "
+                        f"fix. Latest: {report.strip()}"
+                    )
+                    if defect.get("churning")
                     else f"Engineer and tester have exchanged {defect['round']} rounds "
                     f"without converging. Latest: {report.strip()}"
                 ),

@@ -134,6 +134,19 @@ architect folds the note in.
 Relay to a running subagent with `write_agent` by pointing at the command, never
 by pasting the text — one source of truth.
 
+## Spawning an agent
+
+Set `GROGU_ROLE` and `GROGU_PLAN` in the environment of every agent you start,
+and `GROGU_AGENT` too if two agents share a working directory. The role is what
+the gates check and what steering is addressed to; the plan is what a bare
+`grogu plan status` resolves to. An agent spawned without them is not blocked,
+it is worse — it reads no steering and its stage completions are refused with a
+message about a missing role rather than about the work.
+
+Never pass `--as-user` to a subagent. It exists so that a human at the terminal
+can do what a role may not, and everything here runs as the same user, so it is
+the one flag that turns the gates off.
+
 ## Parallel work
 
 ```sh
