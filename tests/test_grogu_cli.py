@@ -1419,8 +1419,22 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
     def test_a_recency_query_returns_the_newest_message_first(self):
         # "latest from Adrian" would otherwise return the oldest messages
         # of the newest day, because a session arrives in reading order.
+        #
+        # The newest message in the fixture is 2001 (Jan 2), in the
+        # *second* session; 1001 is Jan 1. This assertion used to name
+        # 1001, because sorting happened within a session and the sessions
+        # were then concatenated in rank order -- so "the newest message"
+        # only meant "the newest message of whichever session ranked
+        # first". Ordering is global now, which is what a recency query
+        # actually asks for.
         messages = grogu_imessage.search_via_seaglass("__recent__", limit=1)
-        self.assertEqual(messages[0]["id"], 1001)
+        self.assertEqual(messages[0]["id"], 2001)
+
+    def test_a_recency_query_orders_across_sessions_not_just_within_one(self):
+        messages = grogu_imessage.search_via_seaglass("__recent__", limit=3)
+        stamps = [m["date"] for m in messages]
+        self.assertEqual(stamps, sorted(stamps, reverse=True))
+        self.assertEqual([m["id"] for m in messages], [2001, 1001, 999])
 
     def test_every_sessions_hits_come_before_any_sessions_context(self):
         # Otherwise the second session's actual matches sit below the first
