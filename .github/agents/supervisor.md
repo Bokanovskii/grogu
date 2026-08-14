@@ -121,11 +121,15 @@ can install them. Read the proposals rather than counting them:
 
 ```
 grogu skill proposals          # what is waiting
-grogu skill show <n>           # the body, plus any wording folded into it
+grogu skill show <n>           # the body, and any proposal linked to it
 grogu skill accept <n>         # writes it into .github/skills, to be committed
 grogu skill decline <n> --note "why"
 grogu skill suggest            # lessons that keep recurring and nobody wrote down
 ```
+
+Two proposals shown as "close to #n" are a guess, not a finding. Read both
+before deciding: they are kept apart precisely because the harness cannot tell
+whether they are one lesson, and if they are, decline one naming the other.
 
 Decline with a real reason. A fresh context has no memory of being told no, so
 the reason is the only thing that stops the same lesson coming back — it is

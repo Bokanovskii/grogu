@@ -2697,7 +2697,7 @@ def _skill_repo(args: argparse.Namespace) -> Path:
     return Path(grogu_tasks.repository_root())
 
 
-def _skill_decider(action: str) -> Optional[str]:
+def _skill_decider(action: str, args: argparse.Namespace) -> Optional[str]:
     """Who may turn a proposal into a standing instruction.
 
     A skill is read by every future agent before it starts thinking, which is
@@ -2706,9 +2706,35 @@ def _skill_decider(action: str) -> Optional[str]:
     single task, with nobody reading the diff. So the pipeline roles propose
     and the user or the supervisor decides -- the same split as `plan approve`,
     for the same reason.
+
+    Like every other role boundary here this is trust-on-assert: an agent that
+    simply never sets `GROGU_ROLE` is the user as far as any of this can tell.
+    What is closable is the case that actually happens, which is an agent that
+    has already said who it is and then drops the variable on one command --
+    the session binding remembers, and remembering is enough to refuse.
     """
     role = grogu_plans.current_role()
-    if role and role != grogu_plans.SUPERVISOR:
+    if not role:
+        try:
+            bound = (
+                grogu_plans.PlanStore(
+                    Path(args.repo).expanduser() if getattr(args, "repo", None) else None
+                )
+                .session_binding()
+                .get("role", "")
+            )
+        except (grogu_plans.PlanError, OSError):
+            bound = ""
+        if bound and bound != grogu_plans.SUPERVISOR:
+            return (
+                f"a {bound} is working in this directory and this command "
+                f"arrived without a role, so it is either that {bound} having "
+                "dropped GROGU_ROLE or the user sharing its shell. Deciding a "
+                "skill is the user's call, so it is refused either way: run it "
+                "from your own shell, or say so with `--role supervisor`."
+            )
+        return None
+    if role != grogu_plans.SUPERVISOR:
         return (
             f"the {role} may propose a skill but not {action} one. A skill is a "
             "standing instruction to every agent that comes after you, so it is "
@@ -2764,17 +2790,15 @@ def skill_propose(args: argparse.Namespace) -> int:
         actor=grogu_plans.actor(),
         installed=grogu_skills.installed_skills(root),
     )
-    echoes = len(entry.get("echoes", []))
-    if echoes and entry["name"] != args.name.strip().lower():
+    print(f"skill proposal #{entry['seq']} {entry['name']}: {entry['description']}")
+    related = entry.get("related_to") or []
+    if related:
+        listed = ", ".join(f"#{seq}" for seq in related)
         print(
-            f"this is the same lesson as skill proposal #{entry['seq']} "
-            f"({entry['name']}), so it was recorded as an echo rather than a "
-            "second skill"
+            f"  this looks close to {listed}, so they are linked for whoever "
+            "decides. Both are kept: if they are one lesson, one gets declined "
+            "with the other named."
         )
-    else:
-        print(f"skill proposal #{entry['seq']} {entry['name']}: {entry['description']}")
-    if echoes:
-        print(f"  {echoes + 1} agents have now reached this lesson independently")
     if entry.get("amends"):
         print("  this amends an installed skill; the change will show up in a diff")
     print("  waiting on the user or the supervisor: grogu skill proposals")
@@ -2790,9 +2814,10 @@ def skill_proposals(args: argparse.Namespace) -> int:
         print("no skill proposals")
         return 0
     for entry in entries:
-        echoes = len(entry.get("echoes", []))
-        mark = " (ripe: reached independently by "
-        suffix = f"{mark}{echoes + 1} agents)" if echoes else ""
+        related = entry.get("related_to") or []
+        suffix = (
+            f" (close to {', '.join('#' + str(seq) for seq in related)})" if related else ""
+        )
         origin = entry.get("repository") or "?"
         role = entry.get("role") or "unknown role"
         print(
@@ -2824,6 +2849,20 @@ def skill_show(args: argparse.Namespace) -> int:
             # Whoever decides this is deciding on behalf of every agent that
             # was folded into it, so they get to see what was folded in rather
             # than a count claiming agreement they cannot check.
+            for seq in entry.get("related_to") or []:
+                for other in grogu_skills.proposals(include_decided=True):
+                    if other.get("seq") != seq:
+                        continue
+                    print(
+                        f"\n--- #{seq}, filed separately and possibly the same "
+                        f"lesson, by the {other.get('role') or 'unknown role'} "
+                        f"in {other.get('repository') or '?'} ---"
+                    )
+                    sys.stdout.write(
+                        grogu_skills.render(
+                            other["name"], other["description"], other["body"]
+                        )
+                    )
             for echo in entry.get("echoes", []):
                 print(
                     f"\n--- also proposed by the {echo.get('role') or 'unknown role'} "
@@ -2840,7 +2879,7 @@ def skill_show(args: argparse.Namespace) -> int:
 
 
 def skill_accept(args: argparse.Namespace) -> int:
-    refusal = _skill_decider("accept")
+    refusal = _skill_decider("accept", args)
     if refusal:
         print(f"grogu: {refusal}", file=sys.stderr)
         return 3
@@ -2860,7 +2899,7 @@ def skill_accept(args: argparse.Namespace) -> int:
 
 
 def skill_decline(args: argparse.Namespace) -> int:
-    refusal = _skill_decider("decline")
+    refusal = _skill_decider("decline", args)
     if refusal:
         print(f"grogu: {refusal}", file=sys.stderr)
         return 3
@@ -2895,12 +2934,10 @@ def skill_suggest(args: argparse.Namespace) -> int:
         return 0
     ripe = grogu_skills.ripe(pending)
     if ripe:
-        print("proposals more than one agent arrived at:")
+        print("lessons more than one agent arrived at:")
         for entry in ripe:
-            print(
-                f"  #{entry['seq']} {entry['name']} "
-                f"({len(entry.get('echoes', [])) + 1} agents)"
-            )
+            reached = len(entry.get("echoes") or []) + len(entry.get("related_to") or []) + 1
+            print(f"  #{entry['seq']} {entry['name']} ({reached} agents)")
     if lessons:
         print("recurring friction nobody has written down or fixed:")
         for lesson in lessons:

@@ -30,6 +30,26 @@ BODY = """Run the narrowest command that proves the behaviour, then the suite.
 The full suite hides which change broke what.
 """
 
+LICENSE_BODY = """Audit every new dependency licence before it reaches main.
+
+1. List dependencies added since the last release.
+2. Resolve each licence from the package metadata, not from the README.
+3. Reject anything copyleft; record an exception with the reason if kept.
+4. Commit the resulting inventory alongside the lockfile change.
+
+An unaudited transitive dependency is how a copyleft licence enters a product.
+"""
+
+MASTERING_BODY = """Master every episode to the same loudness before publishing.
+
+1. Normalise the mix to -16 LUFS integrated for stereo.
+2. Keep true peak under -1 dBTP so lossy encoders do not clip.
+3. Listen to the first and last minute on phone speakers.
+4. Export and check the loudness measurement again after encoding.
+
+Episodes mastered by ear drift louder over a season until listeners turn it off.
+"""
+
 OTHER_BODY = """Record one real upstream response and commit it as the fixture.
 
 1. Fetch the feed once, by hand, and save the body verbatim.
@@ -74,7 +94,7 @@ class SkillStoreTests(unittest.TestCase):
         with self.assertRaises(grogu_skills.SkillError):
             self.propose("Narrow Tests!", "Prove it narrowly.")
 
-    def test_two_agents_reaching_one_lesson_make_one_proposal(self) -> None:
+    def test_two_agents_reaching_one_lesson_are_linked_not_merged(self) -> None:
         first = self.propose(
             "narrow-first",
             "Prove a change with the narrowest test before running the suite.",
@@ -85,21 +105,36 @@ class SkillStoreTests(unittest.TestCase):
             "Run the narrowest test that proves the change before the whole suite.",
             role="tester",
         )
-        self.assertEqual(first["seq"], second["seq"])
-        self.assertEqual(len(grogu_skills.proposals()), 1)
-        self.assertEqual(len(second["echoes"]), 1)
+        self.assertNotEqual(first["seq"], second["seq"])
+        self.assertEqual(second["related_to"], [first["seq"]])
+        self.assertEqual(len(grogu_skills.proposals()), 2)
 
-    def test_the_echo_keeps_its_own_wording(self) -> None:
-        """A wrong merge must not silently destroy the second agent's lesson."""
-        self.propose("narrow-first", "Prove a change with the narrowest test first.")
-        merged = self.propose(
+    def test_the_link_is_recorded_on_both_sides(self) -> None:
+        """Whoever reads the older one has to be told a second exists."""
+        first = self.propose("narrow-first", "Prove a change with the narrowest test first.")
+        second = self.propose(
             "narrow-tests-first",
             "Run the narrowest test that proves the change before the suite.",
-            role="tester",
         )
-        echo = merged["echoes"][0]
-        self.assertEqual(echo["name"], "narrow-tests-first")
-        self.assertIn("narrowest", echo["description"])
+        stored = {entry["seq"]: entry for entry in grogu_skills.proposals()}
+        self.assertEqual(stored[first["seq"]]["related_to"], [second["seq"]])
+
+    def test_an_unrelated_lesson_under_a_shared_headline_is_not_swallowed(self) -> None:
+        """Both agents wrote something true; neither said anything about the other.
+
+        This is the failure a merge could not survive: an adversarial probe
+        filed a dependency-license audit and a podcast mastering procedure
+        under one honest description and the second lesson vanished.
+        """
+        shared = "Run narrow validation before reporting success."
+        self.propose("dependency-license-audit", shared, body=LICENSE_BODY)
+        second = self.propose("podcast-audio-mastering", shared, body=MASTERING_BODY)
+        self.assertEqual(len(grogu_skills.proposals()), 2)
+        bodies = [entry["body"] for entry in grogu_skills.proposals()]
+        self.assertTrue(any("loudness" in body for body in bodies))
+        # Still linked, because the headline really is identical -- linking is
+        # a note to the reader, not a claim, so a false one costs a glance.
+        self.assertTrue(second["related_to"])
 
     def test_a_different_lesson_stays_a_different_proposal(self) -> None:
         self.propose("narrow-first", "Prove a change with the narrowest test first.")
@@ -110,19 +145,19 @@ class SkillStoreTests(unittest.TestCase):
         )
         self.assertEqual(len(grogu_skills.proposals()), 2)
 
-    def test_the_why_does_not_pull_one_lesson_into_two(self) -> None:
+    def test_the_why_does_not_push_one_lesson_apart(self) -> None:
         """`why` is a different incident every time, by construction."""
         self.propose(
             "narrow-first",
             "Prove a change with the narrowest test first.",
             why="ran the full suite six times chasing one assertion",
         )
-        merged = self.propose(
+        second = self.propose(
             "narrow-tests-first",
             "Run the narrowest test that proves the change before the suite.",
             why="the suite hid which of four changes broke the build",
         )
-        self.assertEqual(merged["seq"], 1)
+        self.assertEqual(second["related_to"], [1])
 
     def test_a_declined_lesson_comes_back_with_the_reason(self) -> None:
         entry = self.propose("narrow-first", "Prove a change with the narrowest test first.")
@@ -161,7 +196,7 @@ class SkillStoreTests(unittest.TestCase):
             "narrow-tests-first",
             "Run the narrowest test that proves the change before the suite.",
         )
-        self.assertEqual(again["seq"], reopened["seq"])
+        self.assertEqual(again["related_to"], [reopened["seq"]])
 
     def test_contesting_needs_an_argument(self) -> None:
         entry = self.propose("narrow-first", "Prove a change with the narrowest test first.")
@@ -271,7 +306,10 @@ class SkillStoreTests(unittest.TestCase):
             "narrow-tests-first",
             "Run the narrowest test that proves the change before the suite.",
         )
-        self.assertEqual([entry["name"] for entry in grogu_skills.ripe()], ["narrow-first"])
+        self.assertEqual(
+            sorted(entry["name"] for entry in grogu_skills.ripe()),
+            ["narrow-first", "narrow-tests-first"],
+        )
 
     def test_unwritten_lessons_skip_what_somebody_already_proposed(self) -> None:
         clusters = [
@@ -292,6 +330,38 @@ class SkillStoreTests(unittest.TestCase):
         self.propose("narrow-first", "Prove a change with the narrowest test first.")
         remaining = grogu_skills.unwritten_lessons(clusters)
         self.assertEqual([lesson["id"] for lesson in remaining], ["f2"])
+
+    def test_a_corrupt_store_refuses_rather_than_reading_as_empty(self) -> None:
+        """Reading nothing and reading a damaged file are different facts."""
+        self.propose("narrow-first", "Prove a change with the narrowest test first.")
+        store = Path(self.home.name) / "skills.json"
+        store.write_text("{not json", encoding="utf8")
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.proposals()
+        with self.assertRaises(grogu_skills.SkillError):
+            self.propose("something-else", "An unrelated lesson entirely.", body=OTHER_BODY)
+        self.assertEqual(store.read_text(encoding="utf8"), "{not json")
+
+    def test_an_empty_store_file_does_not_erase_what_was_there(self) -> None:
+        self.propose("narrow-first", "Prove a change with the narrowest test first.")
+        store = Path(self.home.name) / "skills.json"
+        store.write_text("", encoding="utf8")
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.proposals()
+
+    def test_a_body_too_large_to_be_a_procedure_is_refused(self) -> None:
+        """A five megabyte paste used to look like a hang rather than a mistake."""
+        with self.assertRaises(grogu_skills.SkillError) as caught:
+            self.propose("huge", "A lesson with the whole log pasted in.", body="x " * 60000)
+        self.assertIn("procedure, not the material", str(caught.exception))
+
+    def test_a_lesson_sharing_only_a_headline_with_an_installed_skill_still_files(self) -> None:
+        """Redirecting to an unrelated skill ends with the lesson never written."""
+        shared = "Run narrow validation before reporting success."
+        entry = self.propose("dependency-license-audit", shared, body=LICENSE_BODY)
+        grogu_skills.accept(entry["seq"], root=Path(self.repo.name))
+        filed = self.propose("podcast-audio-mastering", shared, body=MASTERING_BODY)
+        self.assertEqual(filed["name"], "podcast-audio-mastering")
 
     def test_a_single_complaint_is_not_an_unwritten_lesson(self) -> None:
         clusters = [{"id": "f1", "title": "this one command confused me once", "count": 1}]
@@ -359,6 +429,34 @@ class SkillCommandTests(unittest.TestCase):
     def test_the_user_may_install(self) -> None:
         self.propose()
         self.assertEqual(self.run_cli("accept", "1").returncode, 0)
+
+    def test_an_agent_that_drops_its_role_is_still_refused(self) -> None:
+        """The session binding remembers who is working in this directory."""
+        self.propose()
+        bind = subprocess.run(
+            [sys.executable, str(ROOT / "src" / "grogu_cli.py"), "plan", "brief", "--role", "engineer"],
+            cwd=self.repo.name,
+            env={**os.environ, "GROGU_HOME": self.home.name, "GROGU_ROLE": "engineer"},
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(bind.returncode, 0, bind.stderr)
+        refused = self.run_cli("accept", "1")
+        self.assertEqual(refused.returncode, 3)
+        self.assertIn("engineer", refused.stderr)
+        self.assertFalse((Path(self.repo.name) / ".github/skills").exists())
+
+    def test_the_supervisor_may_decide_in_a_directory_an_engineer_works_in(self) -> None:
+        self.propose()
+        subprocess.run(
+            [sys.executable, str(ROOT / "src" / "grogu_cli.py"), "plan", "brief", "--role", "engineer"],
+            cwd=self.repo.name,
+            env={**os.environ, "GROGU_HOME": self.home.name, "GROGU_ROLE": "engineer"},
+            capture_output=True,
+            text=True,
+        )
+        accepted = self.run_cli("accept", "1", role="supervisor")
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
     def test_skills_resolve_to_this_working_tree(self) -> None:
         """Not the primary worktree: a skill is a file on a branch."""

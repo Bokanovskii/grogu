@@ -569,7 +569,7 @@ the hour again.
 grogu skill propose <name> --description "when does this apply" --file body.md \
     --why "what happened that made this worth writing"
 grogu skill proposals            # what is waiting on a decision
-grogu skill show <n>             # the body, and any wording folded into it
+grogu skill show <n>             # the body, and any proposal linked to it
 grogu skill accept <n>           # writes .github/skills/<name>/SKILL.md
 grogu skill decline <n> --note "why"
 grogu skill contest <n> --note "why that reason no longer holds"
@@ -585,13 +585,30 @@ file into `.github/skills/`, where it is reviewed in a diff like any other
 change. An agent that could install one could rewrite the instructions the next
 agent works under, from inside a single task, with nobody reading it.
 
-**Proposals are pooled across repositories**, like harness friction, so the same
-lesson reached in three places becomes one entry with echoes rather than three
-near-duplicate skills. Repetition across independent contexts is the only
-available evidence that a lesson generalises, and splitting it destroys exactly
-that evidence. The echo keeps its own wording: merging is a guess, and a wrong
-merge would silently discard the second agent's lesson while telling it the
-merge succeeded.
+**Proposals are pooled across repositories**, like harness friction, because
+repetition across independent contexts is the only available evidence that a
+lesson generalises. Near-matches are *linked*, never merged. That distinction
+was bought expensively: the first version folded a near-match into the older
+proposal, and an adversarial probe filed a dependency-licence audit and a
+podcast mastering procedure under the same honest one-line description — "run
+narrow validation before reporting success", which is true of both and tells you
+nothing about either — and watched the second lesson disappear while its author
+was told it had been recorded.
+
+The lesson generalises past the threshold that let it through. "These two texts
+share words" and "these two agents learned the same thing" are different
+questions, and no tuning of the first answers the second; a matcher that is
+sometimes wrong is fine, and a matcher that is sometimes wrong *and destroys
+one input* is not. So both survive, each carries a `related_to` link to the
+other, and whoever decides reads them side by side. A false link costs a glance.
+A false merge cost a lesson.
+
+Two signals are compared rather than one: the headline (name and description)
+and the procedure (the body). Either alone is a bad judge in opposite
+directions — agents writing one lesson often disagree completely about what to
+call it, and unrelated lessons routinely share a summary. Only both agreeing
+counts as the same lesson, and that verdict is used exclusively to *refuse*,
+never to discard.
 
 **An already-answered lesson comes back with the answer.** A proposal matching
 an installed skill sends the agent to read that skill instead. A proposal
@@ -602,9 +619,18 @@ still counted: a lesson declined once and re-derived by five agents is evidence
 the decline was wrong, and `grogu skill contest` is how an agent argues that
 without re-proposing under a new name.
 
-**A body under 160 characters is refused.** A standing instruction that vague
+**A body under 160 characters (once trimmed) is refused, and one over 20,000
+is too.** A standing instruction that vague
 costs every future agent a guess about what it meant. Write what to do, in what
-order, and how the result is checked.
+order, and how the result is checked. At the other end, a skill is the
+procedure and not the material: a five-megabyte paste did not fail, it sat
+there for minutes, which reads as a hang rather than as a mistake.
+
+Like every other role boundary here, who may accept is trust-on-assert: an
+agent that simply never sets `GROGU_ROLE` is the user as far as any of this can
+tell. What is closable is the case that happens in practice — an agent that has
+already said who it is and then drops the variable on one command — and the
+session binding remembers that, which is enough to refuse.
 
 `grogu skill suggest` answers the other half: recurring harness friction that
 nobody has turned into either a fix or a procedure. It reads the friction

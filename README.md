@@ -264,9 +264,11 @@ the plans it implements.
 
 `grogu skill propose` covers the other case: not that something was wrong, but
 that the knowledge was missing and the next agent will pay for it again from an
-empty context. Proposals are pooled across repositories so the same lesson
-reached in three places becomes one entry with echoes rather than three
-near-duplicate skills, and an agent proposes but never installs — a skill is
+empty context. Proposals are pooled across repositories, because a lesson
+reached independently in three places is the only evidence available that it
+generalises; near-matches are linked for whoever decides and never merged,
+since a matcher that is sometimes wrong and destroys one of its inputs turns a
+misjudgement into a lost lesson. An agent proposes but never installs — a skill is
 read by every agent that comes after, which is the same authority as a role
 contract, so the user or the supervisor accepts and the result is a file in
 `.github/skills/` reviewed in a diff. A lesson that duplicates an installed

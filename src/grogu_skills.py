@@ -40,6 +40,12 @@ DECLINED = "declined"
 
 SKILLS_DIRNAME = ".github/skills"
 
+# A body past this is not a skill, it is a file somebody meant to attach. The
+# comparison work is quadratic in the corpus and the redaction pass scans every
+# byte, so a five megabyte paste did not fail -- it sat there for minutes with
+# no output, which reads as a hang rather than as a mistake.
+MAX_SKILL_CHARS = 20000
+
 # Below this a "skill" is a sentence somebody meant to expand later. A standing
 # instruction that vague costs every future agent a guess about what it meant.
 HOLLOW_SKILL_CHARS = 160
@@ -90,13 +96,31 @@ def skills_lock() -> Iterator[None]:
 
 
 def _read() -> dict:
+    """The store, or a refusal -- never a silent empty one.
+
+    Treating an unreadable store as empty is the worst available option: the
+    next `propose` writes proposal #1 over the top and every lesson anybody had
+    filed is gone, with `proposals` having cheerfully reported "no proposals"
+    on the way past. Reading nothing and reading a damaged file are different
+    facts and have to stay different.
+    """
     path = skills_path()
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf8"))
-    except (OSError, ValueError):
-        return {}
+        payload = json.loads(path.read_text(encoding="utf8"))
+    except OSError as error:
+        raise SkillError(f"cannot read the skill store at {path}: {error}")
+    except ValueError:
+        raise SkillError(
+            f"the skill store at {path} is not valid JSON. Nothing has been "
+            "changed, because the alternative is overwriting whatever is still "
+            "in there. Move it aside to start over: "
+            f"`mv {path} {path}.broken`."
+        )
+    if not isinstance(payload, dict):
+        raise SkillError(f"the skill store at {path} is not an object")
+    return payload
 
 
 def _write(payload: dict) -> None:
@@ -128,16 +152,29 @@ def _similarity(left: set, right: set) -> float:
     return len(left & right) / len(left | right)
 
 
-def _same_lesson(subject: tuple, entry: dict) -> bool:
-    """Two agents describing one lesson, in their own words.
+SAME = "same"
+RELATED = "related"
+DIFFERENT = "different"
 
-    `why` is deliberately excluded. It holds the incident that prompted the
+
+def _match(subject: tuple, entry: dict) -> str:
+    """How alike two lessons are, on the two signals worth reading.
+
+    `why` is excluded from both. It holds the incident that prompted the
     proposal -- "ran the full suite six times chasing one assertion" -- which is
     different every time by construction, and including it pushed two verbatim
-    copies of the same procedure apart far enough to be filed twice. The
-    summary and the procedure are what have to match, and either matching is
-    enough: agents converge on the same steps under different headlines about
-    as often as the reverse.
+    copies of one procedure apart far enough to be filed twice.
+
+    Headline and procedure are kept apart rather than pooled because either one
+    alone is a bad judge, and in opposite directions. Two agents writing one
+    lesson often disagree completely about what to call it. And two unrelated
+    lessons routinely share a headline: an adversarial probe filed a
+    dependency-license audit and a podcast mastering procedure under the same
+    honest description, "run narrow validation before reporting success", which
+    is a true thing to say about both and tells you nothing about either.
+
+    Only both signals agreeing is treated as the same lesson, and that verdict
+    is used exclusively to *refuse* -- never to discard anything.
     """
     name, description, body = subject
     headline = _similarity(
@@ -145,7 +182,11 @@ def _same_lesson(subject: tuple, entry: dict) -> bool:
         _tokens(f"{entry.get('name','')} {entry.get('description','')}"),
     )
     procedure = _similarity(_tokens(body), _tokens(entry.get("body", "")))
-    return max(headline, procedure) >= SKILL_SIMILARITY
+    if headline >= SKILL_SIMILARITY and procedure >= SKILL_SIMILARITY:
+        return SAME
+    if max(headline, procedure) >= SKILL_SIMILARITY:
+        return RELATED
+    return DIFFERENT
 
 
 def installed_skills(root: Path) -> list:
@@ -163,6 +204,10 @@ def installed_skills(root: Path) -> list:
             {
                 "name": entry.name,
                 "description": _frontmatter_field(text, "description"),
+                # The body is read because matching on the description alone
+                # redirected an agent to an unrelated skill that happened to
+                # share an honest one-line summary.
+                "body": text.partition("---\n")[2].partition("\n---")[2],
                 "path": str(manifest),
             }
         )
@@ -206,12 +251,19 @@ def _validate(name: str, description: str, body: str) -> None:
             "a skill needs a description: it is the only part an agent reads "
             "when deciding whether this skill applies to what it is doing"
         )
+    if len(body) > MAX_SKILL_CHARS:
+        raise SkillError(
+            f"this body is {len(body)} characters, over the {MAX_SKILL_CHARS} a "
+            "skill can be. A skill is the procedure, not the material: link or "
+            "cite the long thing and write the steps."
+        )
     if len(body.strip()) < HOLLOW_SKILL_CHARS:
         raise SkillError(
-            f"this skill body is {len(body.strip())} characters, under the "
-            f"{HOLLOW_SKILL_CHARS} it takes to be a procedure rather than a "
-            "reminder. Write what to do, in what order, and how the result is "
-            "checked -- a future agent has none of the context you have now."
+            f"this skill body is {len(body.strip())} characters once trimmed, "
+            f"under the {HOLLOW_SKILL_CHARS} it takes to be a procedure rather "
+            "than a reminder. Write what to do, in what order, and how the "
+            "result is checked -- a future agent has none of the context you "
+            "have now."
         )
 
 
@@ -248,10 +300,11 @@ def propose(
         # under another name should be sent to read it, not add a second copy
         # for the next agent to have to choose between.
         for skill in installed or []:
-            if _similarity(
-                _tokens(f"{name} {description}"),
-                _tokens(f"{skill.get('name','')} {skill.get('description','')}"),
-            ) >= SKILL_SIMILARITY:
+            # Strict: headline *and* procedure. Sending an agent away to read
+            # an unrelated skill is worse than letting a near-duplicate through
+            # -- the duplicate gets caught by whoever reviews the proposal, and
+            # the wrong redirect ends with the lesson never written at all.
+            if _match((name, description, body), skill) == SAME:
                 raise AlreadyKnown(
                     f"this is {skill['name']}, already installed: "
                     f"{skill.get('description','')}\nRead {skill.get('path','it')}. "
@@ -263,35 +316,10 @@ def propose(
         payload = _read()
         entries = payload.setdefault("entries", [])
         subject = (name, description, body)
-        # Pending first. A live proposal for this lesson is somewhere for the
-        # echo to go, and it beats a refusal even when an older version of the
-        # same lesson was declined once -- somebody has since re-opened it.
-        for entry in entries:
-            if entry.get("status") != PENDING:
-                continue
-            if entry.get("name") == name or _same_lesson(subject, entry):
-                # The echo keeps its own wording. Merging is a guess, and a
-                # wrong merge silently destroys the second agent's lesson --
-                # which it cannot tell happened, because it is told the merge
-                # succeeded. Keeping both costs a few hundred bytes and lets
-                # whoever decides see what was folded in.
-                entry.setdefault("echoes", []).append(
-                    {
-                        "role": role,
-                        "repository": repository,
-                        "why": why,
-                        "actor": actor,
-                        "name": name,
-                        "description": description,
-                        "body": body.strip(),
-                    }
-                )
-                _write(payload)
-                return entry
         for entry in entries:
             if entry.get("status") != DECLINED:
                 continue
-            if entry.get("name") == name or _same_lesson(subject, entry):
+            if entry.get("name") == name or _match(subject, entry) == SAME:
                 # The decline note exists for exactly this moment. A fresh
                 # context has no memory of being told no, so without this the
                 # same rejected lesson comes back every time an agent hits the
@@ -308,11 +336,25 @@ def propose(
                     "this was proposed before and declined: "
                     f"{entry.get('decision') or 'no reason recorded'}\n"
                     f"({count} {agents} now reached it anyway.)\n"
-                    f"If that reason does not hold any more, say why: "
+                    "If that reason does not hold any more, say why: "
                     f"`grogu skill contest {entry['seq']} --note \"...\"`. "
                     "That puts it back in front of whoever declined it, with "
-                    "your argument attached -- it does not install anything."
+                    "your argument attached -- it does not install anything. "
+                    "If this is genuinely a different lesson, say what makes "
+                    "it different in the description and propose it again."
                 )
+        # Nothing here merges. A near-match used to be folded into the older
+        # proposal, which meant every false positive silently destroyed a
+        # lesson while telling its author it had been recorded -- and token
+        # overlap produces false positives that no threshold removes, because
+        # "these two texts share words" and "these two agents learned the same
+        # thing" are different questions. Both survive, linked, and whoever
+        # decides reads them side by side and merges if they really are one.
+        related = [
+            other["seq"]
+            for other in entries
+            if other.get("status") == PENDING and _match(subject, other) != DIFFERENT
+        ]
         entry = {
             "seq": len(entries) + 1,
             "name": name,
@@ -327,7 +369,11 @@ def propose(
             "amends": amends,
             "status": PENDING,
             "echoes": [],
+            "related_to": related,
         }
+        for other in entries:
+            if other.get("seq") in related:
+                other.setdefault("related_to", []).append(entry["seq"])
         entries.append(entry)
         _write(payload)
         return entry
@@ -433,8 +479,15 @@ def contest(seq: int, *, note: str, role: str = "", repository: str = "") -> dic
 
 
 def ripe(entries: Optional[list] = None) -> list:
-    """Proposals more than one agent independently arrived at."""
-    return [entry for entry in (entries if entries is not None else proposals()) if entry.get("echoes")]
+    """Lessons more than one agent independently arrived at.
+
+    Ripeness survives the move away from merging: it was never the merge that
+    carried the signal, it was the repetition. A proposal linked to another, or
+    one re-derived after being declined, is the same evidence it always was --
+    it is now readable as two texts instead of one text and a counter.
+    """
+    entries = entries if entries is not None else proposals()
+    return [entry for entry in entries if entry.get("echoes") or entry.get("related_to")]
 
 
 def unwritten_lessons(clusters: list, *, installed: Optional[list] = None) -> list:
