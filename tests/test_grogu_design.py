@@ -99,3 +99,23 @@ class DesignCliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProvenanceTests(unittest.TestCase):
+    """A store of seeds should not read as a store of the user's corrections."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_design.DesignStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+
+    def test_seeded_principles_are_not_counted_as_learned(self):
+        self.store.seed_apple()
+        status = self.store.status()
+        self.assertEqual(status["learned"], 0)
+        self.assertEqual(status["seeded"], status["principles"])
+
+    def test_something_the_user_said_counts_as_learned(self):
+        self.store.seed_apple()
+        self.store.remember("no green on the success path", scope="cli")
+        self.assertEqual(self.store.status()["learned"], 1)

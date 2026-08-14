@@ -3294,6 +3294,10 @@ class PlanStore:
             shippable = sorted(
                 str(path.relative_to(self.root))
                 for path in self.plan_dir(plan_id).glob("*.md")
+            ) + sorted(
+                str(path.relative_to(self.root))
+                for path in (self.plan_dir(plan_id) / "attachments").glob("*")
+                if path.is_file()
             )
             staged = self._stage_for_review(shippable)
             return {
@@ -3303,6 +3307,82 @@ class PlanStore:
                 "status": COMPLETE,
                 "shipped_incomplete": blockers if force else [],
             }
+
+    def attach(
+        self,
+        plan_id: str,
+        name: str,
+        body: str,
+        *,
+        stage: str = "",
+        role: str = "",
+        note: str = "",
+    ) -> dict:
+        """Carry an artifact that is not prose alongside the plan.
+
+        The first designer wrote a script that re-derived every fenced block
+        in its spec from the spec's own stated rules, and swept the width
+        invariant across every terminal size. That script found a real
+        contradiction between the spec's prose and its examples. It then had
+        nowhere to go: `write` takes one body, so the proof died in a scratch
+        directory and the tester's choice was to rebuild it or to assert the
+        examples without ever checking they were mutually derivable.
+
+        Attachments are checked against the published-destination rules on the
+        way in, because unlike a plan body they are usually a file lifted
+        whole out of a working directory.
+        """
+        plan_id = self.resolve(plan_id)
+        clean = os.path.basename(name.strip())
+        if not clean or clean.startswith("."):
+            raise PlanError("an attachment needs a plain file name")
+        if not body.strip():
+            raise PlanError(f"{clean} is empty; there is nothing to attach")
+        leaks = grogu_privacy.blocking(
+            grogu_privacy.scan(body, path=clean),
+            destination=grogu_privacy.PUBLISHED,
+        )
+        if leaks:
+            raise PlanError(
+                f"{clean} carries what looks like private data, and attachments "
+                "ship with the plan:\n" + grogu_privacy.report(leaks)
+            )
+        with self.locked():
+            manifest = self.load(plan_id)
+            if stage and stage not in manifest.get("stages", {}):
+                raise PlanError(f"plan {plan_id} has no {stage} stage to attach to")
+            directory = self.plan_dir(plan_id) / "attachments"
+            directory.mkdir(parents=True, exist_ok=True)
+            target = directory / clean
+            replaced = target.exists()
+            target.write_text(body, encoding="utf8")
+            records = [
+                item
+                for item in manifest.setdefault("attachments", [])
+                if item.get("name") != clean
+            ]
+            records.append(
+                {
+                    "name": clean,
+                    "stage": stage,
+                    "role": role or actor(),
+                    "note": note.strip(),
+                    "bytes": len(body.encode("utf8")),
+                    "at": now(),
+                }
+            )
+            manifest["attachments"] = records
+            self._save(manifest, "attached", note=f"{clean} ({len(body)} bytes)")
+            return {
+                "plan": plan_id,
+                "name": clean,
+                "path": str(target),
+                "bytes": len(body.encode("utf8")),
+                "replaced": replaced,
+            }
+
+    def attachments(self, plan_id: str) -> list:
+        return list(self.load(self.resolve(plan_id)).get("attachments", []))
 
     def _stage_for_review(self, paths: list) -> list:
         """Put the plans in the index, because "remember to stage them" lost.
@@ -3753,5 +3833,6 @@ class PlanStore:
                 else {}
             ),
             "design_principles": principles,
+            "attachments": self.attachments(plan_id) if plan_id else [],
             "summary": self.summary(plan_id) if plan_id else {},
         }

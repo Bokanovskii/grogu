@@ -2080,6 +2080,17 @@ def plan_brief(args: argparse.Namespace) -> int:
             # role that is supposed to weigh whose opinion it is.
             source = "the user" if note.get("from") in ("", None, "user") else f"the {note['from']}"
             print(f"- ({source}) {note['text']}{binding}")
+    attached = brief.get("attachments") or []
+    if attached:
+        print("\n## Artifacts attached to this plan\n")
+        for item in attached:
+            where = f" [{item['stage']}]" if item.get("stage") else ""
+            reason = f" -- {item['note']}" if item.get("note") else ""
+            print(
+                f"- {item['name']}{where} ({item['bytes']} bytes, "
+                f"from the {item.get('role') or '?'}){reason}"
+            )
+        print("  read them under .grogu/plans/<id>/attachments/")
     summary = brief.get("summary") or {}
     if summary:
         print(
@@ -2087,6 +2098,30 @@ def plan_brief(args: argparse.Namespace) -> int:
             f"{len(summary.get('open_amendments') or [])} open amendment(s), "
             f"{len(summary.get('open_defects') or [])} open defect(s)"
         )
+    return 0
+
+
+def plan_attach(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    body = _read_body(args)
+    if not body.strip():
+        print("nothing to attach: pass --file or --body", file=sys.stderr)
+        return 2
+    try:
+        result = store.attach(
+            args.id,
+            args.name or (os.path.basename(args.file) if args.file and args.file != "-" else ""),
+            body,
+            stage=args.stage or "",
+            role=args.role or os.environ.get("GROGU_ROLE", ""),
+            note=args.note or "",
+        )
+    except grogu_plans.PlanError as error:
+        print(str(error), file=sys.stderr)
+        return 3
+    verb = "replaced" if result["replaced"] else "attached"
+    print(f"{verb} {result['name']} ({result['bytes']} bytes)")
+    print("every role reading `grogu plan brief` for this plan will be told it exists")
     return 0
 
 
@@ -2217,6 +2252,15 @@ def plan_friction(args: argparse.Namespace) -> int:
             print(f"#{entry['seq']}  [{entry.get('repository', '?')}] {entry['note']}")
         if not report["harness"]:
             print("no unreviewed friction with the harness")
+        else:
+            # These stay open until someone says they are shut, and an open
+            # note is counted forever: twenty-one fixed complaints sitting
+            # here would dilute every cluster computed afterwards.
+            print(
+                "\nClose each one as it ships: "
+                "`grogu plan friction --harness --resolve <seq> "
+                '--resolution "<commit or PR>"`.'
+            )
         return 0
     if report["harness"]:
         print(
@@ -2260,6 +2304,25 @@ def design_status(args: argparse.Namespace) -> int:
     print(f"  {status['directory']}")
     if status["scopes"]:
         print(f"  scopes: {', '.join(status['scopes'])}")
+    # The designer's complaint: this command answers "what taste is on file"
+    # when the question from that seat is "is my stage done". It has the plan
+    # id in its environment either way, so it can answer both.
+    plan_id = os.environ.get("GROGU_PLAN", "")
+    if plan_id:
+        try:
+            store = grogu_plans.PlanStore()
+            summary = store.summary(store.resolve(plan_id))
+        except Exception:
+            summary = {}
+        if summary and "design" in (summary.get("stages") or []):
+            state = (summary.get("stage_state") or {}).get("design", "?")
+            written = (summary.get("stage_written") or {}).get("design")
+            print(
+                f"\n  plan {summary.get('id')}: design {state}, "
+                f"{'spec written' if written else 'no spec written yet'}"
+            )
+        elif summary:
+            print(f"\n  plan {summary.get('id')} has no design stage")
     return 0
 
 
@@ -3253,6 +3316,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--replace", action="store_true", help="overwrite an existing commission"
     )
     plan_commission_parser.set_defaults(handler=plan_commission)
+
+    plan_attach_parser = plan_subparsers.add_parser(
+        "attach",
+        help="carry a file alongside the plan for the roles that come after",
+        parents=[plan_common, role_common],
+    )
+    plan_attach_parser.add_argument("id")
+    plan_attach_parser.add_argument("--name", help="file name (default: the --file basename)")
+    plan_attach_parser.add_argument("--file", help="read the artifact from here, or - for stdin")
+    plan_attach_parser.add_argument("--body")
+    plan_attach_parser.add_argument("--stage", choices=list(grogu_plans.STAGES))
+    plan_attach_parser.add_argument("--note", help="what this artifact is for")
+    plan_attach_parser.set_defaults(handler=plan_attach)
 
     plan_steering_parser = plan_subparsers.add_parser(
         "steering", help="steering visible to a role", parents=[plan_common]

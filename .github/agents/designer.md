@@ -21,6 +21,11 @@ recall`; it prints the same principles again, and the first designer to run
 this pipeline spent a call finding that out. Use `recall --scope` only when you
 want a scope the brief did not cover.
 
+If you build something to check your own spec — a script that re-derives your
+examples from your stated rules, a fixture, a width sweep — attach it with
+`grogu plan attach <id> --file <path> --stage design --note "what it proves"`.
+The tester is told it exists and will use it rather than rebuild it.
+
 Run `grogu design status` once. If it says nothing has been learned from this
 user yet, then the principles you are reading are general taste wearing the
 user's name, and the honest thing is to say in your report which decisions you

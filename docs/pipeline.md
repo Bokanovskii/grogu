@@ -105,6 +105,17 @@ mouth, to the role whose whole job is weighting the user's taste above its own.
 `grogu plan commission <id> designer --brief "..."` is that channel, and it
 arrives in the designer's brief under the architect's name.
 
+A plan carries more than prose. `grogu plan attach <id> --file check.py
+--stage design --note "..."` puts an artifact in the plan directory, names it in
+every later role's brief, and ships it in the pull request. This exists because
+the first designer wrote a script that re-derived every fenced block in its spec
+from the spec's own stated rules — which caught a real contradiction between its
+prose and its examples — and had nowhere to put it, so the tester's only options
+were to rebuild it or to assert the examples without checking they were mutually
+derivable. Attachments are scanned against the published-destination rules on
+the way in, because unlike a plan body they are usually a file lifted whole out
+of a working directory.
+
 An unwritten design stage blocks the *implement* gate, not only the test gate:
 there is no point building against a spec that does not exist yet.
 

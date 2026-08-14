@@ -2413,3 +2413,53 @@ class HollowSpecTests(unittest.TestCase):
         with self.assertRaises(grogu_plans.PlanError) as caught:
             self.store.write_stage(self.plan, "design", spec, role="designer")
         self.assertIn("empty", str(caught.exception))
+
+
+class AttachmentTests(unittest.TestCase):
+    """The designer's proof script had nowhere to go but a scratch directory."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("status line", design=True)["id"]
+
+    def test_an_attachment_reaches_the_next_role(self):
+        self.store.attach(
+            self.plan,
+            "verify_spec.py",
+            "print('derived every block')\n",
+            stage="design",
+            role="designer",
+            note="proves the blocks are mutually derivable",
+        )
+        brief = self.store.brief("tester", plan_id=self.plan)
+        names = [item["name"] for item in brief["attachments"]]
+        self.assertEqual(names, ["verify_spec.py"])
+        self.assertEqual(brief["attachments"][0]["role"], "designer")
+
+    def test_the_same_name_replaces_rather_than_duplicates(self):
+        self.store.attach(self.plan, "check.py", "one\n")
+        result = self.store.attach(self.plan, "check.py", "two\n")
+        self.assertTrue(result["replaced"])
+        self.assertEqual(len(self.store.attachments(self.plan)), 1)
+
+    def test_a_secret_does_not_ride_along_with_the_plan(self):
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.attach(
+                self.plan,
+                "config.py",
+                'AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"\n',  # grogu-allow-secret: AWS's own published example key
+            )
+
+    def test_an_empty_artifact_is_refused(self):
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.attach(self.plan, "empty.py", "   \n")
+
+    def test_a_path_cannot_escape_the_plan_directory(self):
+        self.store.attach(self.plan, "../../escape.py", "print(1)\n")
+        self.assertTrue(
+            (self.store.plan_dir(self.plan) / "attachments" / "escape.py").is_file()
+        )
