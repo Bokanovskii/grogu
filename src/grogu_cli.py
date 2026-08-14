@@ -1882,9 +1882,31 @@ def plan_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def plan_commission(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id)
+    store.commission(
+        plan_id, args.for_role, args.brief, by=getattr(args, "role", "") or ""
+    )
+    print(
+        f"{plan_id}: commissioned the {args.for_role}; it arrives in "
+        f"`grogu plan brief --role {args.for_role} --plan {plan_id}`"
+    )
+    return 0
+
+
 def plan_steer(args: argparse.Namespace) -> int:
     store = plan_store(args)
     plan_id = store.resolve(args.id) if args.id else ""
+    if getattr(args, "retract", 0):
+        result = store.retract_steering(args.retract, plan_id=plan_id)
+        print(f"retracted steering #{result['seq']}")
+        if result["delivered"]:
+            print(
+                "  it had already been delivered; the agent that read it still "
+                "has it, so say so directly if it matters"
+            )
+        return 0
     text = " ".join(args.text).strip() or (getattr(args, "note", "") or "").strip()
     if not text:
         print("grogu: nothing to steer with; pass the note as text or --note", file=sys.stderr)
@@ -2023,12 +2045,19 @@ def plan_brief(args: argparse.Namespace) -> int:
         print("\n## The user's design principles\n")
         for principle in principles:
             print(f"- [{principle['scope']}] {principle['statement']}")
+    commission = brief.get("commission") or {}
+    if commission.get("brief"):
+        print("\n## What the architect is asking you for\n")
+        print(commission["brief"].rstrip())
     notes = brief["steering"].get("repository", []) + brief["steering"].get("plan", [])
     if notes:
-        print("\n## Standing steering from the user\n")
+        print("\n## Standing steering\n")
         for note in notes:
             binding = " [requires replan]" if note.get("requires_replan") else ""
-            print(f"- {note['text']}{binding}")
+            # Attributing an architect's note to the user misleads exactly the
+            # role that is supposed to weigh whose opinion it is.
+            source = "the user" if note.get("from") in ("", None, "user") else f"the {note['from']}"
+            print(f"- ({source}) {note['text']}{binding}")
     summary = brief.get("summary") or {}
     if summary:
         print(
@@ -2286,8 +2315,41 @@ def session_new(args: argparse.Namespace) -> int:
     return launch_copilot(arguments)
 
 
+class _SubcommandAwareParser(argparse.ArgumentParser):
+    """Show the usage of the command that was actually run.
+
+    Argparse hands unrecognised arguments back to the top-level parser, so
+    `grogu plan stage <id> --stage X` printed the usage for the whole binary
+    -- a wall of {doctor,watch,guard,...} that never mentions that `stage`
+    and `state` are positional. An architect lost a call to this and filed it
+    as friction. The parser knows which subcommand was typed; it can say so.
+    """
+
+    def error(self, message: str):  # pragma: no cover - exercised via CLI tests
+        target = self._deepest_subparser(sys.argv[1:])
+        if target is not None and target is not self:
+            target.print_usage(sys.stderr)
+            self.exit(2, f"grogu {target.prog.split(' ', 1)[-1]}: error: {message}\n")
+        return super().error(message)
+
+    def _deepest_subparser(self, arguments: list):
+        parser = self
+        for word in arguments:
+            if word.startswith("-"):
+                break
+            actions = [
+                action
+                for action in parser._actions
+                if isinstance(action, argparse._SubParsersAction)
+            ]
+            if not actions or word not in actions[0].choices:
+                break
+            parser = actions[0].choices[word]
+        return parser
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="grogu")
+    parser = _SubcommandAwareParser(prog="grogu")
     parser.add_argument("--version", action="version", version=f"grogu {VERSION}")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -3093,6 +3155,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_steer_parser.add_argument("--plan", dest="id", help="scope to one plan")
     plan_steer_parser.add_argument(
+        "--retract", type=int, metavar="SEQ", help="take back a note you sent"
+    )
+    plan_steer_parser.add_argument(
         "--role", choices=(*grogu_plans.ROLES, "all"), default="all"
     )
     plan_steer_parser.add_argument(
@@ -3101,6 +3166,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="block the gates until the architect folds this into the plan",
     )
     plan_steer_parser.set_defaults(handler=plan_steer)
+
+    plan_commission_parser = plan_subparsers.add_parser(
+        "commission",
+        help="tell a role what the architect wants from it (architect only)",
+        parents=[plan_common, role_common],
+    )
+    plan_commission_parser.add_argument("id")
+    plan_commission_parser.add_argument("for_role", metavar="ROLE", choices=grogu_plans.ROLES)
+    plan_commission_parser.add_argument("--brief", required=True)
+    plan_commission_parser.set_defaults(handler=plan_commission)
 
     plan_steering_parser = plan_subparsers.add_parser(
         "steering", help="steering visible to a role", parents=[plan_common]

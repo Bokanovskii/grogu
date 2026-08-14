@@ -2225,3 +2225,62 @@ class FinalizeArtifactTests(unittest.TestCase):
         record = (self.root / ".grogu" / "plans" / self.plan / "record.md").read_text()
         self.assertIn("no taste call here", record)
         self.assertIn("use decimal", record)
+
+
+class CommissionTests(unittest.TestCase):
+    """The architect could open a design stage it could not brief."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("statusline", design=True)["id"]
+
+    def test_the_designer_brief_carries_the_statement_of_work(self):
+        self.store.commission(
+            self.plan, "designer", "decide what dies first at 40 columns", by="architect"
+        )
+        brief = self.store.brief("designer", plan_id=self.plan)
+        self.assertIn("40 columns", brief["commission"]["brief"])
+
+    def test_only_the_architect_commissions(self):
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.commission(self.plan, "designer", "do it", by="engineer")
+
+    def test_steering_records_who_wrote_it(self):
+        note = self.store.steer("prefer decimal", plan_id=self.plan, role="engineer")
+        self.assertEqual(note["from"], "user")
+        os.environ["GROGU_ROLE"] = "architect"
+        self.addCleanup(os.environ.pop, "GROGU_ROLE", None)
+        note = self.store.steer("and no floats", plan_id=self.plan, role="engineer")
+        self.assertEqual(note["from"], "architect")
+
+
+class SteeringRetractionTests(unittest.TestCase):
+    """Append-only steering meant noise could only grow."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("retract")["id"]
+
+    def test_an_undelivered_note_stops_being_shown(self):
+        note = self.store.steer("ignore this probe", plan_id=self.plan, role="tester")
+        result = self.store.retract_steering(note["seq"], plan_id=self.plan)
+        self.assertFalse(result["delivered"])
+        self.assertEqual(self.store.steering(role="tester", plan_id=self.plan)["plan"], [])
+
+    def test_a_delivered_note_says_it_was_already_read(self):
+        note = self.store.steer("wrong note", plan_id=self.plan, role="tester")
+        self.store.ack_steering(role="tester", plan_id=self.plan, agent="t1")
+        result = self.store.retract_steering(note["seq"], plan_id=self.plan)
+        self.assertTrue(result["delivered"])
+
+    def test_retracting_a_note_that_never_existed_is_an_error(self):
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.retract_steering(9, plan_id=self.plan)

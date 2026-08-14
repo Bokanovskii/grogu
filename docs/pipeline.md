@@ -94,7 +94,19 @@ that blocks a plan is worse than one that is merely read and dismissed.
 ## The design stage
 
 Work with a user-visible surface gets a fourth role. `grogu plan triage` flags
-it, `grogu plan new --design` adds the stage, and the designer writes it.
+it, `grogu plan new --design` or `grogu plan shape --add design` adds the stage,
+and the designer writes it. Nothing else may: the architect that adds the stage
+is refused if it tries to write the spec.
+
+That left the architect able to open a stage it could not brief, and the only
+channel that reached a designer was `plan steer --role designer`, which arrives
+attributed to the user — an architect's statement of work put into the user's
+mouth, to the role whose whole job is weighting the user's taste above its own.
+`grogu plan commission <id> designer --brief "..."` is that channel, and it
+arrives in the designer's brief under the architect's name.
+
+An unwritten design stage blocks the *implement* gate, not only the test gate:
+there is no point building against a spec that does not exist yet.
 
 The reason it is a separate role rather than a section of the implementation
 plan is empirical: models are markedly worse at design than at code, and the

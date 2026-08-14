@@ -1432,6 +1432,37 @@ class PlanStore:
                 ]
             return manifest
 
+    def commission(self, plan_id: str, role: str, brief: str, *, by: str = "") -> dict:
+        """Let the architect say what it wants from a role, in its own voice.
+
+        An architect could open a design stage and then had no way to tell the
+        designer what the work was: the design stage is written by the designer
+        alone, `workstream --brief` is engineer-facing, and `plan brief --role
+        designer` carried the taste principles and the plan status but not one
+        word about the job. The only channel that reached the designer was
+        `plan steer --role designer`, which arrives attributed to the user --
+        so an architect following its own contract had to put its statement of
+        work into the user's mouth, to the one role whose whole job is
+        weighting the user's taste above its own inference.
+        """
+        by = by or current_role() or ARCHITECT
+        if by != ARCHITECT:
+            raise PlanError(f"role {by!r} may not commission work; that is the architect's")
+        if role not in ROLES:
+            raise PlanError(f"unknown role {role!r}")
+        if role == ARCHITECT:
+            raise PlanError("the architect does not commission itself")
+        if not brief.strip():
+            raise PlanError("a commission needs a brief saying what the work is")
+        with self.locked():
+            manifest = self.load(plan_id)
+            manifest.setdefault("commissions", {})[role] = {
+                "brief": brief.strip(),
+                "at": now(),
+                "by": actor(),
+            }
+            return self._save(manifest, "commissioned", stage=role)
+
     # -- stage bodies ------------------------------------------------------
 
     def write_stage(self, plan_id: str, stage: str, body: str, *, role: str = "") -> dict:
@@ -1871,6 +1902,10 @@ class PlanStore:
             raise PlanError(f"unknown role {role!r}; expected 'all' or one of {', '.join(ROLES)}")
         if not text.strip():
             raise PlanError("refusing to record empty steering")
+        # Steering is the user's channel, but agents record notes on it too.
+        # A reader that cannot tell whose note it is reading cannot weigh it,
+        # which matters most for the designer.
+        author = current_role() or "user"
         with self.locked():
             if plan_id:
                 manifest = self.load(plan_id)
@@ -1880,6 +1915,7 @@ class PlanStore:
                     "at": now(),
                     "actor": actor(),
                     "role": role,
+                    "from": author,
                     "text": text.strip(),
                     "requires_replan": bool(requires_replan),
                 }
@@ -1902,12 +1938,53 @@ class PlanStore:
                 "at": now(),
                 "actor": actor(),
                 "role": role,
+                "from": author,
                 "text": text.strip(),
                 "requires_replan": bool(requires_replan),
             }
             payload["notes"].append(note)
             self._write_json(self.steering_path, payload)
             return note
+
+    def retract_steering(self, seq: int, *, plan_id: str = "") -> dict:
+        """Take back a note, because append-only means noise only grows.
+
+        An architect probing the harness left a note queued for the tester and
+        found the only remedy was a second note contradicting the first --
+        both permanent, both delivered. Retracting hides an undelivered note
+        entirely; a delivered one is marked retracted and says so, because
+        someone has already read it and pretending otherwise is worse.
+        """
+        with self.locked():
+            if plan_id:
+                manifest = self.load(plan_id)
+                notes = manifest.get("steering", [])
+                note = next((item for item in notes if item.get("seq") == seq), None)
+                if note is None:
+                    raise PlanError(f"plan {plan_id} has no steering note #{seq}")
+                delivered = self._note_was_delivered(manifest, note)
+                note["retracted"] = True
+                note["retracted_at"] = now()
+                self._save(manifest, "steering_retracted", seq=seq)
+                return {"seq": seq, "delivered": delivered}
+            payload = self._repo_steering()
+            note = next(
+                (item for item in payload["notes"] if item.get("seq") == seq), None
+            )
+            if note is None:
+                raise PlanError(f"there is no repository steering note #{seq}")
+            note["retracted"] = True
+            note["retracted_at"] = now()
+            self._write_json(self.steering_path, payload)
+            return {"seq": seq, "delivered": False}
+
+    def _note_was_delivered(self, manifest: dict, note: dict) -> bool:
+        acked = manifest.get("steering_acked", {}) or {}
+        return any(
+            value >= note.get("seq", 0)
+            for key, value in acked.items()
+            if note.get("role") in ("all", key.split("@")[0])
+        )
 
     def steering(self, *, role: str = "all", plan_id: str = "", unread: bool = False) -> dict:
         """Steering visible to `role`, newest last, cheap enough to poll."""
@@ -1922,7 +1999,8 @@ class PlanStore:
                 # engineer is still the architect's problem: it is how a plan
                 # goes stale. Steering the plan's owner cannot see is the one
                 # kind that silently invalidates everything downstream of it.
-                if role in ("all", ARCHITECT) or note.get("role") in ("all", role)
+                if (role in ("all", ARCHITECT) or note.get("role") in ("all", role))
+                and not note.get("retracted")
             ]
             if unread:
                 selected = [note for note in selected if note.get("seq", 0) > acked]
@@ -3520,6 +3598,11 @@ class PlanStore:
             "overlay_path": str(overlay_path),
             "has_overlay": bool(overlay),
             "steering": steering,
+            "commission": (
+                (self.load(plan_id).get("commissions", {}) or {}).get(role, {})
+                if plan_id
+                else {}
+            ),
             "design_principles": principles,
             "summary": self.summary(plan_id) if plan_id else {},
         }

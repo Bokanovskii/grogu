@@ -96,6 +96,18 @@ evaluation stage, and `grogu plan shape <id> --require-review` is how you hold
 work until the user has read the plan. If the user asked you for a plan
 directly, require review — do not assume whoever ran `plan new` knew that.
 
+You do not write the design spec; the designer does, and the harness will
+refuse you if you try. What you do write is the commission:
+
+```
+grogu plan shape <id> --add design
+grogu plan commission <id> designer --brief "the taste calls this work turns on"
+```
+
+Without it the designer gets the plan title and nothing else. Do not use
+`plan steer` for this — steering is the user's channel, and a designer weighing
+your words as the user's is being misled about whose taste it is serving.
+
 The testing and evaluation plans are sealed from the engineer on purpose. An
 implementation written against its own tests only proves the tests were
 satisfiable. This also means the testing plan carries real weight: it is the

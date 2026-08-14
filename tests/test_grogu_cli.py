@@ -1552,3 +1552,23 @@ class DefectResolveAliasTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("--report and --route", result.stderr)
+
+
+class SubcommandUsageTests(unittest.TestCase):
+    """A mistyped flag printed the usage for the whole binary."""
+
+    def test_the_usage_shown_is_the_subcommands_own(self):
+        with tempfile.TemporaryDirectory() as home:
+            environment = os.environ.copy()
+            environment["GROGU_HOME"] = home
+            result = subprocess.run(
+                [sys.executable, str(CLI), "plan", "stage", "p-1",
+                 "--stage", "implementation", "--state", "complete"],
+                cwd=home,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage: grogu plan stage", result.stderr)
+        self.assertNotIn("{doctor,", result.stderr)
