@@ -2120,3 +2120,67 @@ class DesignerFrictionTests(ArchitectFrictionTests):
             encoding="utf8",
         )
         return str(path)
+
+
+class SupervisorRoleTests(ArchitectFrictionTests):
+    """The role that coordinates the others, and what it may not do."""
+
+    def test_the_supervisor_may_not_approve_for_the_user(self):
+        plan = self._plan()
+        result = self.run_cli("plan", "approve", plan, role="supervisor", agent="sup")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("approval is the user's alone", result.stderr)
+
+    def test_the_supervisor_may_not_write_a_stage(self):
+        plan = self._plan()
+        result = self.run_cli(
+            "plan", "write", plan, "implementation", "--body", "q" * 200,
+            role="supervisor", agent="sup",
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("may not write", result.stderr)
+
+    def test_a_relayed_note_is_marked_as_the_users_words(self):
+        plan = self._plan()
+        result = self.run_cli(
+            "plan", "steer", plan, "--role", "designer", "--relayed",
+            "--note", "the user's actual words", role="supervisor", agent="sup",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("in the user's words", result.stdout)
+        brief = self.run_cli(
+            "plan", "brief", "--plan", plan, "--role", "designer",
+            role="designer", agent="d1",
+        )
+        self.assertIn("(the user, relayed by the supervisor)", brief.stdout)
+
+    def test_the_supervisors_own_note_is_attributed_to_the_supervisor(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "steer", plan, "--role", "designer", "--note", "my own opinion",
+            role="supervisor", agent="sup",
+        )
+        brief = self.run_cli(
+            "plan", "brief", "--plan", plan, "--role", "designer",
+            role="designer", agent="d1",
+        )
+        self.assertIn("(the supervisor) my own opinion", brief.stdout)
+
+    def test_only_the_supervisor_may_claim_a_relay(self):
+        plan = self._plan()
+        for role in ("", "engineer"):
+            result = self.run_cli(
+                "plan", "steer", plan, "--role", "designer", "--relayed",
+                "--note", "not mine to relay", role=role,
+            )
+            self.assertEqual(result.returncode, 3, role)
+            self.assertIn("only the supervisor relays", result.stderr)
+
+    def test_the_audit_says_when_each_agent_was_last_seen(self):
+        """Listing hour-old probes with no context read as a scoping bug."""
+        plan = self._plan()
+        self.run_cli("plan", "steer", plan, "--role", "engineer", "--note", "check me")
+        self.run_cli("plan", "status", plan, role="engineer", agent="live")
+        audit = self.run_cli("plan", "steering", "--plan", plan, "--audit", "1")
+        self.assertIn("engineer@live", audit.stdout)
+        self.assertIn("last seen", audit.stdout)

@@ -2198,9 +2198,11 @@ def plan_steer(args: argparse.Namespace) -> int:
         plan_id=plan_id,
         role=args.role or "all",
         requires_replan=args.requires_replan,
+        relayed=getattr(args, "relayed", False),
     )
     scope = plan_id or "repository"
-    print(f"steering #{note['seq']} recorded for {note['role']} on {scope}")
+    whose = " in the user's words" if note.get("relayed_by") else ""
+    print(f"steering #{note['seq']} recorded for {note['role']} on {scope}{whose}")
     if note["requires_replan"]:
         print("plan moved to needs_review: the architect must fold this in before work continues")
     _relay_hint(note, plan_id)
@@ -2301,9 +2303,22 @@ def plan_steering(args: argparse.Namespace) -> int:
             return 0
         state = " (retracted)" if note["retracted"] else ""
         print(f"{note['source']} #{note['seq']} ->{note['role']}{state}: {note['text']}")
-        print("  read by: " + (", ".join(note["read_by"]) or "nobody yet"))
+        seen = note.get("last_seen") or {}
+
+        def describe(keys: list) -> str:
+            parts = []
+            for key in keys:
+                stamp = seen.get(key, "")
+                parts.append(f"{key} (last seen {stamp})" if stamp else key)
+            return ", ".join(parts)
+
+        print("  read by: " + (describe(note["read_by"]) or "nobody yet"))
         if note["unread_by"]:
-            print("  not yet read by: " + ", ".join(note["unread_by"]))
+            print("  not yet read by: " + describe(note["unread_by"]))
+            print(
+                "  agents that have gone quiet stay on this list; it is every "
+                "agent this plan has ever seen, not only the running ones."
+            )
         return 0
     unread_only = args.unread or (role != "all" and not args.all)
     # Who is *asking* is not the same as whose steering is being asked about.
@@ -2404,6 +2419,8 @@ def plan_brief(args: argparse.Namespace) -> int:
                 if note.get("from") in ("", None, "user")
                 else f"the {note['from']}"
             )
+            if note.get("relayed_by"):
+                source += f", relayed by the {note['relayed_by']}"
             print(f"- ({source}) {note['text']}{binding}")
     attached = brief.get("attachments") or []
     if attached:
@@ -3691,6 +3708,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--note", default="", help="the note, if you would rather not quote it positionally"
     )
     plan_steer_parser.add_argument("--plan", dest="id", help="scope to one plan")
+    plan_steer_parser.add_argument(
+        "--relayed",
+        action="store_true",
+        help="supervisor only: these are the user's words, not yours",
+    )
     plan_steer_parser.add_argument(
         "--retract", type=int, metavar="SEQ", help="take back a note you sent"
     )

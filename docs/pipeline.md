@@ -352,6 +352,38 @@ amendment loop with the architect ends at the *user*, because the architect is
 the top of the pipeline and the only thing left to disagree about is what was
 wanted.
 
+## The supervisor
+
+Four roles do the work. A fifth coordinates them, and for a long time it was
+the session the user happened to be typing into, with no name and no limits.
+
+The supervisor is the session the user talks to. It decides whether a request
+needs the pipeline at all — most do not — spawns the roles that do, carries the
+user's steering into agents that cannot be interrupted from outside, harvests
+what they report, and fixes the harness itself. It writes no plan, no spec, no
+implementation and no test.
+
+Naming it is not a formality; it removes powers rather than granting them.
+`grogu plan approve` refuses every declared role, so a supervisor that declares
+itself gives up the ability to approve a plan on the user's behalf — which is
+the one thing an autopilot run must never do and, while the supervisor was
+just an anonymous shell, the one thing nothing stopped it doing. It cannot
+write or complete a stage either; if a plan is wrong it raises an amendment and
+the architect adjudicates.
+
+The subtler boundary is attribution. The supervisor's whole job on the steering
+channel is carrying somebody else's words, so `grogu plan steer --relayed`
+marks a note as the user's and anything else is attributed to the supervisor.
+That distinction is load-bearing for exactly one reader: the designer, whose
+job is weighting the user's taste above its own inference. A designer told that
+the supervisor's guess is the user's stated preference is being corrupted at
+the one input it runs on. This is the same reason the architect commissions
+instead of steering, and the same reason `grogu design remember` refuses every
+role.
+
+Nothing here can detect a relay the supervisor invented. What it does is put
+the claim in the record, where the user reads it in the finished plan.
+
 ## Steering that survives the session
 
 The user steers from their own session, but the work is done by subagents that
@@ -615,6 +647,7 @@ cannot keep them current.
 | designer | `claude-sonnet-5` | its output is byte-exact blocks, which is edit fidelity rather than reasoning |
 | engineer | `claude-sonnet-5` | general implementation, escalating when the work warrants it |
 | tester | `grok-4.5` | a different family from the engineer, on purpose |
+| supervisor | `claude-opus-5` | it decides what needs a plan at all, and it edits the harness |
 
 The tester's model is not arbitrary. It audits the engineer's work, and two
 models from the same family share the same blind spots — including the

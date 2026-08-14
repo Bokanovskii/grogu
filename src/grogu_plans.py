@@ -76,7 +76,14 @@ DESIGNER = "designer"
 ENGINEER = "engineer"
 TESTER = "tester"
 REVIEWER = "reviewer"
-ROLES = (ARCHITECT, DESIGNER, ENGINEER, TESTER, REVIEWER)
+# The supervisor coordinates the others: it spawns them, carries the user's
+# steering into them, harvests what they report and fixes the harness itself.
+# It is deliberately not a stage writer and not a stage completer -- it does
+# not do the work -- and because `approve` refuses every declared role, calling
+# yourself the supervisor gives up the ability to approve a plan on the user's
+# behalf. That is the point of naming it rather than acting as a bare shell.
+SUPERVISOR = "supervisor"
+ROLES = (ARCHITECT, DESIGNER, ENGINEER, TESTER, REVIEWER, SUPERVISOR)
 
 # The whole point of the split: the engineer must not be able to write to the
 # test, because an implementation shaped by its own unit tests only proves the
@@ -2201,6 +2208,7 @@ class PlanStore:
         plan_id: str = "",
         role: str = "all",
         requires_replan: bool = False,
+        relayed: bool = False,
     ) -> dict:
         """Record steering for whoever picks the work up next.
 
@@ -2216,6 +2224,21 @@ class PlanStore:
         # A reader that cannot tell whose note it is reading cannot weigh it,
         # which matters most for the designer.
         author = current_role() or "user"
+        # The supervisor's whole job on this channel is carrying the user's
+        # words into agents that cannot be interrupted from outside. A reader
+        # weighing "whose taste is this" must be able to tell a relayed note
+        # from the supervisor's own opinion, so relaying is explicit and the
+        # default is the supervisor's own voice. Nothing here can stop a
+        # supervisor claiming a relay it invented; what it does is put the
+        # claim in the record, where the user reads it in the finished plan.
+        relayed_by = ""
+        if relayed:
+            if author != SUPERVISOR:
+                raise PlanError(
+                    "only the supervisor relays steering; the user's own notes "
+                    "are already the user's"
+                )
+            author, relayed_by = "user", SUPERVISOR
         with self.locked():
             if plan_id:
                 manifest = self.load(plan_id)
@@ -2226,6 +2249,7 @@ class PlanStore:
                     "actor": actor(),
                     "role": role,
                     "from": author,
+                    "relayed_by": relayed_by,
                     "text": text.strip(),
                     "requires_replan": bool(requires_replan),
                 }
@@ -2249,6 +2273,7 @@ class PlanStore:
                 "actor": actor(),
                 "role": role,
                 "from": author,
+                "relayed_by": relayed_by,
                 "text": text.strip(),
                 "requires_replan": bool(requires_replan),
             }
@@ -2366,6 +2391,12 @@ class PlanStore:
                 if "@" not in key or key.split("@", 1)[0] not in roles:
                     continue
                 (read if int(value or 0) >= seq else unread).append(key)
+            # An audit that lists every agent that ever touched this plan
+            # reads like a scoping bug: an engineer checking one note saw two
+            # agents from an hour-old probe listed as not having read it, had
+            # no way to tell whether they were relevant, and trusted the
+            # answer less than before it asked. Say when each was last seen.
+            seen = (self.load(plan_id).get("agents_seen", {}) if plan_id else {})
             return {
                 "seq": seq,
                 "source": source,
@@ -2374,6 +2405,7 @@ class PlanStore:
                 "retracted": bool(note.get("retracted")),
                 "read_by": sorted(read),
                 "unread_by": sorted(unread),
+                "last_seen": {key: seen.get(key, "") for key in read + unread},
             }
         raise PlanError(
             f"no steering note #{seq}"
