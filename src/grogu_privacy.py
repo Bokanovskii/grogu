@@ -95,7 +95,14 @@ _SECRET_PATTERNS = (
 # `API_KEY = os.environ["API_KEY"]` is the correct way to write it and must not
 # be flagged — so the value has to look like a literal secret too.
 _ASSIGNMENT = re.compile(
-    r"""(?P<name>[A-Za-z0-9_.-]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CLIENT_?SECRET)[A-Za-z0-9_.-]*)
+    # The leading run is anchored to the start of a word. Without the
+    # lookbehind it can begin at every character in the line, and on a long
+    # unbroken token the engine walks the rest of the line looking for SECRET
+    # from each of those starts in turn -- quadratic, and measurably so: a
+    # single 20,000-character word took seventeen seconds. It is also more
+    # correct, since a variable name does not start in the middle of another
+    # identifier.
+    r"""(?<![A-Za-z0-9_.-])(?P<name>[A-Za-z0-9_.-]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CLIENT_?SECRET)[A-Za-z0-9_.-]*)
         \s*[:=]\s*
         (?P<quote>["']?)(?P<value>[^\s"',;]{8,})(?P=quote)""",
     re.IGNORECASE | re.VERBOSE,
