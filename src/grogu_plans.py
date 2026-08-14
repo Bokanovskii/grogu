@@ -57,6 +57,20 @@ EVALUATION = "evaluation"
 STAGES = (DESIGN, IMPLEMENTATION, TESTING, EVALUATION)
 SEALED_STAGES = frozenset({TESTING, EVALUATION})
 
+
+def _private_design_statements() -> list:
+    """The user's own design words, which must not ship in a plan.
+
+    Imported lazily and failing open: the taste store is optional, and a
+    missing one must not stop a plan being finished.
+    """
+    try:
+        import grogu_design
+
+        return grogu_design.DesignStore().private_statements()
+    except Exception:
+        return []
+
 ARCHITECT = "architect"
 DESIGNER = "designer"
 ENGINEER = "engineer"
@@ -3383,15 +3397,25 @@ class PlanStore:
                     "ship it knowingly incomplete."
                 )
             emitted = []
+            private_taste = _private_design_statements()
             for stage in manifest.get("stages", []):
                 sealed_path = self.plan_dir(plan_id) / f"{stage}.sealed"
-                if not sealed_path.exists():
+                plain = self.plan_dir(plan_id) / f"{stage}.md"
+                if sealed_path.exists():
+                    body = unseal(sealed_path.read_text(encoding="utf8"))
+                elif plain.exists():
+                    body = plain.read_text(encoding="utf8")
+                else:
                     continue
-                body = unseal(sealed_path.read_text(encoding="utf8"))
                 # Finalizing is the moment a plan stops being a local working
                 # file and becomes pull request content. Anything pasted into
                 # it along the way — a token from a failing run, a customer
                 # address from a bug report — publishes here.
+                #
+                # This used to scan only the sealed stages, because the loop
+                # skipped anything without a `.sealed` file. Only testing and
+                # evaluation are sealed, so design and implementation — the two
+                # a human pastes context into most — shipped unread.
                 leaks = grogu_privacy.blocking(
                     grogu_privacy.scan(body, path=f"{stage}"),
                     destination=grogu_privacy.PUBLISHED,
@@ -3403,10 +3427,20 @@ class PlanStore:
                         + grogu_privacy.report(leaks)
                         + "\nEdit the stage, then finalize again."
                     )
-                plain = self.plan_dir(plan_id) / f"{stage}.md"
-                plain.write_text(body, encoding="utf8")
-                sealed_path.unlink()
-                emitted.append(str(plain.relative_to(self.root)))
+                quoted = [line for line in private_taste if line in body]
+                if quoted:
+                    raise PlanError(
+                        f"refusing to finalize {plan_id}: the {stage} plan "
+                        "quotes the user's own design principles verbatim, and "
+                        "a finalized plan is committed in plaintext:\n  "
+                        + "\n  ".join(f"{line[:70]}…" for line in quoted)
+                        + "\nState the decision the principle produced, not the "
+                        "principle. Then finalize again."
+                    )
+                if sealed_path.exists():
+                    plain.write_text(body, encoding="utf8")
+                    sealed_path.unlink()
+                    emitted.append(str(plain.relative_to(self.root)))
             record = self._plan_record(manifest)
             leaks = grogu_privacy.blocking(
                 grogu_privacy.scan(record, path="record"),

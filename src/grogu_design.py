@@ -235,6 +235,22 @@ class DesignStore:
             "scopes": sorted({item["scope"] for item in principles}),
         }
 
+    def private_statements(self) -> List[str]:
+        """Principles in the user's own words, which are theirs and not public.
+
+        An adopted set is published material -- quoting Apple's guidelines in a
+        pull request discloses nothing. A principle the user stated themselves
+        is a sentence about how they think, and the design stage of a finalized
+        plan is committed to the repository in plaintext, so a designer that
+        quotes one verbatim publishes it.
+        """
+        return [
+            str(item.get("statement", "")).strip()
+            for item in self._principles()["principles"]
+            if not str(item.get("source", "")).startswith("user:")
+            and len(str(item.get("statement", "")).strip()) >= 25
+        ]
+
     def _unique_id(self, statement: str, existing: List[dict]) -> str:
         base = _slug(statement)
         taken = {item["id"] for item in existing}

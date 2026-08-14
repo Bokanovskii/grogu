@@ -5,10 +5,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+import grogu_design  # noqa: E402
 import grogu_plans  # noqa: E402
 
 
@@ -2731,3 +2733,81 @@ class WorkingStateStaysLocalTests(unittest.TestCase):
             text=True,
         ).stdout
         self.assertNotIn("revisions/", staged)
+
+
+class UnsealedStagesArePublishedTooTests(unittest.TestCase):
+    """Finalize scanned only the sealed stages, so most of a plan shipped unread."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN"):
+            os.environ.pop(variable, None)
+
+    def _plan(self):
+        plan = self.store.create("Test plan")
+        for stage in plan["stages"]:
+            owner = sorted(grogu_plans.STAGE_WRITERS[stage])[0]
+            self.store.write_stage(plan["id"], stage, f"# {stage} body\n", role=owner)
+        for stage in plan["stages"]:
+            if stage in (grogu_plans.IMPLEMENTATION, grogu_plans.TESTING):
+                self.store.set_stage_state(
+                    plan["id"], stage, grogu_plans.COMPLETE, as_user=True
+                )
+        return plan["id"]
+
+    def test_a_secret_in_the_implementation_plan_blocks_finalize(self):
+        plan_id = self._plan()
+        self.store.write_stage(
+            plan_id,
+            grogu_plans.IMPLEMENTATION,
+            "# implementation body\n\nUse AKIA" + "IOSFODNN7EXAMPLE" + " for the run.\n",
+            role=grogu_plans.ARCHITECT,
+            replace=True,
+        )
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE, as_user=True
+        )
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.finalize(plan_id, as_user=True)
+        self.assertIn("implementation", str(caught.exception))
+
+
+class TasteStaysOffTheInternetTests(unittest.TestCase):
+    """A finalized plan is committed in plaintext to a public repository."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN"):
+            os.environ.pop(variable, None)
+
+    def test_a_principle_the_user_stated_may_not_be_quoted_in_a_plan(self):
+        private = "Never put a destructive action behind a modal dialogue box"
+        with mock.patch.object(
+            grogu_plans, "_private_design_statements", lambda: [private]
+        ):
+            plan = self.store.create("Test plan")
+            for stage in plan["stages"]:
+                owner = sorted(grogu_plans.STAGE_WRITERS[stage])[0]
+                body = f"# {stage} body\n"
+                if stage == grogu_plans.IMPLEMENTATION:
+                    body += f"\nThe user's principle: {private}.\n"
+                self.store.write_stage(plan["id"], stage, body, role=owner)
+            for stage in plan["stages"]:
+                if stage in (grogu_plans.IMPLEMENTATION, grogu_plans.TESTING):
+                    self.store.set_stage_state(
+                        plan["id"], stage, grogu_plans.COMPLETE, as_user=True
+                    )
+            with self.assertRaises(grogu_plans.PlanError) as caught:
+                self.store.finalize(plan["id"], as_user=True)
+        self.assertIn("verbatim", str(caught.exception))
+
+    def test_an_adopted_public_set_is_not_private(self):
+        store = grogu_design.DesignStore(self.root / "design")
+        store.seed_apple()
+        self.assertEqual(store.private_statements(), [])
