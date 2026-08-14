@@ -236,6 +236,14 @@ converging is a failure arriving on a route that was already fixed once. And
 while an escalation is open the defects stay open too, because they are the
 evidence the architect was called in to look at.
 
+That rule has a blind spot on its own, so there is a second trigger. An engineer
+who never fixes anything never produces a bounce, and failures would pile up on
+one route forever with the round count sitting at zero. Six unresolved defects
+on a single route escalates as a stall. Six is twice the round cap and no better
+justified than that; it is the point past which the next failure report is not
+telling anybody anything new. Both caps are guesses that should be revised once
+real plans have run through the loop.
+
 ## The loops
 
 Three feedback paths, each ending somewhere specific:

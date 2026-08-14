@@ -149,6 +149,11 @@ DESIGN_VERDICTS = (PASS, CHANGES)
 
 DEFAULT_MAX_ROUNDS = 3
 DEFAULT_MAX_DEFECT_ROUNDS = 3
+# A backstop for the stall that produces no bounces: failures piling up on one
+# route that nobody is resolving. Twice the round cap, on the reasoning that
+# six open failures on a single route is past the point where the next one
+# tells anybody anything new.
+DEFAULT_MAX_PENDING_DEFECTS = 6
 SEAL_HEADER = "grogu-sealed:v1"
 
 GATE_IMPLEMENT = "implement"
@@ -180,6 +185,13 @@ def max_rounds() -> int:
 def max_defect_rounds() -> int:
     raw = os.environ.get("GROGU_PLAN_MAX_DEFECT_ROUNDS", "")
     return int(raw) if raw.isdigit() and int(raw) > 0 else DEFAULT_MAX_DEFECT_ROUNDS
+
+
+def max_pending_defects() -> int:
+    raw = os.environ.get("GROGU_PLAN_MAX_PENDING_DEFECTS", "")
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return DEFAULT_MAX_PENDING_DEFECTS
 
 
 def harness_friction_path() -> Path:
@@ -1872,8 +1884,22 @@ class PlanStore:
                 # longer converging. That is a question about the plan, and the
                 # architect owns the plan — so it goes up one level, not out to
                 # the user.
-                escalate = rounds >= cap and not manifest.get("escalated")
+                # Counting bounces alone has a blind spot the old rule did
+                # not: an engineer who never fixes anything never produces a
+                # bounce, so a tester could file failure after failure on the
+                # same route and the round count would sit at zero forever.
+                # That is a stall rather than a loop, but it needs the same
+                # person — nothing else in the pipeline will notice a plan
+                # that has simply stopped moving.
+                unresolved = [
+                    other
+                    for other in defects
+                    if other.get("route") == route and other.get("status") == PENDING
+                ]
+                stalled = len(unresolved) >= max_pending_defects()
+                escalate = (rounds >= cap or stalled) and not manifest.get("escalated")
                 defect["round"] = rounds
+                defect["stalled"] = stalled
             self._save(
                 manifest,
                 "defect_raised",
@@ -1896,7 +1922,13 @@ class PlanStore:
             amendment = self.amend(
                 plan_id,
                 claim=(
-                    f"Engineer and tester have exchanged {defect['round']} rounds "
+                    (
+                        f"{len(unresolved)} failures are open on the {route} route "
+                        f"with none resolved; the loop has stalled rather than "
+                        f"bounced. Latest: {report.strip()}"
+                    )
+                    if defect.get("stalled")
+                    else f"Engineer and tester have exchanged {defect['round']} rounds "
                     f"without converging. Latest: {report.strip()}"
                 ),
                 evidence=evidence,

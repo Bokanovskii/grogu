@@ -276,6 +276,53 @@ class PlanStoreTests(unittest.TestCase):
         self.assertFalse(manifest.get("escalated"))
         self.assertEqual(manifest["defect_rounds"], 0)
 
+    def test_a_stalled_engineer_escalates_even_though_nothing_bounces(self):
+        """Counting bounces has a blind spot: an engineer who never fixes
+        anything never produces one, so failures could pile up on a route
+        forever with the round count sitting at zero and nobody called in."""
+        plan_id = self.plan()
+        for index in range(grogu_plans.DEFAULT_MAX_PENDING_DEFECTS):
+            self.store.report_defect(
+                plan_id, report=f"still broken {index}",
+                route=grogu_plans.ROUTE_IMPLEMENTATION, raised_by="tester",
+            )
+        manifest = self.store.load(plan_id)
+        self.assertTrue(manifest.get("escalated"))
+        self.assertEqual(manifest["defect_rounds"], 0)
+        claim = self.store.summary(plan_id)["open_amendments"][0]["claim"]
+        self.assertIn("stalled rather than bounced", claim)
+
+    def test_a_stall_escalation_does_not_strand_the_defects_it_names(self):
+        """Auto-close is suspended while escalated so the architect keeps the
+        evidence. That must not mean the extra defects are stranded once the
+        escalation is settled."""
+        plan_id = self.plan()
+        for index in range(grogu_plans.DEFAULT_MAX_PENDING_DEFECTS):
+            self.store.report_defect(
+                plan_id, report=f"still broken {index}",
+                route=grogu_plans.ROUTE_IMPLEMENTATION, raised_by="tester",
+            )
+        escalation = self.store.summary(plan_id)["open_amendments"][0]
+        self.store.resolve_amendment(
+            plan_id, escalation["id"], outcome=grogu_plans.GUIDED,
+            reason="the retry helper must be idempotent", verified=True,
+            role=grogu_plans.ARCHITECT,
+        )
+        manifest = self.store.load(plan_id)
+        self.assertFalse(manifest.get("escalated"))
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+            role=grogu_plans.ENGINEER,
+        )
+        manifest = self.store.load(plan_id)
+        self.assertFalse(
+            [d for d in manifest["defects"] if d["status"] == grogu_plans.PENDING]
+        )
+        self.store.set_stage_state(
+            plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE,
+            role=grogu_plans.TESTER,
+        )
+
     def test_resolved_escalation_resets_the_loop_budget(self):
         plan_id = self.plan()
         self.store.report_defect(
