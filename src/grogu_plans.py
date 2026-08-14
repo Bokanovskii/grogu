@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import fcntl
+import uuid
 import fnmatch
 import json
 import os
@@ -113,6 +114,23 @@ ROUTE_PLAN = "plan"
 ROUTE_DESIGN = "design"
 DEFECT_ROUTES = (ROUTE_IMPLEMENTATION, ROUTE_TEST, ROUTE_PLAN, ROUTE_DESIGN)
 
+# Who may declare a stage finished. Writing a stage and completing it are
+# different acts: the architect writes the test plan, the tester is the one who
+# can say it has been carried out.
+STAGE_COMPLETERS = {
+    DESIGN: DESIGNER,
+    IMPLEMENTATION: ENGINEER,
+    TESTING: TESTER,
+    EVALUATION: TESTER,
+}
+
+# Completing a stage closes the defects that were waiting on that stage's owner.
+_STAGE_DEFECT_ROUTES = {
+    IMPLEMENTATION: (ROUTE_IMPLEMENTATION,),
+    TESTING: (ROUTE_TEST,),
+    DESIGN: (ROUTE_DESIGN,),
+}
+
 HARNESS_FRICTION_THRESHOLD = 3
 FRICTION_STALE_DAYS = 30
 
@@ -143,7 +161,14 @@ class PlanError(Exception):
 
 
 def now() -> str:
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    """UTC, to the microsecond.
+
+    The precision is load-bearing rather than decorative: the gates decide
+    whether steering predates a plan by comparing these strings, and a plan
+    created and steered in the same second would otherwise compare equal and
+    the note would be silently treated as already answered.
+    """
+    return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
 def max_rounds() -> int:
@@ -159,6 +184,34 @@ def max_defect_rounds() -> int:
 def harness_friction_path() -> Path:
     home = os.environ.get("GROGU_HOME", "").strip()
     return (Path(home) if home else Path.home() / ".grogu") / "friction.json"
+
+
+@contextmanager
+def harness_friction_lock() -> Iterator[None]:
+    """Serialise writes to the one file every repository's agents share.
+
+    This store is pooled across every repository precisely so that a complaint
+    hit in four places adds up, which also means it is the one file several
+    unrelated agents write at the same moment. Unlocked read-modify-write there
+    loses exactly the repetition that makes a cluster ripe.
+    """
+    path = harness_friction_path().with_name("friction.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        os.close(handle)
+
+
+def _write_harness_friction(payload: dict) -> None:
+    path = harness_friction_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf8")
+    os.replace(temporary, path)
 
 
 def harness_friction(*, include_resolved: bool = False) -> list:
@@ -277,15 +330,13 @@ def claim_harness_friction(cluster_id: str, *, reference: str) -> dict:
     if cluster_id not in clusters:
         raise PlanError(f"no friction cluster {cluster_id!r}")
     cluster = clusters[cluster_id]
-    path = harness_friction_path()
-    payload = json.loads(path.read_text(encoding="utf8"))
-    for entry in payload.get("entries", []):
-        if entry.get("seq") in cluster["seqs"]:
-            entry["claim"] = reference.strip()
-            entry["claimed_at"] = now()
-    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf8")
-    os.replace(temporary, path)
+    with harness_friction_lock():
+        payload = json.loads(harness_friction_path().read_text(encoding="utf8"))
+        for entry in payload.get("entries", []):
+            if entry.get("seq") in cluster["seqs"]:
+                entry["claim"] = reference.strip()
+                entry["claimed_at"] = now()
+        _write_harness_friction(payload)
     return {"cluster": cluster_id, "claim": reference.strip(), "notes": cluster["seqs"]}
 
 
@@ -293,22 +344,59 @@ def resolve_harness_friction(seq: int, *, resolution: str) -> bool:
     path = harness_friction_path()
     if not path.exists():
         return False
-    try:
-        payload = json.loads(path.read_text(encoding="utf8"))
-    except (OSError, ValueError):
-        return False
-    for entry in payload.get("entries", []):
-        if entry.get("seq") == seq and entry.get("status") == PENDING:
-            entry["status"] = "resolved"
-            entry["resolution"] = resolution.strip()
-            entry["resolved_at"] = now()
-            break
-    else:
-        return False
-    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf8")
-    os.replace(temporary, path)
+    with harness_friction_lock():
+        try:
+            payload = json.loads(path.read_text(encoding="utf8"))
+        except (OSError, ValueError):
+            return False
+        for entry in payload.get("entries", []):
+            if entry.get("seq") == seq and entry.get("status") == PENDING:
+                entry["status"] = "resolved"
+                entry["resolution"] = resolution.strip()
+                entry["resolved_at"] = now()
+                break
+        else:
+            return False
+        _write_harness_friction(payload)
     return True
+
+
+def primary_worktree(root: Path) -> Path:
+    """The main working tree of `root`'s repository, or `root` itself.
+
+    Plan state has to be one thing per repository. The pipeline's advertised way
+    to parallelise is one worktree per workstream, and `.grogu/state` is
+    gitignored, so a per-worktree store would give each agent a private copy of
+    the manifest: two engineers would take separate locks on separate files,
+    both write, and the defects, reviews and steering acks of whichever wrote
+    first would simply vanish. Resolving to the main worktree means every agent
+    in every worktree contends for the same lock over the same file, which is
+    what the locking was for.
+
+    `--git-common-dir` is the shared `.git` for a linked worktree, so its parent
+    is the main checkout. In a plain clone it is already `<root>/.git`.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return root
+    if result.returncode != 0:
+        return root
+    common = result.stdout.strip()
+    if not common:
+        return root
+    candidate = Path(common).parent
+    # A bare repository has no working tree to put plans in.
+    try:
+        return candidate.resolve() if candidate.is_dir() else root
+    except OSError:
+        return root
 
 
 def head_commit(root: Optional[Path] = None) -> str:
@@ -415,10 +503,26 @@ _SOFTWARE_PATTERNS = (
 _PERSONAL_PATTERNS = (
     r"\b(trip|flight|flights|hotel|airbnb|itinerary|vacation|holiday)\b",
     r"\b(restaurant|dinner|lunch|recipe|groceries|cook)\b",
-    r"\b(email|e-mail|text|texted|imessage|message[ds]?|reply to|draft (?:a|an) (?:note|email|reply))\b",
+    # Communication verbs are the dangerous ones: "message the architect",
+    # "email service", "text field" and "reply to the review comment" are all
+    # software, so these require a personal correspondent or an actual inbox
+    # rather than firing on the verb alone.
+    r"\bimessage\b",
+    r"\b(?:email|message|text|call|remind)\s+(?:my|his|her|their|mom|dad|wife|"
+    r"husband|partner|landlord|doctor|dentist|him|her|them)\b",
+    r"\b(?:check|read|search|go through)\s+(?:my\s+)?(?:email|inbox|messages|texts|mail)\b",
+    r"\breply to (?:my|his|her|their|the last)\s+(?:email|message|text)\b",
+    r"\bdraft (?:a|an) (?:note|email|reply)\b",
     r"\b(landlord|dentist|doctor|appointment|insurance|rent|taxes)\b",
     r"\b(gym|workout|sleep|calendar|errand|birthday|gift)\b",
-    r"\b(buy|purchase|price|cheapest|under \$?\d+|headphones|mattress)\b",
+    # "purchase flow" and "pricing page" are software; deciding what to buy is
+    # not, so this needs the shape of a shopping question.
+    r"\b(?:should i buy|where (?:can|should) i buy|cheapest|best price on)\b",
+    r"\bunder \$\d+\b|\bunder \d+ dollars\b",
+    r"\b(?:best|top|recommend(?:ations?)?)\b.{0,40}\b(?:headphones|mattress|laptop|"
+    r"phone|chair|desk|monitor|camera|speakers?|tv)\b",
+    r"\b(?:buy|purchase)\s+(?:a|an|some|me)\b.*\b(?:headphones|mattress|laptop|"
+    r"phone|chair|desk|monitor|car|gift)\b",
     r"\bmy (?:week|day|schedule|budget|finances|wife|kid|dog|cat)\b",
 )
 
@@ -900,7 +1004,7 @@ class PlanStore:
     """Plan artifacts, the stage gates, and the review loop for one repository."""
 
     def __init__(self, root: Optional[Path] = None) -> None:
-        self.root = Path(root or repository_root()).expanduser().resolve()
+        self.root = primary_worktree(Path(root or repository_root()).expanduser().resolve())
         self.store = self.root / STORE_DIRNAME
         self.plans_dir = self.store / PLANS_DIRNAME
         self.state_dir = self.store / "state"
@@ -1112,6 +1216,25 @@ class PlanStore:
             manifest.setdefault("design_review", None)
             if stage == DESIGN and manifest.get("design_review"):
                 manifest["design_review"] = None
+            if role == ARCHITECT:
+                # The architect rewriting a stage *is* the act of folding
+                # steering in. Without this, `--requires-replan` leaves the plan
+                # in needs_review until a human approves it — which the docs
+                # never claimed and which strands every autopilot run.
+                manifest["steering_folded_at"] = now()
+                manifest["steering_folded_seq"] = max(
+                    [note.get("seq", 0) for note in manifest.get("steering", [])] or [0]
+                )
+                if manifest.get("status") == NEEDS_REVIEW:
+                    if manifest.get("review_required"):
+                        # The user wanted to see this plan. They steered it, so
+                        # they see it again.
+                        manifest["approved_at"] = ""
+                        manifest["status"] = DRAFT
+                    else:
+                        manifest["status"] = (
+                            APPROVED if manifest.get("approved_at") else DRAFT
+                        )
             manifest = self._save(manifest, "stage_written", stage=stage, bytes=len(body))
             manifest["warnings"] = (
                 [
@@ -1216,12 +1339,62 @@ class PlanStore:
     def set_stage_state(self, plan_id: str, stage: str, state: str, *, note: str = "") -> dict:
         if state not in STAGE_STATES:
             raise PlanError(f"unknown stage state {state!r}")
+        role = current_role()
+        owner = STAGE_COMPLETERS.get(stage)
+        # Marking the test plan complete is the tester's judgement to make. An
+        # engineer who can make it can then finalize the plan and read the
+        # sealed assertions, which turns the seal into a formality.
+        if role and owner and role not in (owner, ARCHITECT):
+            raise PlanError(
+                f"the {role} may not change the {stage} stage state; that belongs "
+                f"to the {owner}"
+            )
         with self.locked():
             manifest = self.load(plan_id)
             if stage not in manifest.get("stages", []):
                 raise PlanError(f"plan {plan_id} has no {stage} stage")
             manifest.setdefault("stage_state", {})[stage] = state
-            return self._save(manifest, "stage_state", stage=stage, state=state, note=note)
+            resolved: list = []
+            if state == COMPLETE:
+                resolved = self._close_defects_for(
+                    manifest,
+                    routes=_STAGE_DEFECT_ROUTES.get(stage, ()),
+                    reason=f"{stage} was completed again after the fix",
+                )
+                if stage == TESTING:
+                    # The loop converged: tests were run to completion rather
+                    # than bouncing. Counting rounds past this point would
+                    # escalate healthy work that simply had several bugs.
+                    manifest["defect_rounds"] = 0
+            return self._save(
+                manifest,
+                "stage_state",
+                stage=stage,
+                state=state,
+                note=note,
+                resolved_defects=", ".join(resolved) or None,
+            )
+
+    @staticmethod
+    def _close_defects_for(manifest: dict, *, routes: tuple, reason: str) -> list:
+        """Resolve open defects on `routes`, returning the ids closed.
+
+        A defect has to be able to close, or the first real test failure shuts
+        the gate for good and the pipeline dies exactly when it is working. The
+        fix landing is the signal, and the tester re-running is the check: a
+        defect closed by an engineer who did not actually fix it comes straight
+        back as a new one.
+        """
+        closed = []
+        for defect in manifest.get("defects", []):
+            if defect.get("status") == PENDING and defect.get("route") in routes:
+                defect["status"] = RESOLVED
+                defect["resolved_at"] = now()
+                defect["resolved_by"] = actor()
+                defect["resolution"] = reason
+                defect["auto_resolved"] = True
+                closed.append(defect.get("id", "?"))
+        return closed
 
     # -- steering ----------------------------------------------------------
 
@@ -1317,8 +1490,10 @@ class PlanStore:
                 manifest.get("steering_acked", {}).get(role, 0) if role != "all" else 0
             )
             result["plan"] = visible(manifest.get("steering", []), plan_acked)
+            folded = manifest.get("steering_folded_seq", 0)
             result["requires_replan"] = any(
-                note.get("requires_replan") for note in result["plan"]
+                note.get("requires_replan") and note.get("seq", 0) > folded
+                for note in result["plan"]
             )
         return result
 
@@ -1446,6 +1621,19 @@ class PlanStore:
                 # gate before the stage is rewritten sends the engineer back at
                 # the same known-wrong text with official approval.
                 amendment["incorporated"] = False
+            # The defect that raised this amendment has now had its answer,
+            # whichever way it went. Leaving it open blocks the implement gate
+            # on a question the architect has already settled.
+            for defect in manifest.get("defects", []):
+                if (
+                    defect.get("amendment") == amendment_id
+                    and defect.get("status") == PENDING
+                ):
+                    defect["status"] = RESOLVED
+                    defect["resolved_at"] = now()
+                    defect["resolved_by"] = actor()
+                    defect["resolution"] = f"amendment {amendment_id} {outcome}: {reason.strip()}"
+                    defect["auto_resolved"] = True
             still_open = any(
                 other.get("status") == PENDING for other in manifest["amendments"]
             )
@@ -1781,6 +1969,28 @@ class PlanStore:
                 "diff alone checks that the code looks right, not that the "
                 "interface does"
             )
+        if verdict == PASS:
+            # An unchecked path is an assurance with a filename attached. The
+            # whole point of this gate is that somebody looked, so the artifact
+            # they looked at has to exist and have something in it.
+            missing = []
+            for item in evidence:
+                candidate = Path(item.strip()).expanduser()
+                if not candidate.is_absolute():
+                    candidate = self.root / candidate
+                try:
+                    if not candidate.is_file() or candidate.stat().st_size == 0:
+                        missing.append(item)
+                except OSError:
+                    missing.append(item)
+            if missing:
+                raise PlanError(
+                    "design evidence not found or empty: "
+                    + ", ".join(missing)
+                    + ". Capture the interface first (the `browser-validate` "
+                    "skill for a visual surface, redirected output for a "
+                    "terminal one) and point at the file you actually produced."
+                )
         with self.locked():
             manifest = self.load(plan_id)
             if DESIGN not in manifest.get("stages", []):
@@ -1871,11 +2081,15 @@ class PlanStore:
             )
         if stage_gate == GATE_TEST:
             unreviewed = [
-                stream["name"]
+                f"{stream['name']} ({stream['review']})"
                 for stream in manifest.get("workstreams", [])
                 if stream.get("review")
                 and not any(
                     review.get("verdict") == PASS
+                    # The kind has to match. A rubber-duck pass does not
+                    # discharge a required security review; accepting any pass
+                    # turns a specific instruction into a formality.
+                    and review.get("kind") == stream["review"]
                     for review in stream.get("reviews", [])
                 )
             ]
@@ -1926,13 +2140,19 @@ class PlanStore:
                 )
 
         # Repository-wide binding steering outlives any one plan, so a plan
-        # created before it was recorded must still answer for it.
+        # created before it was recorded must still answer for it. The
+        # comparison is against the later of "when this plan was written" and
+        # "when the architect last folded steering in" — a note the architect
+        # has already answered must stop blocking, or one repository-wide note
+        # freezes every plan in the repository forever.
+        watermark = max(
+            manifest.get("created_at", ""), manifest.get("steering_folded_at", "")
+        )
         unread = self.steering(role="all", plan_id=plan_id, unread=False)
         binding_repo = [
             note
             for note in unread.get("repository", [])
-            if note.get("requires_replan")
-            and note.get("at", "") > manifest.get("planned_at", manifest.get("at", ""))
+            if note.get("requires_replan") and note.get("at", "") > watermark
         ]
         if binding_repo:
             blockers.append(
@@ -2008,7 +2228,18 @@ class PlanStore:
         work is in flight. Once the work is done that reason is gone, and the
         reviewer wants all three plans in plain Markdown next to the diff they
         justify.
+
+        Only the architect or the user may do it. Finalizing is the one
+        operation that turns the sealed stages into plaintext on disk, so an
+        engineer who can call it can read the assertions it was meant not to
+        see — which would make the seal a formality rather than a boundary.
         """
+        role = current_role()
+        if role and role != ARCHITECT:
+            raise PlanError(
+                f"the {role} may not finalize a plan: finalizing unseals the "
+                "testing and evaluation stages. Ask the architect."
+            )
         with self.locked():
             manifest = self.load(plan_id)
             blockers = []
@@ -2245,6 +2476,10 @@ class PlanStore:
             return entry
 
     def _note_harness_friction(self, note: str, *, plan_id: str, role: str) -> dict:
+        with harness_friction_lock():
+            return self._append_harness_friction(note, plan_id=plan_id, role=role)
+
+    def _append_harness_friction(self, note: str, *, plan_id: str, role: str) -> dict:
         path = harness_friction_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {}
@@ -2266,9 +2501,7 @@ class PlanStore:
             "status": PENDING,
         }
         entries.append(entry)
-        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf8")
-        os.replace(temporary, path)
+        _write_harness_friction(payload)
         return entry
 
     def friction(self, *, include_resolved: bool = False) -> dict:

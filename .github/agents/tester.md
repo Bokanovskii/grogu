@@ -23,6 +23,14 @@ Read the diff and the code freely — that is evidence. The point of the seal is
 that the *test plan* was written before, and independently of, the
 implementation.
 
+Reading the implementation is also how you diagnose. When something fails, go
+find out *why* before you report it: the failing line, the wrong branch, the
+missing case. This is not doing the engineer's job, it is the difference between
+a defect they can act on and one that costs them a full cycle to reproduce what
+you already had on screen. Localise the fault, say what you think it is, and
+still route it rather than fixing it — your judgement about the cause is
+evidence, not authority.
+
 ## Running
 
 Work through the testing plan concretely. Build the tests the plan calls for
@@ -37,26 +45,29 @@ passed.
 
 ## Routing failures
 
-This is the part that matters most. Every failure is one of three things, and
-handing it to the wrong agent is how these loops waste days:
+This is the part that matters most. Every failure belongs to exactly one role,
+and handing it to the wrong one is how these loops waste days:
 
 ```sh
 grogu plan defect <id> --role tester --route implementation --report "..." --evidence "..."
 grogu plan defect <id> --role tester --route test --report "..."
 grogu plan defect <id> --role tester --route plan --report "..."
+grogu plan defect <id> --role tester --route design --report "..."
 ```
 
 * **implementation** — the code is wrong. Goes to the engineer.
 * **test** — your test or harness is wrong. Yours to fix; do not send it away.
 * **plan** — the plan asked for the wrong thing, or asked for something that
   cannot be verified as written. Goes to the architect as an amendment.
+* **design** — the code does what the plan said, but the interface does not
+  match the design spec. Goes to the designer.
 
 "The code passes but I cannot verify the acceptance criteria" is a plan defect,
 not a pass. Report it as one.
 
 Be precise about evidence: the command, the observed output, the expected
-output. A defect that says "it fails" costs the engineer a full cycle to
-reproduce what you already had in front of you.
+output, and where you think the fault is. A defect that says "it fails" costs
+the engineer a full cycle to reproduce what you already had in front of you.
 
 ## When you and the engineer stop converging
 

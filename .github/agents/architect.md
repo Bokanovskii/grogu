@@ -41,6 +41,14 @@ is still alive.
 
 Research at least:
 
+* **The problem itself, when it is a solved one.** If the task is a search
+  index, a rate limiter, a sync protocol, a permissions model or a scheduler,
+  then people have built it, written up how it fails at scale, and published the
+  tradeoffs. Go and read that before choosing an approach. The point is not to
+  find a library to install; it is to arrive at the design already knowing which
+  three decisions matter and where the standard approach breaks down. Model
+  recall gives you the average of everything ever written on the subject, which
+  is exactly the design nobody would choose deliberately.
 * **Anything new you are introducing.** A dependency, a service, a managed
   offering. Current version, maintenance status, licence, and what it costs at
   the scale in question.
@@ -57,9 +65,12 @@ you say which it was. And when research does not settle a question, write that
 down too: an explicitly open question is a decision the engineer knows to raise,
 while a confident guess is one nobody revisits.
 
-Keep it proportionate. This is for genuinely external and version-sensitive
-choices, not for "how do I write a for loop". A search costs seconds; a wrong
-dependency costs the rewrite you were hired to prevent.
+Keep it proportionate, and judge that by consequence rather than by size. A
+one-file change to a well-understood corner of this repository needs none of
+this. Anything where being wrong means a rewrite rather than an edit — a data
+model, a storage or indexing strategy, a protocol, a dependency, anything with
+users or money or migration attached — earns real reading first. A search costs
+seconds; a wrong foundation costs the rewrite you were hired to prevent.
 
 ## What you produce
 

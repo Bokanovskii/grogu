@@ -64,12 +64,26 @@ the quota that changed, the thing the platform now does for free. The failure is
 quiet, because a stale recommendation is written with exactly the same
 confidence as a current one.
 
+The larger case is not dependencies at all. Most substantial work — a search
+index, a rate limiter, a sync protocol, a permissions model — is a problem other
+people have already solved, failed at publicly, and written up. A model asked to
+design one from recall produces something like the average of everything written
+about it, which reads as competent and quietly omits the two or three decisions
+that actually determine whether it works at scale. Reading the current state of
+the art first is the difference between a design that has considered the
+tradeoffs and one that has merely reproduced the consensus shape.
+
 So the architect looks things up before choosing them — `web_search` for the
-current landscape, `web_fetch` for the vendor's own documentation and
-changelog, the GitHub tools for whether a project is still maintained — and
-records the source and the date in the plan. The engineer inherits those
-decisions and cannot otherwise distinguish a researched choice from a
-remembered one.
+current landscape and for how the problem is being solved now, `web_fetch` for
+the vendor's own documentation and changelog, the GitHub tools for whether a
+project is still maintained — and records the source and the date in the plan.
+The engineer inherits those decisions and cannot otherwise distinguish a
+researched choice from a remembered one.
+
+Proportionality is judged by consequence, not size: a change that is wrong by an
+edit needs none of this, and a change that is wrong by a rewrite — storage,
+protocol, data model, anything with migration or money attached — earns real
+reading first.
 
 This is not fully enforceable; nothing on disk can prove a search happened.
 What is checkable is the trace it leaves, so writing an implementation plan

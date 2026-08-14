@@ -24,6 +24,12 @@ class PlanStoreTests(unittest.TestCase):
         for variable in ("GROGU_ROLE", "GROGU_PLAN"):
             os.environ.pop(variable, None)
 
+    def _evidence(self, name="shot.png"):
+        """A real captured artifact: a design pass will not accept a filename."""
+        path = self.root / name
+        path.write_bytes(b"\x89PNG\r\n\x1a\n captured")
+        return str(path)
+
     def plan(self, **kwargs):
         plan = self.store.create("Test plan", **kwargs)
         for stage in plan["stages"]:
@@ -820,7 +826,7 @@ class PlanStoreTests(unittest.TestCase):
         self.store.design_review(
             plan_id,
             grogu_plans.PASS,
-            evidence=["/tmp/empty.png"],
+            evidence=[self._evidence()],
             role=grogu_plans.DESIGNER,
         )
         self.assertTrue(self.store.gate(plan_id, grogu_plans.GATE_TEST)["allowed"])
@@ -893,3 +899,288 @@ class PlanStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LoopClosureTests(unittest.TestCase):
+    """Regressions for the ways the pipeline used to jam and never recover.
+
+    Each of these reproduces a state the pipeline could reach in an ordinary
+    run and then never leave, which for an unsupervised system is worse than a
+    crash: it burns tokens looking busy.
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN"):
+            os.environ.pop(variable, None)
+
+    def _role(self, role):
+        os.environ["GROGU_ROLE"] = role
+        self.addCleanup(os.environ.pop, "GROGU_ROLE", None)
+
+    def plan(self, **kwargs):
+        plan = self.store.create("Test plan", **kwargs)
+        for stage in plan["stages"]:
+            owner = sorted(grogu_plans.STAGE_WRITERS[stage])[0]
+            body = (
+                valid_design_spec()
+                if stage == grogu_plans.DESIGN
+                else f"# {stage} body\n"
+            )
+            self.store.write_stage(plan["id"], stage, body, role=owner)
+        return plan["id"]
+
+    def test_a_fixed_defect_reopens_the_test_gate(self):
+        plan_id = self.plan()
+        self.store.set_stage_state(plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE)
+        self.store.report_defect(
+            plan_id, report="the button does nothing", route="implementation", raised_by="tester"
+        )
+        self.assertFalse(self.store.gate(plan_id, grogu_plans.GATE_TEST)["allowed"])
+        # the engineer fixes it and says so the only way it is told to
+        self.store.set_stage_state(plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE)
+        gate = self.store.gate(plan_id, grogu_plans.GATE_TEST)
+        self.assertTrue(gate["allowed"], gate["blockers"])
+
+    def test_a_resolved_plan_defect_reopens_the_implement_gate(self):
+        plan_id = self.plan()
+        defect = self.store.report_defect(
+            plan_id,
+            report="the acceptance criteria cannot be verified",
+            route="plan",
+            raised_by="tester",
+        )
+        self.assertFalse(self.store.gate(plan_id, grogu_plans.GATE_IMPLEMENT)["allowed"])
+        self.store.resolve_amendment(
+            plan_id,
+            defect["amendment"],
+            outcome=grogu_plans.ACCEPTED,
+            reason="checked the code; the criteria were wrong",
+            verified=True,
+            role=grogu_plans.ARCHITECT,
+        )
+        self.store.write_stage(
+            plan_id, grogu_plans.IMPLEMENTATION, "# revised\n", role=grogu_plans.ARCHITECT
+        )
+        gate = self.store.gate(plan_id, grogu_plans.GATE_IMPLEMENT)
+        self.assertTrue(gate["allowed"], gate["blockers"])
+
+    def test_one_repository_wide_note_does_not_freeze_every_future_plan(self):
+        self.store.steer("always use the system font", requires_replan=True)
+        plan_id = self.plan()
+        gate = self.store.gate(plan_id, grogu_plans.GATE_IMPLEMENT)
+        self.assertTrue(gate["allowed"], gate["blockers"])
+
+    def test_binding_repository_steering_blocks_only_until_it_is_folded_in(self):
+        plan_id = self.plan()
+        self.store.steer("switch to the new client", requires_replan=True)
+        self.assertFalse(self.store.gate(plan_id, grogu_plans.GATE_IMPLEMENT)["allowed"])
+        self.store.write_stage(
+            plan_id, grogu_plans.IMPLEMENTATION, "# folded in\n", role=grogu_plans.ARCHITECT
+        )
+        gate = self.store.gate(plan_id, grogu_plans.GATE_IMPLEMENT)
+        self.assertTrue(gate["allowed"], gate["blockers"])
+
+    def test_the_architect_revising_clears_needs_review_without_a_human(self):
+        plan_id = self.plan()
+        self.store.steer("use a sheet, not a dialog", plan_id=plan_id, requires_replan=True)
+        self.assertEqual(self.store.load(plan_id)["status"], grogu_plans.NEEDS_REVIEW)
+        self.store.write_stage(
+            plan_id, grogu_plans.IMPLEMENTATION, "# revised\n", role=grogu_plans.ARCHITECT
+        )
+        gate = self.store.gate(plan_id, grogu_plans.GATE_IMPLEMENT)
+        self.assertTrue(gate["allowed"], gate["blockers"])
+
+    def test_a_plan_the_user_asked_for_still_returns_to_them_after_steering(self):
+        plan_id = self.plan(review_required=True)
+        self.store.approve(plan_id)
+        self.store.steer("change the shape", plan_id=plan_id, requires_replan=True)
+        self.store.write_stage(
+            plan_id, grogu_plans.IMPLEMENTATION, "# revised\n", role=grogu_plans.ARCHITECT
+        )
+        gate = self.store.gate(plan_id, grogu_plans.GATE_IMPLEMENT)
+        self.assertFalse(gate["allowed"])
+        self.assertTrue(any("approve" in blocker for blocker in gate["blockers"]))
+
+    def test_the_engineer_cannot_unseal_the_test_plan_by_finishing_it(self):
+        plan_id = self.plan()
+        self._role(grogu_plans.ENGINEER)
+        self.store.set_stage_state(plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE)
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.set_stage_state(plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE)
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.finalize(plan_id, force=True)
+        self.assertTrue((self.store.plan_dir(plan_id) / "testing.sealed").exists())
+
+    def test_a_required_security_review_is_not_satisfied_by_any_other_review(self):
+        plan_id = self.plan()
+        self.store.add_workstream(
+            plan_id, name="auth", paths=["src/auth/**"], review="security-review"
+        )
+        self.store.set_stage_state(plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE)
+        self.store.record_review(
+            plan_id, workstream="auth", kind="rubber-duck", verdict=grogu_plans.PASS, findings="fine"
+        )
+        self.assertFalse(self.store.gate(plan_id, grogu_plans.GATE_TEST)["allowed"])
+        self.store.record_review(
+            plan_id, workstream="auth", kind="security-review", verdict=grogu_plans.PASS, findings="fine"
+        )
+        gate = self.store.gate(plan_id, grogu_plans.GATE_TEST)
+        self.assertTrue(gate["allowed"], gate["blockers"])
+
+    def test_several_fixed_bugs_do_not_escalate_a_healthy_loop(self):
+        plan_id = self.plan()
+        for index in range(grogu_plans.DEFAULT_MAX_DEFECT_ROUNDS):
+            self.store.set_stage_state(
+                plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+            )
+            self.store.report_defect(
+                plan_id, report=f"bug {index}", route="implementation", raised_by="tester"
+            )
+            self.store.set_stage_state(
+                plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+            )
+            self.store.set_stage_state(plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE)
+        self.assertFalse(self.store.load(plan_id).get("escalated"))
+
+    def test_agents_in_two_worktrees_share_one_plan_store(self):
+        import subprocess
+
+        def git(*arguments, cwd):
+            subprocess.run(["git", *arguments], cwd=str(cwd), check=True,
+                           capture_output=True)
+
+        main = self.root / "main"
+        main.mkdir()
+        git("init", "-q", cwd=main)
+        git("config", "user.email", "t@example.com", cwd=main)
+        git("config", "user.name", "T", cwd=main)
+        (main / "README").write_text("x", encoding="utf8")
+        git("add", "-A", cwd=main)
+        git("commit", "-qm", "init", cwd=main)
+        linked = self.root / "wt"
+        git("worktree", "add", "-q", str(linked), "-b", "feature", cwd=main)
+
+        primary = grogu_plans.PlanStore(main)
+        secondary = grogu_plans.PlanStore(linked)
+        self.assertEqual(primary.root, secondary.root)
+        plan = primary.create("Shared")
+        self.assertTrue(any(p["id"] == plan["id"] for p in secondary.list_plans()))
+
+
+class TriageScopeTests(unittest.TestCase):
+    """Software work must not be mistaken for life admin, or vice versa."""
+
+    SOFTWARE = (
+        "message the architect about the plan",
+        "add a purchase flow to the checkout page",
+        "fix the text field validation",
+        "reply to the review comment on the PR",
+        "build an email service for notifications",
+        "update the pricing page copy",
+        "a plan for the new indexer",
+    )
+    PERSONAL = (
+        "plan a trip to japan",
+        "email my landlord about the rent",
+        "check my inbox for the invoice",
+        "remind my wife about dinner",
+        "draft a note to the dentist",
+    )
+
+    def test_software_requests_reach_the_pipeline(self):
+        for prompt in self.SOFTWARE:
+            with self.subTest(prompt=prompt):
+                self.assertTrue(grogu_plans.is_software_work(prompt))
+
+    def test_personal_requests_bypass_the_pipeline(self):
+        for prompt in self.PERSONAL:
+            with self.subTest(prompt=prompt):
+                self.assertFalse(grogu_plans.is_software_work(prompt))
+                self.assertFalse(grogu_plans.triage(prompt)["software"])
+
+
+class HarnessFrictionConcurrencyTests(unittest.TestCase):
+    def test_concurrent_notes_are_not_lost(self):
+        import subprocess
+
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        repo = tempfile.TemporaryDirectory()
+        self.addCleanup(repo.cleanup)
+        script = (
+            "import sys;"
+            f"sys.path.insert(0, {str(ROOT / 'src')!r});"
+            "import grogu_plans;"
+            f"grogu_plans.PlanStore({repo.name!r}).note_friction("
+            "sys.argv[1], role='engineer', target='harness')"
+        )
+        environment = dict(os.environ, GROGU_HOME=home.name)
+        processes = [
+            subprocess.Popen(
+                [sys.executable, "-c", script, f"note {index}"], env=environment
+            )
+            for index in range(16)
+        ]
+        for process in processes:
+            self.assertEqual(process.wait(), 0)
+        os.environ["GROGU_HOME"] = home.name
+        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        self.assertEqual(len(grogu_plans.harness_friction()), 16)
+
+
+class DesignEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN"):
+            os.environ.pop(variable, None)
+
+    def _plan(self):
+        plan = self.store.create("Test plan", design=True)
+        for stage in plan["stages"]:
+            owner = sorted(grogu_plans.STAGE_WRITERS[stage])[0]
+            body = (
+                valid_design_spec()
+                if stage == grogu_plans.DESIGN
+                else f"# {stage} body\n"
+            )
+            self.store.write_stage(plan["id"], stage, body, role=owner)
+        self.store.set_stage_state(
+            plan["id"], grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+        )
+        return plan["id"]
+
+    def test_a_pass_needs_evidence_that_exists(self):
+        plan_id = self._plan()
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.design_review(
+                plan_id, grogu_plans.PASS,
+                evidence=["never-captured.png"], role=grogu_plans.DESIGNER,
+            )
+
+    def test_an_empty_screenshot_is_not_evidence(self):
+        plan_id = self._plan()
+        shot = self.root / "shot.png"
+        shot.write_bytes(b"")
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.design_review(
+                plan_id, grogu_plans.PASS, evidence=[str(shot)],
+                role=grogu_plans.DESIGNER,
+            )
+
+    def test_a_real_capture_is_accepted(self):
+        plan_id = self._plan()
+        shot = self.root / "shot.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n captured")
+        self.store.design_review(
+            plan_id, grogu_plans.PASS, evidence=[str(shot)],
+            role=grogu_plans.DESIGNER,
+        )
+        review = self.store.load(plan_id)["design_review"]
+        self.assertEqual(review["verdict"], grogu_plans.PASS)
