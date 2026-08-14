@@ -210,6 +210,19 @@ class SkillStoreTests(unittest.TestCase):
             ["narrow-first"],
         )
 
+    def test_a_tampered_name_cannot_write_outside_the_repository(self) -> None:
+        """The name is validated at propose time and then sits in a JSON file."""
+        import json
+
+        entry = self.propose("legit", "A real lesson about proving changes narrowly.")
+        store = Path(self.home.name) / "skills.json"
+        payload = json.loads(store.read_text(encoding="utf8"))
+        payload["entries"][0]["name"] = "../../../../escaped"
+        store.write_text(json.dumps(payload), encoding="utf8")
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.accept(entry["seq"], root=Path(self.repo.name))
+        self.assertFalse((Path(self.repo.name).parent / "escaped").exists())
+
     def test_accepting_twice_is_refused(self) -> None:
         entry = self.propose("narrow-first", "Prove a change with the narrowest test first.")
         grogu_skills.accept(entry["seq"], root=Path(self.repo.name))

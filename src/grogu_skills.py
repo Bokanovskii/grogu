@@ -349,8 +349,19 @@ def accept(seq: int, *, root: Path, note: str = "") -> dict:
             raise SkillError(
                 f"skill proposal #{seq} was already {entry.get('status')}"
             )
+        # Re-validated here, not just at propose time. Between the two the
+        # name has been through a plain JSON file on disk that anything can
+        # edit, and this is the step that turns a name into a filesystem path:
+        # a `../` that got in by any route would write outside the repository.
+        if not NAME_PATTERN.match(entry.get("name", "")):
+            raise SkillError(
+                f"skill proposal #{seq} has a name that is not a directory "
+                f"name ({entry.get('name')!r}); refusing to install it"
+            )
         directory = Path(root) / SKILLS_DIRNAME / entry["name"]
         manifest = directory / "SKILL.md"
+        if not manifest.resolve().parent.parent == (Path(root) / SKILLS_DIRNAME).resolve():
+            raise SkillError(f"refusing to install outside {SKILLS_DIRNAME}")
         if manifest.exists() and not entry.get("amends"):
             raise SkillError(
                 f"{manifest} already exists and this proposal was not written "

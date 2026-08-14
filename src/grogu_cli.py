@@ -1595,7 +1595,20 @@ def _read_body(args: argparse.Namespace) -> str:
     if getattr(args, "file", None):
         if args.file == "-":
             return sys.stdin.read()
-        return Path(args.file).expanduser().read_text(encoding="utf8")
+        path = Path(args.file).expanduser()
+        # An agent that mistypes the path to a plan stage it spent ten minutes
+        # writing got a Python traceback, which reads like the harness broke
+        # rather than like the file is not there.
+        try:
+            return path.read_text(encoding="utf8")
+        except IsADirectoryError:
+            raise grogu_plans.PlanError(f"{path} is a directory, not a file")
+        except FileNotFoundError:
+            raise grogu_plans.PlanError(f"no such file: {path}")
+        except OSError as error:
+            raise grogu_plans.PlanError(f"cannot read {path}: {error}")
+        except UnicodeDecodeError:
+            raise grogu_plans.PlanError(f"{path} is not text")
     return args.body or ""
 
 
@@ -2720,6 +2733,24 @@ def skill_list(args: argparse.Namespace) -> int:
 
 def skill_propose(args: argparse.Namespace) -> int:
     root = _skill_repo(args)
+    # `_read_body` silently prefers `--file`, which elsewhere in this CLI is
+    # already treated as a bug worth an error rather than a guess: an agent
+    # that passed both wrote one of them for nothing and is not told which.
+    if args.file and args.body:
+        print(
+            "grogu: --body and --file both given; the skill body comes from "
+            "one of them, so name it once",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.file and not args.body:
+        print(
+            "grogu: no skill body. Pass --body \"...\", or --file <path> "
+            "(or --file - to read it from stdin). The body is the procedure: "
+            "what to do, in what order, and how the result is checked.",
+            file=sys.stderr,
+        )
+        return 2
     body = _read_body(args)
     entry = grogu_skills.propose(
         args.name,
