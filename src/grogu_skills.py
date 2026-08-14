@@ -199,9 +199,16 @@ def _read() -> dict:
             raise SkillError(
                 f"entry #{seq} in {path} has echoes that are not records"
             )
-        if not isinstance(entry.get("overrode", []), list):
+        if not isinstance(entry.get("overrode", []), list) or any(
+            not isinstance(item, str) for item in entry.get("overrode", [])
+        ):
             raise SkillError(
-                f"entry #{seq} in {path} has an overrode that is not a list"
+                f"entry #{seq} in {path} has an overrode that is not a list of "
+                "names"
+            )
+        if not isinstance(entry.get("contested", {}) or {}, dict):
+            raise SkillError(
+                f"entry #{seq} in {path} has a contested that is not a record"
             )
     return payload
 
@@ -292,6 +299,13 @@ def installed_skills(root: Path) -> list:
     for entry in sorted(directory.iterdir()):
         manifest = entry / "SKILL.md"
         if not manifest.is_file():
+            continue
+        # A directory here is a name an agent may be told to cite, and the name
+        # travels into a pooled store that is reviewed in public. Anything that
+        # is not a skill name is not a skill: a probe made a directory called
+        # `ghp_...` and cited it, which put the token-shaped string into the
+        # record intact.
+        if not NAME_PATTERN.match(entry.name):
             continue
         text = manifest.read_text(encoding="utf8", errors="replace")
         found.append(
@@ -431,7 +445,11 @@ def propose(
     what was overridden and can disagree.
     """
     name = (name or "").strip().lower()
-    overrode = [str(item).strip() for item in (overrode or []) if str(item).strip()]
+    overrode = [
+        grogu_privacy.redact(str(item).strip())
+        for item in (overrode or [])
+        if str(item).strip()
+    ]
     liked = list(dict.fromkeys(int(seq) for seq in (liked or [])))
     # Measured before redaction, not after. The scan reads every byte, so
     # checking the length afterwards meant an oversized paste was rejected only
@@ -576,7 +594,7 @@ def link(seq: int, other: int) -> dict:
         payload = _read()
         entries = payload.setdefault("entries", [])
         subject = _find(seq, entries)
-        _check_links([other], entries)
+        _check_links([seq, other], entries)
         for one, two in ((subject, other), (_find(other, entries), seq)):
             links = one.setdefault("related_to", [])
             if two not in links:

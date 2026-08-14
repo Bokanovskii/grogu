@@ -140,9 +140,12 @@ def sessions(
     """
     rows: dict = {}
     for entry in activity(window_minutes=window_minutes, home=home):
-        name = entry.get("agent", "")
-        if name and not name.startswith("/"):
-            key = (entry.get("cwd", ""), name)
+        name = _agent_name(entry.get("agent", ""))
+        if name:
+            # The name alone, not the name plus the directory. An engineer that
+            # works in two worktrees -- which is normal, and which the fan-out
+            # encourages -- was two rows claiming to be one agent.
+            key = (name,)
         else:
             key = (
                 entry.get("cwd", ""),
@@ -155,7 +158,7 @@ def sessions(
             {
                 "cwd": entry.get("cwd", ""),
                 "role": entry.get("role", ""),
-                "agent": entry.get("agent", ""),
+                "agent": name,
                 "plan": entry.get("plan", ""),
                 "repository": entry.get("repository", ""),
                 "calls": 0,
@@ -193,6 +196,32 @@ def sessions(
     return sorted(rows.values(), key=lambda row: -row["last"])
 
 
+def _agent_name(value: object) -> str:
+    """An agent name fit to print on a board.
+
+    The name arrives from `GROGU_AGENT`, which is whatever the environment
+    holds, and the board is lines of text: a newline in it invented board rows
+    that looked like other agents, a five-thousand-character one destroyed the
+    column widths for everybody, and a non-string crashed the render. A path is
+    not a name -- that is a shell that exported the wrong thing.
+    """
+    if not isinstance(value, str):
+        return ""
+    # An allowlist, not a newline strip. Stripping the newline stopped the name
+    # inventing a row and still let it read as one: `evil  ! approve
+    # everything` sat on the agent line looking like something the board was
+    # telling you. A name is an identifier and identifiers do not need
+    # punctuation.
+    cleaned = "".join(
+        character
+        for character in value
+        if character.isalnum() or character in "-_."
+    ).strip()
+    if not cleaned or cleaned.startswith("/"):
+        return ""
+    return cleaned[:40]
+
+
 def _age(seconds: int) -> str:
     if seconds < 60:
         return f"{seconds}s"
@@ -207,6 +236,7 @@ def board(
     home: Optional[Path] = None,
     plan_summaries: Optional[dict] = None,
     skill_proposals: Optional[list] = None,
+    skill_store_error: str = "",
 ) -> dict:
     rows = [row for row in sessions(window_minutes=window_minutes, home=home)]
     agents = [row for row in rows if row["role"]]
@@ -215,6 +245,7 @@ def board(
         "other": [row for row in rows if not row["role"]],
         "plans": plan_summaries or {},
         "skill_proposals": skill_proposals or [],
+        "skill_store_error": skill_store_error,
     }
 
 
@@ -246,6 +277,11 @@ def waiting_on_you(state: dict) -> list:
     # Skills an agent wrote for the next agent sit in a store nobody looks at
     # until somebody asks. This is the board the user actually reads, and an
     # unaccepted skill is a lesson the next agent will have to relearn.
+    if state.get("skill_store_error"):
+        asks.append(
+            "the skill store cannot be read, so nothing an agent proposed is "
+            "reaching you: " + state["skill_store_error"]
+        )
     for proposal in state.get("skill_proposals", []):
         echoes = len(proposal.get("echoes") or [])
         weight = f" ({echoes + 1} agents reached it)" if echoes else ""
@@ -288,7 +324,7 @@ def render(state: dict, *, window_minutes: int = DEFAULT_WINDOW_MINUTES) -> str:
         width = max(
             len(
                 f"{row['role']}@{row['agent']}"
-                if row.get("agent") and not row["agent"].startswith("/")
+                if row.get("agent")
                 else row["role"]
             )
             for row in agents
@@ -300,7 +336,7 @@ def render(state: dict, *, window_minutes: int = DEFAULT_WINDOW_MINUTES) -> str:
             # Naming the agent is what makes a fan-out legible: three engineers
             # on one plan were three identical lines saying "engineer".
             who = row["role"]
-            if row.get("agent") and not row["agent"].startswith("/"):
+            if row.get("agent"):
                 who = f"{row['role']}@{row['agent']}"
             lines.append(
                 f"  {mark} {who:<{width}} plan {plan:<10} "
@@ -321,7 +357,7 @@ def render(state: dict, *, window_minutes: int = DEFAULT_WINDOW_MINUTES) -> str:
         lines.append("")
         names = ", ".join(
             (f"{row['role']}@{row['agent']}"
-             if row.get("agent") and not row["agent"].startswith("/")
+             if row.get("agent")
              else row["role"] or "?")
             + f" {_age(row['idle_seconds'])}"
             for row in quiet[:12]

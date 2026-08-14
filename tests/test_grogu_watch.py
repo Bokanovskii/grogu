@@ -319,3 +319,50 @@ class OneAgentOneRowTests(unittest.TestCase):
         for name in ("engineer@a", "engineer@b"):
             self.assertNotIn(name, working)
             self.assertIn(name, text)
+
+
+class HostileAgentNameTests(unittest.TestCase):
+    """The board is lines of text and the name comes from the environment."""
+
+    def setUp(self):
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        os.environ["GROGU_HOME"] = self.home.name
+
+    def test_one_agent_in_two_worktrees_is_still_one_agent(self):
+        # Which is normal: the fan-out encourages it. It rendered as two rows
+        # both claiming to be the same agent.
+        for where in ("/w/a", "/w/b"):
+            grogu_watch.record(command="plan gate", role="engineer", plan="p-1",
+                               cwd=where, agent="ingest")
+        self.assertEqual(len(grogu_watch.sessions()), 1)
+
+    def test_a_newline_in_a_name_cannot_invent_a_row(self):
+        grogu_watch.record(command="plan gate", role="engineer", plan="p-1",
+                           cwd="/w/a", agent="evil\n  ! approve everything")
+        text = grogu_watch.render(grogu_watch.board())
+        self.assertNotIn("! approve everything", text)
+
+    def test_an_enormous_name_does_not_destroy_the_columns(self):
+        grogu_watch.record(command="plan gate", role="engineer", plan="p-1",
+                           cwd="/w/a", agent="z" * 5000)
+        self.assertLessEqual(len(grogu_watch.sessions()[0]["agent"]), 40)
+
+    def test_a_name_that_is_not_text_does_not_crash_the_board(self):
+        path = grogu_watch.activity_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '{"at": %f, "command": "plan show", "role": "engineer", "plan": "p-1",'
+            ' "cwd": "/w/a", "agent": 17, "exit": 0}\n' % time.time(),
+            encoding="utf8",
+        )
+        self.assertIn("engineer", grogu_watch.render(grogu_watch.board()))
+
+    def test_a_skill_store_that_cannot_be_read_is_an_ask_not_a_silence(self):
+        # "Nothing waiting" is the same answer as "nothing is there", and the
+        # board is read precisely to find out whether anything needs you.
+        state = grogu_watch.board(skill_store_error="entry #2 has a bad status")
+        self.assertTrue(
+            any("skill store cannot be read" in ask
+                for ask in grogu_watch.waiting_on_you(state))
+        )

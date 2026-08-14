@@ -795,3 +795,79 @@ class LinkAndOverrideTests(unittest.TestCase):
     def test_a_skill_name_can_never_be_read_as_a_proposal_number(self) -> None:
         with self.assertRaises(grogu_skills.SkillError):
             grogu_skills.propose("1", description="A number.", body=BODY)
+
+
+class RoundFourTests(unittest.TestCase):
+    """Findings from the probe round that said no-go to the merge."""
+
+    def setUp(self) -> None:
+        self.home = tempfile.TemporaryDirectory()
+        os.environ["GROGU_HOME"] = self.home.name
+        self.repo = tempfile.TemporaryDirectory()
+
+    def tearDown(self) -> None:
+        self.home.cleanup()
+        self.repo.cleanup()
+
+    def install(self, name: str) -> None:
+        directory = Path(self.repo.name) / ".github" / "skills" / name
+        directory.mkdir(parents=True)
+        (directory / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: A thing.\n---\n{BODY}", encoding="utf8"
+        )
+
+    def test_a_directory_that_is_not_a_skill_name_is_not_a_skill(self) -> None:
+        # A probe made `.github/skills/ghp_<token>/` and cited it, which put
+        # the token-shaped string intact into a store that is pooled across
+        # repositories and reviewed in public.
+        self.install("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
+        self.install("narrow-first")
+        names = [
+            skill["name"]
+            for skill in grogu_skills.installed_skills(Path(self.repo.name))
+        ]
+        self.assertEqual(names, ["narrow-first"])
+
+    def test_an_accepted_proposal_cannot_start_a_link_either(self) -> None:
+        for name in ("alpha-lesson", "beta-lesson"):
+            grogu_skills.propose(name, description=f"The {name}.", body=BODY)
+        grogu_skills.accept(1, root=Path(self.repo.name))
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.link(1, 2)
+
+    def test_junk_in_contested_or_overrode_is_refused_not_raised(self) -> None:
+        grogu_skills.propose("alpha-lesson", description="The alpha.", body=BODY)
+        path = Path(self.home.name) / "skills.json"
+        for field, value in (("contested", "oops"), ("overrode", [{}])):
+            with self.subTest(field=field):
+                payload = json.loads(path.read_text(encoding="utf8"))
+                payload["entries"][0][field] = value
+                path.write_text(json.dumps(payload), encoding="utf8")
+                with self.assertRaises(grogu_skills.SkillError):
+                    grogu_skills.proposals()
+
+
+class BindingTimestampTests(unittest.TestCase):
+    def test_an_unreadable_timestamp_cannot_claim_to_be_the_newest(self) -> None:
+        # It sorted above every real one as a string, so any junk in that field
+        # masked the live agent and reopened the bypass from the other side.
+        import grogu_plans
+
+        with tempfile.TemporaryDirectory() as repo:
+            subprocess.run(["git", "init", "-q", "."], cwd=repo, check=True)
+            root = Path(repo).resolve()
+            state = root / ".grogu" / "state"
+            state.mkdir(parents=True)
+            now = dt.datetime.now(dt.timezone.utc)
+            (state / "session-roles.json").write_text(
+                json.dumps({
+                    str(root): {
+                        "role": "engineer",
+                        "at": (now - dt.timedelta(minutes=5)).isoformat(),
+                    },
+                    str(root / "sub"): {"role": "tester", "at": "zzzz"},
+                }),
+                encoding="utf8",
+            )
+            store = grogu_plans.PlanStore(root)
+            self.assertEqual(store.binding_covering(root).get("role"), "engineer")

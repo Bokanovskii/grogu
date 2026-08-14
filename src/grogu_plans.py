@@ -4316,7 +4316,22 @@ class PlanStore:
         # declared itself at the root ten minutes ago: the caller saw one
         # binding, judged it stale, and allowed what it should have refused.
         # Whoever ran a command most recently is the one who is still here.
-        return max(found, key=lambda entry: str(entry.get("at") or ""), default={})
+        #
+        # Sorted on the parsed timestamp rather than the string, because a
+        # binding whose `at` was unparseable sorted above every real one -- so
+        # any junk in that field masked the live agent and reopened the same
+        # hole from the other side. An unreadable timestamp is treated as
+        # ancient: it cannot be used to claim someone is still working.
+        def when(entry: dict) -> dt.datetime:
+            try:
+                stamp = dt.datetime.fromisoformat(
+                    str(entry.get("at") or "").replace("Z", "+00:00")
+                )
+            except ValueError:
+                return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+            return stamp if stamp.tzinfo else stamp.replace(tzinfo=dt.timezone.utc)
+
+        return max(found, key=when, default={})
 
     def brief(self, role: str, *, plan_id: str = "", base_dir: Optional[Path] = None) -> dict:
         """Assemble a role's prompt: shared contract + repository overlay.

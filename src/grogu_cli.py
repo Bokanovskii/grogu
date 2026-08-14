@@ -1348,11 +1348,19 @@ def _record_activity(parsed: argparse.Namespace) -> None:
         return  # watching must never be the reason a command fails
 
 
-def _skill_proposals_safely() -> list:
+def _skill_proposals_safely() -> tuple:
+    """Proposals for the board, and why there are none if there are none.
+
+    The board must never be the reason a command fails, so this swallows. But
+    swallowing silently meant a store the skill commands were refusing to touch
+    showed on the board as "nothing waiting" -- which is the answer you get
+    when there is genuinely nothing, and the user reads the board precisely to
+    find out whether anything needs them.
+    """
     try:
-        return grogu_skills.proposals()
-    except (grogu_skills.SkillError, OSError):
-        return []  # the board must never be the reason a command fails
+        return grogu_skills.proposals(), ""
+    except (grogu_skills.SkillError, OSError) as error:
+        return [], str(error).splitlines()[0]
 
 
 def _plan_summaries(args: argparse.Namespace) -> dict:
@@ -1371,10 +1379,12 @@ def _plan_summaries(args: argparse.Namespace) -> dict:
 
 
 def watch(args: argparse.Namespace) -> int:
+    proposals, store_error = _skill_proposals_safely()
     state = grogu_watch.board(
         window_minutes=args.window,
         plan_summaries=_plan_summaries(args),
-        skill_proposals=_skill_proposals_safely(),
+        skill_proposals=proposals,
+        skill_store_error=store_error,
     )
     if args.json:
         print_json(state)
@@ -1386,10 +1396,12 @@ def watch(args: argparse.Namespace) -> int:
         while True:
             # Recomputed every pass: a board that shows the plan state from when
             # you started watching is worse than no board.
+            live, live_error = _skill_proposals_safely()
             state = grogu_watch.board(
                 window_minutes=args.window,
                 plan_summaries=_plan_summaries(args),
-                skill_proposals=_skill_proposals_safely(),
+                skill_proposals=live,
+                skill_store_error=live_error,
             )
             sys.stdout.write("\033[2J\033[H")
             sys.stdout.write(grogu_watch.render(state, window_minutes=args.window))

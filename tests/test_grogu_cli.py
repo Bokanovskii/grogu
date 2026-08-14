@@ -1810,6 +1810,9 @@ class SeaglassFlatteningTests(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    grogu_mcp.available(), "requires Python 3.10+ with the 'mcp' package installed"
+)
 class CodemodeMcpExecTests(unittest.TestCase):
     """Exercises `grogu codemode exec` calling MCP tools end to end via the
     CLI, using the same echo fixture server as GroguMcpTests. No flag is
