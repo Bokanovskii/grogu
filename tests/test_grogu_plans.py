@@ -1360,6 +1360,26 @@ class DesignEvidenceTests(unittest.TestCase):
         self.assertEqual(review["verdict"], grogu_plans.PASS)
 
 
+class TriageCorpusTests(unittest.TestCase):
+    """Triage runs on every request and is not a model call, so the only way to
+    know a change to it is an improvement is to run it against things a user
+    actually says."""
+
+    def test_every_case_routes_the_way_a_person_would_route_it(self):
+        from triage_cases import CASES
+
+        wrong = [
+            (want, grogu_plans.triage(text)["decision"], text)
+            for text, want in CASES
+            if grogu_plans.triage(text)["decision"] != want
+        ]
+        self.assertEqual(
+            wrong,
+            [],
+            "\n".join(f"wanted {w}, got {g}: {t}" for w, g, t in wrong),
+        )
+
+
 class ParallelSteeringTests(unittest.TestCase):
     """Steering must reach every agent of a role, not the first one to poll."""
 

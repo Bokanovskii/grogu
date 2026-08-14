@@ -482,13 +482,57 @@ _DIRECT_PATTERNS = (
     r"\bjust (answer|tell|show|check|look|read|run|explain)\b",
     r"\bquick question\b",
     r"^(what|why|how|where|who|which|when|is|are|does|do|did|can|should|could|will)\b",
-    r"\b(explain|summari[sz]e|describe|show me|list|find|search|read|status|remind)\b",
     r"\bfor (my|your) (information|awareness)\b",
     r"\b(steering|heads up|fyi|note that|keep in mind)\b",
 )
 
+# Retrieval verbs only mean "retrieval" when they lead the request. Matched
+# anywhere they also fire on "build a search index", "add a status page" and
+# "implement the read replica failover" — where the word is a noun in the thing
+# being built — and cancelled the build verb, so the largest requests in the
+# corpus were the ones routed away from the architect.
+_RETRIEVAL_PATTERN = (
+    r"^(?:\W*(?:please|can you|could you|would you|just|hey|grogu|and)\s+)*"
+    r"(explain|summari[sz]e|describe|show|list|find|search|read|remind|tell)\b"
+)
+
+# Requests for different behaviour, phrased without a build verb. This is how
+# most substantial work actually arrives: nobody says "implement correct
+# rounding", they say "make the exporter round properly".
+_CHANGE_PATTERNS = (
+    r"\bmake\b[^.]{0,60}\b(work|support|handle|cope|correct|correctly|"
+    r"consistent|reliable|idempotent|faster|safe)\b",
+    r"\bget\b[^.]{0,60}\bto (stop|start|handle|support|use|cope)\b",
+    # "we need proper X" is a request for work; "we need to know X" is a
+    # question wearing the same opening words.
+    r"\bneeds? to\b(?!\s+(know|see|check|understand|find))",
+    r"\b(we|i) need\b(?!\s+to\s+(know|see|check|understand|find))",
+    r"\bshould (be able to|support|handle|stop|expire|use|never|always)\b",
+    r"\b(never|always)\b[^.]{0,40}\band (it|they|we) should\b",
+    r"\bso (that )?it (invalidates|expires|retries|handles|supports)\b",
+    r"\bstop\b[^.]{0,40}\b(drift|double|leaking|racing|duplicating)\b",
+)
+
+# Domains where "it is a small change" is reliably wrong. Naming them is not a
+# heuristic about wording but about engineering: these are the places where the
+# second and third cases are the whole job.
+_SUBTLE_PATTERNS = (
+    r"\b(round(ing)?|precision|float(ing)?|decimal|currenc(y|ies)|minor unit)\b",
+    r"\b(time ?zone|dst|daylight|utc|leap)\b",
+    r"\b(unicode|encoding|utf-?8|collation|normali[sz]ation)\b",
+    r"\b(concurren(t|cy)|race|deadlock|lock(ing)?|thread|parallel)\b",
+    r"\b(idempoten|retry|retries|backoff|exactly.once|double.fir)\w*\b",
+    r"\b(pagination|backfill|migration|schema change)\b",
+    r"\b(cache invalidat|invalidates|stale)\w*\b",
+    r"\b(auth|permission|token|session|expiry|expire)\w*\b",
+)
+
 _PLAN_PATTERNS = (
-    r"\b(build|implement|create|add|introduce|design|architect)\b",
+    r"\b(implement|create|add|introduce|architect)\b",
+    # "build" and "design" are nouns as often as verbs in this repository --
+    # "the build fails", "the design doc" -- and reading those as a request to
+    # construct something routed bug reports to the architect.
+    r"(?<!\bthe )(?<!\ba )(?<!\bour )(?<!\bthis )(?<!\bthat )\b(build|design)\b",
     r"\b(refactor|rewrite|migrate|port|redesign|restructure|overhaul)\b",
     r"\b(feature|capability|subsystem|pipeline|integration|end.to.end)\b",
     r"\bacross\b.*\b(files|modules|packages|services|repos)\b",
@@ -653,11 +697,30 @@ def triage(prompt: str) -> dict:
         if re.search(pattern, lowered):
             score -= 2
             note("direct signal")
+    if re.search(_RETRIEVAL_PATTERN, lowered):
+        score -= 2
+        note("asks to be shown something")
     for pattern in _PLAN_PATTERNS:
         if re.search(pattern, lowered):
             score += 2
             plan_hits += 1
             note("planning signal")
+    for pattern in _CHANGE_PATTERNS:
+        if re.search(pattern, lowered):
+            score += 2
+            plan_hits += 1
+            note("asks for different behaviour")
+            break
+    trivial = any(re.search(pattern, lowered) for pattern in _TRIVIAL_PATTERNS)
+    for pattern in _SUBTLE_PATTERNS:
+        # A subtle domain makes the work bigger than it looks, but not when the
+        # request was explicitly a comment or a rename: "add a docstring about
+        # timezones" is a docstring, and no amount of timezone is going to make
+        # it an architecture question.
+        if not trivial and re.search(pattern, lowered):
+            score += 2
+            note("touches a domain where the edge cases are the work")
+            break
     for pattern in _TRIVIAL_PATTERNS:
         if re.search(pattern, lowered):
             score -= 2
