@@ -249,12 +249,20 @@ sequence-numbered notes, and delivery has three paths:
   command the agent runs. The agent is already running heartbeats, gates and
   status checks constantly, so steering rides along with something it did
   anyway. Nothing has to remember to poll, because polling is not the mechanism.
+  The notice goes to stderr for a human at a terminal, and to stdout when stdout
+  is redirected, because an agent harness that captures only stdout was
+  otherwise dropping it.
 * **Binding:** `--requires-replan` moves the plan to `needs_review` and closes
   the gates until the architect revises it. Delivery alone is weak; an agent can
   read a note and reason its way past it.
 
-Ack watermarks are per role rather than per agent, which is why the brief ships
-the complete set and only mid-flight polling uses the delta.
+Ack watermarks are per *agent*, not per role. With parallel workstreams several
+engineers run at once, and a role-wide watermark meant the first one to poll
+marked the note read for all of them — steering that reaches one of three agents
+is worse than steering that reaches none, because it looks delivered. An agent
+is identified by its working directory, since each workstream gets its own
+worktree, or by `GROGU_AGENT` where they share one. Getting this wrong shows a
+note twice, which is the right direction to fail in.
 
 ### Seeing what to steer
 

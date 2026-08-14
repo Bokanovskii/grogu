@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -1184,3 +1185,61 @@ class DesignEvidenceTests(unittest.TestCase):
         )
         review = self.store.load(plan_id)["design_review"]
         self.assertEqual(review["verdict"], grogu_plans.PASS)
+
+
+class ParallelSteeringTests(unittest.TestCase):
+    """Steering must reach every agent of a role, not the first one to poll."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.addCleanup(os.environ.pop, "GROGU_AGENT", None)
+
+    def _as(self, agent):
+        os.environ["GROGU_AGENT"] = agent
+
+    def test_one_engineer_acking_does_not_hide_the_note_from_its_peers(self):
+        self.store.steer("prefer the existing retry helper", role=grogu_plans.ENGINEER)
+        self._as("worktree-api")
+        self.assertEqual(
+            len(self.store.steering(role=grogu_plans.ENGINEER, unread=True)["repository"]), 1
+        )
+        self.store.ack_steering(role=grogu_plans.ENGINEER)
+        self.assertEqual(
+            self.store.steering(role=grogu_plans.ENGINEER, unread=True)["repository"], []
+        )
+        self._as("worktree-store")
+        self.assertEqual(
+            len(self.store.steering(role=grogu_plans.ENGINEER, unread=True)["repository"]),
+            1,
+            "the second engineer never saw the user's steering",
+        )
+
+    def test_the_summary_counts_unread_for_the_asking_agent(self):
+        plan = self.store.create("Test plan")
+        self.store.steer("watch the migration", role=grogu_plans.ENGINEER, plan_id=plan["id"])
+        self._as("worktree-api")
+        self.store.ack_steering(role=grogu_plans.ENGINEER, plan_id=plan["id"])
+        self.assertEqual(
+            self.store.summary(plan["id"])["steering_pending"][grogu_plans.ENGINEER], 0
+        )
+        self._as("worktree-store")
+        self.assertEqual(
+            self.store.summary(plan["id"])["steering_pending"][grogu_plans.ENGINEER], 1
+        )
+
+    def test_an_ack_written_before_per_agent_keys_still_counts(self):
+        self.store.steer("older note", role=grogu_plans.ENGINEER)
+        payload = json.loads(self.store.steering_path.read_text(encoding="utf8"))
+        payload["acked"][grogu_plans.ENGINEER] = 1
+        self.store.steering_path.write_text(json.dumps(payload), encoding="utf8")
+        self._as("worktree-api")
+        self.assertEqual(
+            self.store.steering(role=grogu_plans.ENGINEER, unread=True)["repository"],
+            [],
+            "upgrading replayed every previously-read note",
+        )

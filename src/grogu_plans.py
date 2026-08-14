@@ -1479,7 +1479,7 @@ class PlanStore:
             return selected
 
         payload = self._repo_steering()
-        repo_acked = payload["acked"].get(role, 0) if role != "all" else 0
+        repo_acked = self._acked_seq(payload["acked"], role) if role != "all" else 0
         result = {
             "role": role,
             "repository": visible(payload["notes"], repo_acked),
@@ -1489,7 +1489,9 @@ class PlanStore:
         if plan_id:
             manifest = self.load(plan_id)
             plan_acked = (
-                manifest.get("steering_acked", {}).get(role, 0) if role != "all" else 0
+                self._acked_seq(manifest.get("steering_acked", {}), role)
+                if role != "all"
+                else 0
             )
             result["plan"] = visible(manifest.get("steering", []), plan_acked)
             folded = manifest.get("steering_folded_seq", 0)
@@ -1499,15 +1501,46 @@ class PlanStore:
             )
         return result
 
+    def _ack_key(self, role: str) -> str:
+        """Who, specifically, has read a steering note.
+
+        Acking per role alone was wrong the moment two engineers could run at
+        once: the first to poll marked the note read for the whole role, and
+        its peers in other worktrees never saw the user's correction at all.
+        Steering that silently reaches one of three agents is worse than
+        steering that reaches none, because it looks delivered.
+
+        Identity is the agent's working directory, since parallel workstreams
+        each get their own worktree, overridable by `GROGU_AGENT` for layouts
+        that share one. The failure mode of getting this wrong is a note shown
+        twice, which is the right direction to fail in.
+        """
+        agent = os.environ.get("GROGU_AGENT", "").strip()
+        if not agent:
+            try:
+                agent = str(Path.cwd().resolve())
+            except OSError:
+                agent = "unknown"
+        return f"{role}@{agent}"
+
+    def _acked_seq(self, acked: dict, role: str) -> int:
+        """This agent's high-water mark, falling back to the role-wide one.
+
+        The fallback keeps acks written before per-agent keys existed from
+        replaying every old note at once on upgrade.
+        """
+        return int(acked.get(self._ack_key(role), acked.get(role, 0)) or 0)
+
     def ack_steering(self, *, role: str, plan_id: str = "") -> dict:
         if role not in ROLES:
             raise PlanError(f"unknown role {role!r}")
+        key = self._ack_key(role)
         with self.locked():
             payload = self._repo_steering()
             repo_high = max(
                 [note.get("seq", 0) for note in payload["notes"]] or [0]
             )
-            payload["acked"][role] = repo_high
+            payload["acked"][key] = repo_high
             self._write_json(self.steering_path, payload)
             plan_high = 0
             if plan_id:
@@ -1515,7 +1548,7 @@ class PlanStore:
                 plan_high = max(
                     [note.get("seq", 0) for note in manifest.get("steering", [])] or [0]
                 )
-                manifest.setdefault("steering_acked", {})[role] = plan_high
+                manifest.setdefault("steering_acked", {})[key] = plan_high
                 self._save(manifest, "steering_acked", role=role, seq=plan_high)
             return {"role": role, "repository_seq": repo_high, "plan_seq": plan_high}
 
@@ -2212,15 +2245,33 @@ class PlanStore:
                 for item in manifest.get("defects", [])
                 if item.get("status") == PENDING
             ],
-            "steering_pending": {
-                role: len(
-                    self.steering(role=role, plan_id=plan_id, unread=True)["plan"]
-                )
-                + len(
-                    self.steering(role=role, plan_id=plan_id, unread=True)["repository"]
-                )
-                for role in ROLES
-            },
+            "steering_pending": self._steering_pending(manifest),
+        }
+
+    def _steering_pending(self, manifest: dict) -> dict:
+        """Unread steering per role, from two file reads rather than twenty.
+
+        `summary()` is the orientation call every agent makes, often more than
+        once, so doing it by calling `steering()` twice per role re-read the
+        same two files ten times over for a handful of integers.
+        """
+        repository = self._repo_steering()
+        repo_notes = repository["notes"]
+        repo_acked = repository["acked"]
+        plan_notes = manifest.get("steering", [])
+        plan_acked = manifest.get("steering_acked", {})
+
+        def unread(notes: list, role: str, acked: int) -> int:
+            return sum(
+                1
+                for note in notes
+                if note.get("role") in ("all", role) and note.get("seq", 0) > acked
+            )
+
+        return {
+            role: unread(repo_notes, role, self._acked_seq(repo_acked, role))
+            + unread(plan_notes, role, self._acked_seq(plan_acked, role))
+            for role in ROLES
         }
 
     def finalize(self, plan_id: str, *, note: str = "", force: bool = False) -> dict:
@@ -2336,7 +2387,9 @@ class PlanStore:
         arithmetic rather than an agent re-reading a transcript. That matters:
         an improvement loop that is expensive to run does not get run.
         """
-        manifest = self.load(plan_id)
+        return self._retro(self.load(plan_id))
+
+    def _retro(self, manifest: dict) -> dict:
         amendments = manifest.get("amendments", [])
         defects = manifest.get("defects", [])
         steering = manifest.get("steering", [])
@@ -2435,7 +2488,7 @@ class PlanStore:
             )
 
         return {
-            "plan": plan_id,
+            "plan": manifest.get("id", ""),
             "title": manifest.get("title", ""),
             "status": manifest.get("status"),
             "amendment_rounds": manifest.get("rounds", 0),
@@ -2544,7 +2597,9 @@ class PlanStore:
         totals: dict = {}
         examples: dict = {}
         for plan in self.list_plans():
-            for finding in self.retro(plan["id"]).get("findings", []):
+            # `retro` by id would re-read the manifest `list_plans` just read;
+            # the friction report is run often enough for that to matter.
+            for finding in self._retro(plan).get("findings", []):
                 signal = finding["signal"]
                 bucket = totals.setdefault(
                     signal, {"signal": signal, "target": finding["target"], "plans": 0, "count": 0}
