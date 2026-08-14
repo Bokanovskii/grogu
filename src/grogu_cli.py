@@ -1458,6 +1458,37 @@ def guard_install(args: argparse.Namespace) -> int:
     return 0
 
 
+def _plan_id_argument(parser: argparse.ArgumentParser) -> None:
+    """Take the plan id from the argument or from GROGU_PLAN.
+
+    Every role prompt tells an agent to export GROGU_PLAN, and steering
+    delivery has always honoured it, but the commands that need a plan id most
+    -- `gate`, `brief`, `show` -- did not. An engineer that followed its own
+    setup instructions got a usage error from `plan gate implement` and a brief
+    with no plan in it, and had to work out from the near-empty output that the
+    variable it had exported was being ignored.
+    """
+    parser.add_argument("id", nargs="?", default="")
+    parser.set_defaults(_plan_id_required=True)
+
+
+def _resolve_plan_id(parsed: argparse.Namespace) -> bool:
+    """Fill in the plan id from the environment; False when there is none."""
+    if not hasattr(parsed, "id"):
+        return True
+    if not parsed.id:
+        parsed.id = os.environ.get("GROGU_PLAN", "").strip()
+    if not getattr(parsed, "_plan_id_required", False):
+        return True
+    if not parsed.id:
+        print(
+            "no plan id: pass one, or export GROGU_PLAN for this shell",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def plan_store(args: argparse.Namespace) -> grogu_plans.PlanStore:
     return grogu_plans.PlanStore(Path(args.repo).expanduser() if args.repo else None)
 
@@ -1678,8 +1709,23 @@ def plan_finalize(args: argparse.Namespace) -> int:
 
 
 def plan_gate(args: argparse.Namespace) -> int:
+    # `grogu plan gate implement` is what agents type, every time, because it
+    # is what a gate sounds like. Stage names cannot be confused with plan ids,
+    # so accept it rather than answering a correct question with a usage error.
+    stage = args.stage
+    if args.id in grogu_plans.GATES and not stage:
+        stage, args.id = args.id, os.environ.get("GROGU_PLAN", "").strip()
+    if not stage:
+        print(
+            "which gate? " + "|".join(grogu_plans.GATES),
+            file=sys.stderr,
+        )
+        return 2
+    if not args.id:
+        print("no plan id: pass one, or export GROGU_PLAN", file=sys.stderr)
+        return 2
     store = plan_store(args)
-    result = store.gate(store.resolve(args.id), args.stage)
+    result = store.gate(store.resolve(args.id), stage)
     if args.json:
         print_json(result)
     else:
@@ -3084,7 +3130,7 @@ def build_parser() -> argparse.ArgumentParser:
         "write", help="write a plan stage (architect only)",
         parents=[plan_common, role_common],
     )
-    plan_write_parser.add_argument("id")
+    _plan_id_argument(plan_write_parser)
     plan_write_parser.add_argument("stage", choices=grogu_plans.STAGES)
     plan_write_parser.add_argument("--body", default="")
     plan_write_parser.add_argument("--file", help="read the body from a file, or - for stdin")
@@ -3094,12 +3140,12 @@ def build_parser() -> argparse.ArgumentParser:
         "show", help="read a plan stage the role is allowed to read",
         parents=[plan_common, role_common],
     )
-    plan_show_parser.add_argument("id")
+    _plan_id_argument(plan_show_parser)
     plan_show_parser.add_argument("--stage", choices=grogu_plans.STAGES, default=grogu_plans.IMPLEMENTATION)
     plan_show_parser.set_defaults(handler=plan_show)
 
     plan_approve_parser = plan_subparsers.add_parser("approve", parents=[plan_common])
-    plan_approve_parser.add_argument("id")
+    _plan_id_argument(plan_approve_parser)
     plan_approve_parser.add_argument("--note")
     plan_approve_parser.add_argument(
         "--as-user",
@@ -3115,7 +3161,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_stage_parser = plan_subparsers.add_parser(
         "stage", help="record stage progress", parents=[plan_common, role_common]
     )
-    plan_stage_parser.add_argument("id")
+    _plan_id_argument(plan_stage_parser)
     plan_stage_parser.add_argument("stage", choices=grogu_plans.STAGES)
     plan_stage_parser.add_argument("state", choices=grogu_plans.STAGE_STATES)
     plan_stage_parser.add_argument("--note")
@@ -3136,7 +3182,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_stage_parser.set_defaults(handler=plan_stage)
 
     plan_supersede_parser = plan_subparsers.add_parser("supersede", parents=[plan_common])
-    plan_supersede_parser.add_argument("id")
+    _plan_id_argument(plan_supersede_parser)
     plan_supersede_parser.add_argument("--note")
     plan_supersede_parser.set_defaults(handler=plan_supersede)
 
@@ -3145,7 +3191,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="unseal every stage so the finished plan ships in the pull request",
         parents=[plan_common, role_common],
     )
-    plan_finalize_parser.add_argument("id")
+    _plan_id_argument(plan_finalize_parser)
     plan_finalize_parser.add_argument("--note")
     plan_finalize_parser.add_argument(
         "--force",
@@ -3163,8 +3209,8 @@ def build_parser() -> argparse.ArgumentParser:
         "gate", help="may the pipeline enter a stage (exit 3 when blocked)",
         parents=[plan_common],
     )
-    plan_gate_parser.add_argument("id")
-    plan_gate_parser.add_argument("--stage", choices=grogu_plans.GATES, required=True)
+    _plan_id_argument(plan_gate_parser)
+    plan_gate_parser.add_argument("--stage", choices=grogu_plans.GATES)
     plan_gate_parser.add_argument("--json", action="store_true")
     plan_gate_parser.set_defaults(handler=plan_gate)
 
@@ -3172,14 +3218,14 @@ def build_parser() -> argparse.ArgumentParser:
         "amend", help="ask the architect to change the plan",
         parents=[plan_common, role_common],
     )
-    plan_amend_parser.add_argument("id")
+    _plan_id_argument(plan_amend_parser)
     plan_amend_parser.add_argument("--claim", required=True)
     plan_amend_parser.add_argument("--evidence", default="")
     plan_amend_parser.add_argument("--stage", choices=grogu_plans.STAGES, default=grogu_plans.IMPLEMENTATION)
     plan_amend_parser.set_defaults(handler=plan_amend)
 
     plan_amendments_parser = plan_subparsers.add_parser("amendments", parents=[plan_common])
-    plan_amendments_parser.add_argument("id")
+    _plan_id_argument(plan_amendments_parser)
     plan_amendments_parser.add_argument("--all", action="store_true")
     plan_amendments_parser.add_argument("--json", action="store_true")
     plan_amendments_parser.set_defaults(handler=plan_amendments)
@@ -3188,7 +3234,7 @@ def build_parser() -> argparse.ArgumentParser:
         "resolve", help="architect decision on an amendment or escalation",
         parents=[plan_common, role_common],
     )
-    plan_resolve_parser.add_argument("id")
+    _plan_id_argument(plan_resolve_parser)
     plan_resolve_parser.add_argument("amendment")
     outcome_group = plan_resolve_parser.add_mutually_exclusive_group(required=True)
     outcome_group.add_argument("--accept", action="store_true")
@@ -3208,7 +3254,7 @@ def build_parser() -> argparse.ArgumentParser:
         "defect", help="report a failure and route it to whoever owns it",
         parents=[plan_common, role_common],
     )
-    plan_defect_parser.add_argument("id")
+    _plan_id_argument(plan_defect_parser)
     plan_defect_parser.add_argument(
         "--resolve",
         default="",
@@ -3224,7 +3270,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_defect_parser.set_defaults(handler=plan_defect)
 
     plan_defects_parser = plan_subparsers.add_parser("defects", parents=[plan_common])
-    plan_defects_parser.add_argument("id")
+    _plan_id_argument(plan_defects_parser)
     plan_defects_parser.add_argument("--all", action="store_true")
     plan_defects_parser.add_argument("--json", action="store_true")
     plan_defects_parser.set_defaults(handler=plan_defects)
@@ -3232,7 +3278,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_defect_resolve_parser = plan_subparsers.add_parser(
         "defect-resolve", parents=[plan_common]
     )
-    plan_defect_resolve_parser.add_argument("id")
+    _plan_id_argument(plan_defect_resolve_parser)
     plan_defect_resolve_parser.add_argument("defect")
     plan_defect_resolve_parser.add_argument("--note", required=True)
     plan_defect_resolve_parser.set_defaults(handler=plan_defect_resolve)
@@ -3241,7 +3287,7 @@ def build_parser() -> argparse.ArgumentParser:
         "workstream", help="declare a parallelisable unit and the files it owns",
         parents=[plan_common],
     )
-    plan_workstream_parser.add_argument("id")
+    _plan_id_argument(plan_workstream_parser)
     plan_workstream_parser.add_argument(
         "--replace",
         action="store_true",
@@ -3267,7 +3313,7 @@ def build_parser() -> argparse.ArgumentParser:
         "workstreams", help="parallel waves, and any file-set conflicts between them",
         parents=[plan_common],
     )
-    plan_workstreams_parser.add_argument("id")
+    _plan_id_argument(plan_workstreams_parser)
     plan_workstreams_parser.add_argument(
         "--check", action="store_true", help="exit 3 when workstreams overlap"
     )
@@ -3277,7 +3323,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_review_parser = plan_subparsers.add_parser(
         "review", help="record a review the architect asked for"
     )
-    plan_review_parser.add_argument("id")
+    _plan_id_argument(plan_review_parser)
     plan_review_parser.add_argument("--repo")
     plan_review_parser.add_argument("--workstream", required=True)
     plan_review_parser.add_argument(
@@ -3315,7 +3361,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="tell a role what the architect wants from it (architect only)",
         parents=[plan_common, role_common],
     )
-    plan_commission_parser.add_argument("id")
+    _plan_id_argument(plan_commission_parser)
     plan_commission_parser.add_argument("for_role", metavar="ROLE", choices=grogu_plans.ROLES)
     plan_commission_parser.add_argument("--brief", required=True)
     plan_commission_parser.add_argument(
@@ -3328,7 +3374,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="carry a file alongside the plan for the roles that come after",
         parents=[plan_common, role_common],
     )
-    plan_attach_parser.add_argument("id")
+    _plan_id_argument(plan_attach_parser)
     plan_attach_parser.add_argument("--name", help="file name (default: the --file basename)")
     plan_attach_parser.add_argument("--file", help="read the artifact from here, or - for stdin")
     plan_attach_parser.add_argument("--body")
@@ -3394,7 +3440,7 @@ def build_parser() -> argparse.ArgumentParser:
         "retro", help="what this plan cost beyond the work, and what to change",
         parents=[plan_common],
     )
-    plan_retro_parser.add_argument("id")
+    _plan_id_argument(plan_retro_parser)
     plan_retro_parser.add_argument("--json", action="store_true")
     plan_retro_parser.set_defaults(handler=plan_retro)
 
@@ -3433,7 +3479,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_design_review_parser = plan_subparsers.add_parser(
         "design-review", help="the designer's verdict on the built interface"
     )
-    plan_design_review_parser.add_argument("id")
+    _plan_id_argument(plan_design_review_parser)
     plan_design_review_parser.add_argument("--repo")
     plan_design_review_parser.add_argument(
         "--verdict", required=True, choices=list(grogu_plans.DESIGN_VERDICTS)
@@ -3735,6 +3781,8 @@ def main(arguments: list[str]) -> int:
     parsed = parser.parse_args(arguments)
     if parsed.command is None:
         return launch_copilot(arguments)
+    if not _resolve_plan_id(parsed):
+        return 2
     global _PENDING_NOTICE
     _PENDING_NOTICE = _notice_for(parsed)
     try:

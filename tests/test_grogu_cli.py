@@ -19,6 +19,7 @@ import grogu_context  # noqa: E402
 import grogu_gmail  # noqa: E402
 import grogu_imessage  # noqa: E402
 import grogu_mcp  # noqa: E402
+import grogu_plans  # noqa: E402
 import grogu_memory  # noqa: E402
 import grogu_personal_memory  # noqa: E402
 import grogu_telemetry  # noqa: E402
@@ -1572,3 +1573,48 @@ class SubcommandUsageTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("usage: grogu plan stage", result.stderr)
         self.assertNotIn("{doctor,", result.stderr)
+
+
+class PlanIdFromEnvironmentTests(unittest.TestCase):
+    """Every role prompt exports GROGU_PLAN; the commands ignored it."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.plan = self.store.create("status line")["id"]
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+
+    def _run(self, arguments, environment=None):
+        env = dict(os.environ, **(environment or {}))
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_a_gate_takes_its_plan_from_the_environment(self):
+        result = self._run(
+            ["plan", "gate", "--stage", "implement"], {"GROGU_PLAN": self.plan}
+        )
+        self.assertIn(self.plan, result.stdout)
+
+    def test_a_gate_takes_the_stage_positionally(self):
+        result = self._run(["plan", "gate", "implement"], {"GROGU_PLAN": self.plan})
+        self.assertIn("implement", result.stdout)
+
+    def test_a_missing_plan_says_so_rather_than_printing_usage(self):
+        result = self._run(["plan", "gate", "--stage", "implement"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("GROGU_PLAN", result.stderr)
+
+    def test_a_brief_takes_its_plan_from_the_environment(self):
+        result = self._run(
+            ["plan", "brief", "--role", "engineer"], {"GROGU_PLAN": self.plan}
+        )
+        self.assertIn(self.plan, result.stdout)
