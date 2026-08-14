@@ -1711,3 +1711,48 @@ class SteerTakesThePlanIdLikeEveryOtherCommandTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("pass the note once", result.stderr)
+
+
+class SupervisionIsNotWorkTests(unittest.TestCase):
+    """The user steering appeared on the board as the agent they steered."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+        self.home = str(self.repo / "home")
+
+    def run_cli(self, *arguments, role=""):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = self.home
+        environment.pop("GROGU_AGENT", None)
+        if role:
+            environment["GROGU_ROLE"] = role
+        else:
+            environment.pop("GROGU_ROLE", None)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
+            cwd=self.repo, capture_output=True, text=True, env=environment,
+        )
+
+    def _roles(self):
+        feed = Path(self.home) / "activity.jsonl"
+        return [
+            json.loads(line).get("role", "")
+            for line in feed.read_text().splitlines()
+            if line.strip()
+        ]
+
+    def test_a_bound_agent_does_not_lend_its_role_to_the_user(self):
+        plan = self.run_cli("plan", "new", "binding").stdout.strip()
+        # The engineer's brief binds the role to this working directory.
+        self.run_cli("plan", "brief", "--role", "engineer", "--plan", plan, role="engineer")
+        self.run_cli("plan", "steer", plan, "--note", "prefer the real feed")
+        self.run_cli("watch")
+        self.assertEqual(self._roles()[-2:], ["", ""])
+
+    def test_an_agent_that_declares_itself_is_still_shown(self):
+        plan = self.run_cli("plan", "new", "binding").stdout.strip()
+        self.run_cli("plan", "steer", plan, "--note", "from the architect", role="architect")
+        self.assertEqual(self._roles()[-1], "architect")

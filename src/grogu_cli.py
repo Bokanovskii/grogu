@@ -1217,6 +1217,10 @@ USER_ONLY_COMMANDS = frozenset({"approve"})
 # watch board as the agent they had steered, working.
 SUBJECT_ROLE_COMMANDS = frozenset({"steer", "steering", "commission"})
 
+# Top-level commands that exist for the person supervising, not for an agent
+# doing work. An agent that declares itself in the environment is still shown.
+USER_SURFACE_COMMANDS = frozenset({"watch"})
+
 
 def _notice_for(parsed: argparse.Namespace) -> str:
     """The unsolicited notice this command should carry, if any.
@@ -1292,7 +1296,19 @@ def _record_activity(parsed: argparse.Namespace) -> None:
                 plan = plan or candidate
                 break
         cwd = str(Path.cwd())
-        if not role:
+        # The session binding says "an agent is working in this directory". It
+        # does not say that *this* process is that agent. The user steering
+        # from the same shell was showing up on the board as the agent they
+        # were steering, doing work, one line under the note they had just
+        # written. A command that only a person runs never inherits a binding.
+        user_shaped = (
+            sub in SUBJECT_ROLE_COMMANDS
+            or sub in USER_ONLY_COMMANDS
+            or getattr(parsed, "command", "") in USER_SURFACE_COMMANDS
+        )
+        if user_shaped and not grogu_plans.current_role():
+            role = ""
+        elif not role:
             try:
                 bound = grogu_plans.PlanStore(
                     Path(parsed.repo).expanduser() if getattr(parsed, "repo", None) else None
