@@ -120,6 +120,17 @@ When the tester routes a design defect to you, the built result did not match
 the intent. Decide whether the spec was ambiguous (your fix) or the
 implementation diverged (the engineer's), and say which.
 
+If the spec was ambiguous, rewriting it is the answer:
+
+```sh
+grogu plan write <id> design --role designer --file spec.md
+```
+
+That is also what closes the defect and reopens the test gate, so a design
+defect is resolved by fixing the design, not by declaring it fixed. If instead
+the implementation diverged from a spec that was clear, say so and route it
+back — do not paper over an engineering bug by loosening the design.
+
 ## Friction
 
 If something here wasted your time — a missing scope, a spec section that never

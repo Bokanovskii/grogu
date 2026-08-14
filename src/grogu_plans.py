@@ -414,6 +414,18 @@ def head_commit(root: Optional[Path] = None) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def working_head() -> str:
+    """HEAD of the checkout the caller is actually working in.
+
+    Not `self.root`: plan state deliberately lives in the primary checkout so
+    parallel workstreams share one lock, but the code a designer signed off on
+    is the code in *their* worktree. Reading the primary HEAD meant a sign-off
+    recorded the wrong commit entirely, and the gate then compared the wrong
+    commit to itself and passed — approving a build nobody had looked at.
+    """
+    return head_commit(Path.cwd())
+
+
 def current_role() -> str:
     """Role of the agent making this call, when it declared one."""
     role = os.environ.get("GROGU_ROLE", "").strip().lower()
@@ -1218,6 +1230,17 @@ class PlanStore:
             manifest.setdefault("design_review", None)
             if stage == DESIGN and manifest.get("design_review"):
                 manifest["design_review"] = None
+            if stage == DESIGN:
+                # Rewriting the design *is* the answer to a design defect. The
+                # only other closing edge was `stage design complete`, which
+                # nothing in the normal path runs and no prompt asks for, so a
+                # single design defect shut the test gate for the rest of the
+                # plan's life.
+                self._close_defects_for(
+                    manifest,
+                    routes=(ROUTE_DESIGN,),
+                    reason="the design was revised",
+                )
             if role == ARCHITECT:
                 # The architect rewriting a stage *is* the act of folding
                 # steering in. Without this, `--requires-replan` leaves the plan
@@ -1338,10 +1361,19 @@ class PlanStore:
             manifest["status"] = status
             return self._save(manifest, "status", status=status, note=note)
 
-    def set_stage_state(self, plan_id: str, stage: str, state: str, *, note: str = "") -> dict:
+    def set_stage_state(
+        self,
+        plan_id: str,
+        stage: str,
+        state: str,
+        *,
+        note: str = "",
+        role: str = "",
+        as_user: bool = False,
+    ) -> dict:
         if state not in STAGE_STATES:
             raise PlanError(f"unknown stage state {state!r}")
-        role = current_role()
+        role = role or current_role()
         owner = STAGE_COMPLETERS.get(stage)
         # Marking the test plan complete is the tester's judgement to make. An
         # engineer who can make it can then finalize the plan and read the
@@ -1350,6 +1382,17 @@ class PlanStore:
             raise PlanError(
                 f"the {role} may not change the {stage} stage state; that belongs "
                 f"to the {owner}"
+            )
+        if not role and stage in SEALED_STAGES and state == COMPLETE and not as_user:
+            # Default-deny, because the check above was only ever as strong as
+            # the caller's willingness to declare itself. An engineer that
+            # simply never exported GROGU_ROLE could complete the test stage
+            # and then finalize, which is the whole bypass the seal exists to
+            # prevent. Saying who you are is cheap; the seal is not.
+            raise PlanError(
+                f"completing the sealed {stage} stage needs a role: export "
+                f"GROGU_ROLE={STAGE_COMPLETERS.get(stage, TESTER)} or pass "
+                f"--as-user if you are the user"
             )
         with self.locked():
             manifest = self.load(plan_id)
@@ -1376,6 +1419,24 @@ class PlanStore:
                 note=note,
                 resolved_defects=", ".join(resolved) or None,
             )
+
+    @staticmethod
+    def _invalidate_verification(manifest: dict) -> list:
+        """Reopen any stage whose "complete" is a claim about older code.
+
+        Returns the stages reset, for the log. Testing and evaluation are the
+        stages that assert something about a build rather than produce one, so
+        they are the ones a new defect falsifies.
+        """
+        reopened = []
+        state = manifest.setdefault("stage_state", {})
+        for stage in (TESTING, EVALUATION):
+            if stage in manifest.get("stages", []) and state.get(stage) == COMPLETE:
+                state[stage] = PENDING
+                reopened.append(stage)
+        if reopened:
+            manifest["verification_invalidated_at"] = now()
+        return reopened
 
     @staticmethod
     def _close_defects_for(manifest: dict, *, routes: tuple, reason: str) -> list:
@@ -1746,6 +1807,15 @@ class PlanStore:
                 }[route],
             }
             defects.append(defect)
+            # A defect found after the tests were marked complete makes that
+            # completion stale: it describes a build that no longer exists once
+            # the fix lands. Leaving it standing was a hole — the defect
+            # auto-closed when the engineer re-completed implementation, and
+            # finalize then saw no open defects and a complete test stage, so
+            # the plan shipped without anything having been re-run. Verification
+            # is a claim about a specific state of the code, and it expires when
+            # that state changes.
+            invalidated = self._invalidate_verification(manifest)
             if route in (ROUTE_IMPLEMENTATION, ROUTE_TEST, ROUTE_DESIGN):
                 rounds = manifest.get("defect_rounds", 0) + 1
                 manifest["defect_rounds"] = rounds
@@ -1756,7 +1826,13 @@ class PlanStore:
                 # the user.
                 escalate = rounds >= cap and not manifest.get("escalated")
                 defect["round"] = rounds
-            self._save(manifest, "defect_raised", defect=defect["id"], route=route)
+            self._save(
+                manifest,
+                "defect_raised",
+                defect=defect["id"],
+                route=route,
+                invalidated=", ".join(invalidated) or None,
+            )
 
         if route == ROUTE_PLAN:
             # A plan defect is an amendment; the architect must adjudicate it.
@@ -1899,9 +1975,20 @@ class PlanStore:
                     "a bare pass is indistinguishable from a review that did not "
                     "happen"
                 )
+            required = stream.get("review") or ""
+            if verdict == PASS and required and not kind.strip():
+                # Defaulting the kind to whatever was required meant a
+                # security review was a label you got for free: record a bare
+                # pass and the gate saw the kind it asked for. The reviewer has
+                # to name what they actually did.
+                raise PlanError(
+                    f"this workstream requires a {required}; say which review "
+                    f"you ran with --kind, because defaulting it to the one "
+                    f"that was required is the same as not checking"
+                )
             record = {
                 "at": now(),
-                "kind": kind or stream.get("review") or REVIEW_RUBBER_DUCK,
+                "kind": kind.strip() or required or REVIEW_RUBBER_DUCK,
                 "verdict": verdict,
                 "model": model.strip(),
                 "findings": findings.strip(),
@@ -2043,7 +2130,7 @@ class PlanStore:
                 "verdict": verdict,
                 "notes": notes.strip(),
                 "evidence": evidence,
-                "commit": head_commit(self.root),
+                "commit": working_head(),
             }
             history.append(review)
             manifest["design_review"] = review
@@ -2153,7 +2240,7 @@ class PlanStore:
                 else:
                     # A sign-off is about a specific build. Code moved since means
                     # nobody has looked at what is actually about to be tested.
-                    current = head_commit(self.root)
+                    current = working_head()
                     if current and review.get("commit") and current != review["commit"]:
                         blockers.append(
                             "the code has changed since the designer signed off "
@@ -2274,7 +2361,15 @@ class PlanStore:
             for role in ROLES
         }
 
-    def finalize(self, plan_id: str, *, note: str = "", force: bool = False) -> dict:
+    def finalize(
+        self,
+        plan_id: str,
+        *,
+        note: str = "",
+        force: bool = False,
+        role: str = "",
+        as_user: bool = False,
+    ) -> dict:
         """Unseal every stage so the finished plan ships in the pull request.
 
         Sealing exists to keep the engineer from writing to the test while the
@@ -2286,12 +2381,22 @@ class PlanStore:
         operation that turns the sealed stages into plaintext on disk, so an
         engineer who can call it can read the assertions it was meant not to
         see — which would make the seal a formality rather than a boundary.
+
+        An undeclared caller is refused rather than assumed to be the user:
+        otherwise the role check is opt-in, and the one role it exists to stop
+        is the one with a reason to opt out.
         """
-        role = current_role()
+        role = role or current_role()
         if role and role != ARCHITECT:
             raise PlanError(
                 f"the {role} may not finalize a plan: finalizing unseals the "
                 "testing and evaluation stages. Ask the architect."
+            )
+        if not role and not as_user:
+            raise PlanError(
+                "finalizing unseals the testing and evaluation stages, so say "
+                "who is asking: export GROGU_ROLE=architect, or pass --as-user "
+                "if you are the user"
             )
         with self.locked():
             manifest = self.load(plan_id)

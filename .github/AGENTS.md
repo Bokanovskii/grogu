@@ -117,8 +117,10 @@ repository so the pre-commit hook scans staged additions, and `grogu guard
 scan` before pasting collected text anywhere it will be published. Never quote
 a credential, address, phone number or account identifier into a plan, issue,
 pull request, commit message, trace or telemetry record; refer to where the
-value lives instead. The guard catches recognisable mistakes, not every one —
-it does not replace deciding what is fit to publish.
+value lives instead. The guard sees staged commits, plans being published and
+harness friction — not pull request or issue bodies, commit messages, search
+queries or transcripts — so it catches recognisable mistakes in three places
+and does not replace deciding what is fit to publish.
 
 When a web interface or browser behavior needs validation, use the configured Playwright MCP capability when available. Prefer isolated/headless checks and targeted assertions; browser access does not authorize external side effects.
 

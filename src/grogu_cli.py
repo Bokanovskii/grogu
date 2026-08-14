@@ -137,7 +137,23 @@ def initialize_state() -> None:
     initialize_catalog_db()
 
 
+# Set before dispatch, cleared by whoever delivers it. A notice that only ever
+# went to stderr was dropped by agent harnesses that capture stdout alone, and a
+# steering note the agent never sees was not delivered.
+_PENDING_NOTICE = ""
+
+
 def print_json(value: object) -> None:
+    """Print a JSON payload, carrying any pending notice inside it.
+
+    An agent that only ever calls `--json` commands has no other channel: a
+    trailer appended after the document would break the parse it is asking for,
+    so the notice becomes a field of the document instead.
+    """
+    global _PENDING_NOTICE
+    if _PENDING_NOTICE and isinstance(value, dict) and "grogu_notice" not in value:
+        value = dict(value, grogu_notice=_PENDING_NOTICE)
+        _PENDING_NOTICE = ""
     print(json.dumps(value, indent=2, sort_keys=True))
 
 
@@ -1181,6 +1197,28 @@ def task_inbox(args: argparse.Namespace) -> int:
     return 0
 
 
+def _notice_for(parsed: argparse.Namespace) -> str:
+    """The unsolicited notice this command should carry, if any.
+
+    Computed before the handler runs so a `--json` command can fold it into its
+    payload; whatever is left over is printed afterwards. Not on the friction
+    report itself: it already shows these notes, and spending the once-a-day
+    reminder on the one command that did not need it wastes the only prompt the
+    user gets.
+    """
+    if (
+        getattr(parsed, "command", "") == "plan"
+        and getattr(parsed, "plan_command", "") == "friction"
+    ):
+        return ""
+    try:
+        return grogu_plans.pending_banner(
+            Path(parsed.repo).expanduser() if getattr(parsed, "repo", None) else None
+        )
+    except Exception:  # a notice must never be why a command fails
+        return ""
+
+
 def _emit_notice(banner: str, parsed: argparse.Namespace) -> None:
     """Deliver an unsolicited notice where its reader will actually see it.
 
@@ -1466,7 +1504,12 @@ def plan_approve(args: argparse.Namespace) -> int:
 def plan_stage(args: argparse.Namespace) -> int:
     store = plan_store(args)
     plan = store.set_stage_state(
-        store.resolve(args.id), args.stage, args.state, note=args.note or ""
+        store.resolve(args.id),
+        args.stage,
+        args.state,
+        note=args.note or "",
+        role=getattr(args, "role", "") or "",
+        as_user=getattr(args, "as_user", False),
     )
     print(f"{plan['id']} {args.stage}={args.state}")
     return 0
@@ -1484,7 +1527,11 @@ def plan_supersede(args: argparse.Namespace) -> int:
 def plan_finalize(args: argparse.Namespace) -> int:
     store = plan_store(args)
     result = store.finalize(
-        store.resolve(args.id), note=args.note or "", force=args.force
+        store.resolve(args.id),
+        note=args.note or "",
+        force=args.force,
+        role=getattr(args, "role", "") or "",
+        as_user=getattr(args, "as_user", False),
     )
     for blocker in result.get("shipped_incomplete", []):
         print(f"grogu: shipped incomplete: {blocker}", file=sys.stderr)
@@ -2022,7 +2069,17 @@ def build_parser() -> argparse.ArgumentParser:
     watch_parser.set_defaults(handler=watch)
 
     guard = subparsers.add_parser(
-        "guard", help="keep secrets and personal data out of what Grogu publishes"
+        "guard",
+        help="keep secrets and personal data out of what Grogu publishes",
+        description=(
+            "An accident guard, not a security boundary. It checks staged "
+            "commits, plans about to be published, and harness friction. It "
+            "does NOT check pull request or issue bodies, commit messages, web "
+            "search or fetch arguments, agent transcripts, or history already "
+            "committed, and it only recognises credentials with a familiar "
+            "shape. Read what Grogu is about to publish; this is defence in "
+            "depth beneath that, not a replacement for it."
+        ),
     )
     guard_subparsers = guard.add_subparsers(dest="guard_command", required=True)
 
@@ -2557,12 +2614,18 @@ def build_parser() -> argparse.ArgumentParser:
     plan_approve_parser.set_defaults(handler=plan_approve)
 
     plan_stage_parser = plan_subparsers.add_parser(
-        "stage", help="record stage progress", parents=[plan_common]
+        "stage", help="record stage progress", parents=[plan_common, role_common]
     )
     plan_stage_parser.add_argument("id")
     plan_stage_parser.add_argument("stage", choices=grogu_plans.STAGES)
     plan_stage_parser.add_argument("state", choices=grogu_plans.STAGE_STATES)
     plan_stage_parser.add_argument("--note")
+    plan_stage_parser.add_argument(
+        "--as-user",
+        action="store_true",
+        help="you are the user, not an agent (needed to complete a sealed stage "
+        "without a role)",
+    )
     plan_stage_parser.set_defaults(handler=plan_stage)
 
     plan_supersede_parser = plan_subparsers.add_parser("supersede", parents=[plan_common])
@@ -2573,7 +2636,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_finalize_parser = plan_subparsers.add_parser(
         "finalize",
         help="unseal every stage so the finished plan ships in the pull request",
-        parents=[plan_common],
+        parents=[plan_common, role_common],
     )
     plan_finalize_parser.add_argument("id")
     plan_finalize_parser.add_argument("--note")
@@ -2581,6 +2644,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="finalize despite open defects, amendments or incomplete stages",
+    )
+    plan_finalize_parser.add_argument(
+        "--as-user",
+        action="store_true",
+        help="you are the user, not an agent; finalizing unseals the test plan",
     )
     plan_finalize_parser.set_defaults(handler=plan_finalize)
 
@@ -3091,6 +3159,8 @@ def main(arguments: list[str]) -> int:
     parsed = parser.parse_args(arguments)
     if parsed.command is None:
         return launch_copilot(arguments)
+    global _PENDING_NOTICE
+    _PENDING_NOTICE = _notice_for(parsed)
     try:
         return parsed.handler(parsed)
     except grogu_design.DesignError as error:
@@ -3108,23 +3178,10 @@ def main(arguments: list[str]) -> int:
     finally:
         # Steering rides out on whatever the agent already ran, so nobody has to
         # remember to poll for it.
-        # Not on the friction report itself: it already shows these notes, and
-        # spending the once-a-day reminder on the one command that did not need
-        # it wastes the only prompt the user gets.
         _record_activity(parsed)
-        reviewing_friction = (
-            getattr(parsed, "command", "") == "plan"
-            and getattr(parsed, "plan_command", "") == "friction"
-        )
-        banner = (
-            ""
-            if reviewing_friction
-            else grogu_plans.pending_banner(
-                Path(parsed.repo).expanduser() if getattr(parsed, "repo", None) else None
-            )
-        )
-        if banner:
-            _emit_notice(banner, parsed)
+        if _PENDING_NOTICE:
+            # Still pending means no JSON payload carried it out.
+            _emit_notice(_PENDING_NOTICE, parsed)
 
 
 if __name__ == "__main__":

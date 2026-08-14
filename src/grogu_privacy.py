@@ -399,8 +399,28 @@ exec {python} {script} guard staged --quiet
 """
 
 
+def hooks_dir(repo: Path) -> Path:
+    """Where this checkout's hooks actually live.
+
+    In a linked worktree `.git` is a file, not a directory, and hooks are
+    shared from the common directory — so the naive path both fails and, if it
+    had succeeded, would have installed a hook that only guarded one worktree.
+    Asking Git is the only reliable answer, and it respects core.hooksPath.
+    """
+    try:
+        found = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-path", "hooks"],
+            cwd=str(repo), capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if found:
+            return Path(found)
+    except (subprocess.CalledProcessError, OSError, FileNotFoundError):
+        pass
+    return Path(repo) / ".git" / "hooks"
+
+
 def install_hook(repo: Path, *, python: str, script: str) -> Path:
-    hooks = Path(repo) / ".git" / "hooks"
+    hooks = hooks_dir(repo)
     hooks.mkdir(parents=True, exist_ok=True)
     path = hooks / "pre-commit"
     path.write_text(HOOK.format(python=python, script=script), encoding="utf8")

@@ -209,6 +209,17 @@ particular, when the user asked for a plan directly, `--review-required` records
 it and the gate refuses until `grogu plan approve` runs. Autopilot does not get
 to decide that the user probably would have approved.
 
+Role checks default to deny. Completing a sealed stage or finalizing a plan
+requires a declared role — `GROGU_ROLE`, `--role`, or `--as-user` for the user
+— because a check that only applies to callers who identify themselves is
+optional to exactly the role it exists to stop.
+
+Verification expires. A defect filed after the tests were marked complete
+reopens the testing and evaluation stages, because "complete" was a claim about
+a build that the fix is about to replace. Without that, a defect could
+auto-close when the engineer re-completed implementation and the plan would ship
+with nothing having been re-run.
+
 ## The loops
 
 Three feedback paths, each ending somewhere specific:
@@ -424,6 +435,25 @@ This means the guard will miss a secret with no recognisable shape. It is an
 accident guard, not a security boundary, and the honest framing matters: it
 stops the mistake, not an attacker, and never the user's own judgement about
 what is fit to publish.
+
+Being specific about that matters more than the detectors do, because the
+failure mode of a guard is not missing something — it is being trusted to have
+looked. It checks three places, and these are not among them:
+
+| Not covered | Why |
+| --- | --- |
+| PR and issue bodies, review comments | written through `gh`, which is not hooked |
+| Commit *messages* | only file contents are scanned |
+| Web search and fetch arguments | a query is egress too, and unguarded |
+| Agent transcripts and tool arguments | outside the harness entirely |
+| Already-committed history | nothing is rewritten |
+| `git commit --no-verify`, `grogu-allow-secret` | deliberate opt-outs an agent can use too |
+| Secrets with no recognisable shape | the detectors are structural by design |
+| Repository-local `.grogu` files | only the cross-repo friction pool is redacted |
+
+So it is defence in depth beneath judgement, not instead of it. Anything Grogu
+is about to publish — a PR body, an issue, a message, a search query — still has
+to be read before it goes.
 
 Two details are load-bearing. Only *added* lines are scanned, so a commit that
 removes a leaked key is never blocked — blocking it would be blocking the fix.

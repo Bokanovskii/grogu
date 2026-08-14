@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -47,7 +48,9 @@ class PlanStoreTests(unittest.TestCase):
         manifest = self.store.load(plan_id)
         for stage in manifest["stages"]:
             if stage in (grogu_plans.IMPLEMENTATION, grogu_plans.TESTING, grogu_plans.EVALUATION):
-                self.store.set_stage_state(plan_id, stage, grogu_plans.COMPLETE)
+                self.store.set_stage_state(
+                    plan_id, stage, grogu_plans.COMPLETE, as_user=True
+                )
 
     # -- role isolation ----------------------------------------------------
 
@@ -398,7 +401,7 @@ class PlanStoreTests(unittest.TestCase):
     def test_finalize_unseals_every_stage_for_review(self):
         plan_id = self.plan(evaluation=True)
         self.complete_all(plan_id)
-        result = self.store.finalize(plan_id)
+        result = self.store.finalize(plan_id, as_user=True)
         self.assertEqual(len(result["emitted"]), 2)
         for stage in (grogu_plans.TESTING, grogu_plans.EVALUATION):
             path = self.store.plan_dir(plan_id) / f"{stage}.md"
@@ -414,8 +417,8 @@ class PlanStoreTests(unittest.TestCase):
             raised_by="tester",
         )
         with self.assertRaises(grogu_plans.PlanError):
-            self.store.finalize(plan_id)
-        result = self.store.finalize(plan_id, force=True)
+            self.store.finalize(plan_id, as_user=True)
+        result = self.store.finalize(plan_id, force=True, as_user=True)
         self.assertTrue(result["shipped_incomplete"])
 
     def test_accepted_amendment_blocks_until_the_stage_is_rewritten(self):
@@ -527,10 +530,16 @@ class PlanStoreTests(unittest.TestCase):
         gate = self.store.gate(plan_id, grogu_plans.GATE_TEST)
         self.assertFalse(gate["allowed"])
         self.assertTrue(any("review of: api" in blocker for blocker in gate["blockers"]))
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.record_review(
+                plan_id, "api", verdict=grogu_plans.PASS,
+                findings="looked at it",
+            )
         self.store.record_review(
             plan_id,
             "api",
             verdict=grogu_plans.PASS,
+            kind=grogu_plans.REVIEW_RUBBER_DUCK,
             model="claude-opus-5",
             findings="walked the token bucket refill and the 429 path",
         )
@@ -708,7 +717,7 @@ class PlanStoreTests(unittest.TestCase):
     def test_finalized_stages_stay_readable(self):
         plan_id = self.plan()
         self.complete_all(plan_id)
-        self.store.finalize(plan_id)
+        self.store.finalize(plan_id, as_user=True)
         body = self.store.read_stage(plan_id, grogu_plans.TESTING, role=grogu_plans.TESTER)
         self.assertIn("testing body", body)
 
@@ -1013,8 +1022,23 @@ class LoopClosureTests(unittest.TestCase):
         with self.assertRaises(grogu_plans.PlanError):
             self.store.set_stage_state(plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE)
         with self.assertRaises(grogu_plans.PlanError):
-            self.store.finalize(plan_id, force=True)
+            self.store.finalize(plan_id, force=True, as_user=True)
         self.assertTrue((self.store.plan_dir(plan_id) / "testing.sealed").exists())
+
+    def test_an_undeclared_caller_may_not_complete_a_sealed_stage_or_finalize(self):
+        """Default-deny: the role check was only as strong as the willingness
+        to declare a role, and the one role it exists to stop is the one with a
+        reason not to."""
+        plan_id = self.plan()
+        self.store.set_stage_state(plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE)
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.set_stage_state(plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE)
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.finalize(plan_id, force=True)
+        self.store.set_stage_state(
+            plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE, as_user=True
+        )
+        self.assertTrue(self.store.finalize(plan_id, force=True, as_user=True)["emitted"])
 
     def test_a_required_security_review_is_not_satisfied_by_any_other_review(self):
         plan_id = self.plan()
@@ -1044,7 +1068,9 @@ class LoopClosureTests(unittest.TestCase):
             self.store.set_stage_state(
                 plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
             )
-            self.store.set_stage_state(plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE)
+            self.store.set_stage_state(
+            plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE, role=grogu_plans.TESTER
+        )
         self.assertFalse(self.store.load(plan_id).get("escalated"))
 
     def test_agents_in_two_worktrees_share_one_plan_store(self):
@@ -1243,3 +1269,119 @@ class ParallelSteeringTests(unittest.TestCase):
             [],
             "upgrading replayed every previously-read note",
         )
+
+
+class ReAuditRegressionTests(unittest.TestCase):
+    """The second review's findings, each reproduced before it was fixed."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+
+    def _plan(self, **kwargs):
+        plan = self.store.create("Test plan", **kwargs)
+        for stage in plan["stages"]:
+            owner = sorted(grogu_plans.STAGE_WRITERS[stage])[0]
+            body = (
+                valid_design_spec()
+                if stage == grogu_plans.DESIGN
+                else f"# {stage} body\n"
+            )
+            self.store.write_stage(plan["id"], stage, body, role=owner)
+        return plan["id"]
+
+    def test_a_late_defect_invalidates_a_finished_test_run(self):
+        """The auto-close fix opened a hole: a defect filed after testing was
+        complete closed itself when the engineer re-completed implementation,
+        and finalize then saw no open defects and a complete test stage."""
+        plan_id = self._plan()
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+            role=grogu_plans.ENGINEER,
+        )
+        self.store.set_stage_state(
+            plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE, role=grogu_plans.TESTER
+        )
+        self.store.report_defect(
+            plan_id, report="late regression in the retry path",
+            route=grogu_plans.ROUTE_IMPLEMENTATION, raised_by=grogu_plans.TESTER,
+        )
+        self.assertEqual(
+            self.store.load(plan_id)["stage_state"][grogu_plans.TESTING],
+            grogu_plans.PENDING,
+        )
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+            role=grogu_plans.ENGINEER,
+        )
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.finalize(plan_id, as_user=True)
+        self.assertIn("testing", str(caught.exception))
+        self.store.set_stage_state(
+            plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE, role=grogu_plans.TESTER
+        )
+        self.assertTrue(self.store.finalize(plan_id, as_user=True)["emitted"])
+
+    def test_a_design_defect_closes_when_the_design_is_revised(self):
+        """`stage design complete` was the only closing edge, and nothing in
+        the normal path runs it — so one design defect shut the test gate for
+        the rest of the plan's life."""
+        plan_id = self._plan(design=True)
+        self.store.report_defect(
+            plan_id, report="the spacing rule is ambiguous",
+            route=grogu_plans.ROUTE_DESIGN, raised_by=grogu_plans.ENGINEER,
+        )
+        self.assertEqual(self.store.load(plan_id)["defects"][0]["status"], grogu_plans.PENDING)
+        self.store.write_stage(
+            plan_id, grogu_plans.DESIGN, valid_design_spec() + "\nrevised\n",
+            role=grogu_plans.DESIGNER,
+        )
+        self.assertEqual(self.store.load(plan_id)["defects"][0]["status"], grogu_plans.RESOLVED)
+
+    def test_a_required_review_kind_cannot_be_defaulted_into(self):
+        """Defaulting the kind to the requirement meant a security review was a
+        label you got for free."""
+        plan_id = self._plan()
+        self.store.add_workstream(
+            plan_id, name="auth", paths=["src/auth/**"],
+            review=grogu_plans.REVIEW_SECURITY,
+        )
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.record_review(
+                plan_id, "auth", verdict=grogu_plans.PASS, findings="looked at it",
+            )
+        record = self.store.record_review(
+            plan_id, "auth", verdict=grogu_plans.PASS,
+            kind=grogu_plans.REVIEW_SECURITY,
+            findings="walked the token verification and the session fixation path",
+        )
+        self.assertEqual(record["kind"], grogu_plans.REVIEW_SECURITY)
+
+    def test_the_signed_off_commit_is_the_one_the_caller_is_working_on(self):
+        """Plan state lives in the primary checkout so parallel worktrees share
+        a lock, but the build a designer looked at is the one in *their*
+        worktree."""
+        repo = self.root / "checkout"
+        repo.mkdir()
+        for arguments in (
+            ["init", "-q", "."],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "T"],
+        ):
+            subprocess.run(["git", *arguments], cwd=str(repo), check=True,
+                           capture_output=True)
+        (repo / "a.txt").write_text("x", encoding="utf8")
+        subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=str(repo), check=True,
+                       capture_output=True)
+        here = Path.cwd()
+        os.chdir(repo)
+        self.addCleanup(os.chdir, here)
+        self.assertEqual(
+            grogu_plans.working_head(), grogu_plans.head_commit(repo)
+        )
+        self.assertNotEqual(grogu_plans.working_head(), "")

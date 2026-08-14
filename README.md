@@ -274,7 +274,11 @@ blocks only where the destination is published, because a colleague's address
 in a private repository is not a leak and a guard that fires on it teaches
 everybody to pass `--no-verify`. `grogu plan finalize` refuses to publish plans
 containing either, and harness friction is redacted on its way out of the
-repository it was written in.
+repository it was written in. It is an accident guard rather than a security
+boundary: it does not see pull request bodies, commit messages, search queries
+or agent transcripts, and it only recognises credentials with a familiar shape.
+Read what Grogu is about to publish; this sits beneath that judgement, not in
+place of it.
 
 [docs/pipeline.md](docs/pipeline.md) explains each constraint and why it exists.
 

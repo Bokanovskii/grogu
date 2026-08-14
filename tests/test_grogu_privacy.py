@@ -7,6 +7,7 @@ is routinely overridden is worse than none, because it also carries assurance.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -217,7 +218,7 @@ class PipelineEgressTests(unittest.TestCase):
             role=plans.ARCHITECT,
         )
         with self.assertRaises(plans.PlanError) as caught:
-            self.store.finalize(plan["id"], force=True)
+            self.store.finalize(plan["id"], force=True, as_user=True)
         self.assertIn("must not be published", str(caught.exception))
 
     def test_harness_friction_is_redacted_before_it_leaves_the_repository(self):
@@ -237,3 +238,76 @@ class PipelineEgressTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorktreeHookTests(unittest.TestCase):
+    """`.git` is a file in a linked worktree, and hooks are shared."""
+
+    def test_the_hook_installs_into_the_shared_hooks_directory(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name)
+        repo = base / "main"
+        repo.mkdir()
+
+        def git(*arguments, cwd=None):
+            return subprocess.run(
+                ["git", *arguments], cwd=str(cwd or repo), check=True,
+                capture_output=True, text=True,
+            )
+
+        git("init", "-q", "-b", "main", ".")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "T")
+        (repo / "a.txt").write_text("x", encoding="utf8")
+        git("add", "-A")
+        git("commit", "-qm", "init")
+        linked = base / "linked"
+        git("worktree", "add", "-q", str(linked), "-b", "side")
+        self.assertTrue((linked / ".git").is_file(), "expected a linked worktree")
+
+        installed = grogu_privacy.install_hook(
+            linked, python=sys.executable, script=str(ROOT / "src" / "grogu_cli.py")
+        )
+        self.assertTrue(installed.exists())
+        self.assertEqual(
+            installed.resolve(), (repo / ".git" / "hooks" / "pre-commit").resolve(),
+            "the hook must land in the shared hooks directory, not a per-worktree one",
+        )
+
+
+class JsonNoticeTests(unittest.TestCase):
+    """An agent that only calls --json commands has no other channel."""
+
+    def test_a_pending_notice_rides_inside_the_json_payload(self):
+        sys.path.insert(0, str(ROOT / "src"))
+        import io
+        import contextlib
+
+        import grogu_cli
+
+        original = grogu_cli._PENDING_NOTICE
+        self.addCleanup(setattr, grogu_cli, "_PENDING_NOTICE", original)
+        grogu_cli._PENDING_NOTICE = "steering: prefer the existing helper"
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            grogu_cli.print_json({"allowed": True})
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload["grogu_notice"], "steering: prefer the existing helper")
+        self.assertEqual(
+            grogu_cli._PENDING_NOTICE, "", "a delivered notice must not print twice"
+        )
+
+    def test_a_list_payload_leaves_the_notice_for_the_trailer(self):
+        sys.path.insert(0, str(ROOT / "src"))
+        import io
+        import contextlib
+
+        import grogu_cli
+
+        original = grogu_cli._PENDING_NOTICE
+        self.addCleanup(setattr, grogu_cli, "_PENDING_NOTICE", original)
+        grogu_cli._PENDING_NOTICE = "steering: something"
+        with contextlib.redirect_stdout(io.StringIO()):
+            grogu_cli.print_json([1, 2, 3])
+        self.assertEqual(grogu_cli._PENDING_NOTICE, "steering: something")
