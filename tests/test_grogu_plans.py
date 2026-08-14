@@ -2858,3 +2858,63 @@ class OneAgentIsOneIdentityTests(unittest.TestCase):
             self.store._ack_key(grogu_plans.ARCHITECT, "other-one"),
             "architect@other-one",
         )
+
+
+class PaddedStageTests(unittest.TestCase):
+    """A sealed stage nobody else reads has to be worth reading.
+
+    The first tester run in this pipeline's life was handed a testing plan that
+    was one sentence repeated ninety times. It coped, and filed friction. The
+    next one might have tested nothing and reported that it passed, and neither
+    the architect nor the gate would have noticed.
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.plan = self.store.create("padding", evaluation=True)["id"]
+
+    def test_one_sentence_ninety_times_is_not_a_testing_plan(self):
+        body = "A real sentence about how the tester checks a null AQI. " * 90
+        with self.assertRaises(grogu_plans.PlanError) as refused:
+            self.store.write_stage(self.plan, "testing", body, role="architect")
+        self.assertIn("padding, not a plan", str(refused.exception))
+
+    def test_a_terse_plan_is_still_a_plan(self):
+        # The failure mode to avoid is a check that makes an architect pad to
+        # get past it, which is the thing being caught.
+        body = (
+            "# Testing\n\n"
+            "Load a file where every value is empty and assert nothing is zero.\n"
+            "Load a file with a real zero and assert it still renders as zero.\n"
+            "Kill the network mid-fetch and assert the cache shows its true age.\n"
+            "Assert the renderer never shows a category for a null reading.\n"
+            "Run the whole suite twice to catch order dependence between cases.\n"
+        )
+        self.store.write_stage(self.plan, "testing", body, role="architect")
+
+    def test_a_long_real_plan_is_not_mistaken_for_padding(self):
+        body = "\n".join(
+            f"Step {index}: check the {word} path and record what came back, "
+            f"then compare it against the recorded fixture for {word}."
+            for index, word in enumerate(
+                "parser renderer cache network clock storage retry timeout "
+                "fallback alert nearest hourly".split()
+            )
+        )
+        self.assertEqual(grogu_plans.padded_body(body), "")
+
+    def test_a_repeated_boilerplate_line_does_not_condemn_a_real_plan(self):
+        # A checklist repeats "Record the result." after every step; that is a
+        # plan with a habit, not padding.
+        body = "\n".join(
+            f"Check that the {word} behaves as the contract says. Record the result."
+            for word in (
+                "parser renderer cache network clock storage retry timeout "
+                "fallback alert nearest hourly reader writer"
+            ).split()
+        )
+        self.assertEqual(grogu_plans.padded_body(body), "")

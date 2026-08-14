@@ -1549,6 +1549,18 @@ def _plan_id_argument(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(_plan_id_required=True)
 
 
+#: Words that appear where a plan id goes but name a stage or a gate instead.
+_STAGE_WORDS = frozenset(
+    set(grogu_plans.GATES)
+    | {
+        grogu_plans.DESIGN,
+        grogu_plans.IMPLEMENTATION,
+        grogu_plans.TESTING,
+        grogu_plans.EVALUATION,
+    }
+)
+
+
 def _resolve_plan_id(parsed: argparse.Namespace) -> bool:
     """Fill in the plan id from the environment; False when there is none."""
     if not hasattr(parsed, "id"):
@@ -1556,6 +1568,18 @@ def _resolve_plan_id(parsed: argparse.Namespace) -> bool:
     # The commands that spell the id as a flag also accept it positionally, for
     # the same reason the flag has two names: an agent that has just learned
     # `plan status <id>` should not have to unlearn it one subcommand later.
+    # A plan id has a shape, and these words are not it. `plan gate test
+    # --plan <id>` is what a tester types -- the brief teaches both halves --
+    # and it was answered with "two plans given, 'test' and 'p-...'", because
+    # the stage word landed in the id positional and the conflict check fired
+    # before the subcommand ever got to recognise it.
+    if getattr(parsed, "id", "") in _STAGE_WORDS:
+        parsed.stage_positional = parsed.id
+        # `plan gate test <id>` puts the stage in the first slot and the plan
+        # in the second, so promote it here rather than in the handler: the
+        # missing-id check below runs first and would refuse a complete
+        # command.
+        parsed.id = (getattr(parsed, "gate_positional", "") or "").strip()
     positional = (getattr(parsed, "plan_positional", "") or "").strip()
     if positional and not parsed.id:
         parsed.id = positional
@@ -1945,6 +1969,11 @@ def plan_gate(args: argparse.Namespace) -> int:
     # took verbs (implement, test), so the vocabulary the harness taught was
     # rejected by the harness.
     stage = _GATE_ALIASES.get(args.stage, args.stage)
+    # Either order: the stage word may arrive in the id slot or the extra one,
+    # depending on whether the plan id was given as a flag or positionally.
+    recovered = getattr(args, "stage_positional", "")
+    if recovered and not stage:
+        stage = _GATE_ALIASES.get(recovered, recovered)
     if _GATE_ALIASES.get(args.id, args.id) in grogu_plans.GATES and not stage:
         stage, args.id = (
             _GATE_ALIASES.get(args.id, args.id),
@@ -4017,6 +4046,11 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[plan_common],
     )
     _plan_id_argument(plan_gate_parser)
+    # `plan gate test <id>` is the shape a tester reaches for: the gate, then
+    # the thing it is about. One positional slot could hold only one of them.
+    plan_gate_parser.add_argument(
+        "gate_positional", nargs="?", default="", help=argparse.SUPPRESS
+    )
     plan_gate_parser.add_argument(
         "--stage", choices=list(grogu_plans.GATES) + sorted(_GATE_ALIASES)
     )

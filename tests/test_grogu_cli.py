@@ -2160,6 +2160,25 @@ class PlanIdFromEnvironmentTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn(self.plan, result.stdout)
 
+    def test_a_gate_takes_the_stage_and_the_plan_in_any_arrangement(self):
+        # `plan gate test --plan <id>` is what a tester types, because the
+        # brief teaches both halves, and it was answered with "two plans
+        # given, 'test' and 'p-...'": the stage word landed in the id slot and
+        # the conflict check fired before the gate could recognise it.
+        for arguments in (
+            ["plan", "gate", "test", "--plan", self.plan],
+            ["plan", "gate", "test", self.plan],
+            ["plan", "gate", "--stage", "test", self.plan],
+            ["plan", "gate", self.plan, "--stage", "test"],
+            ["plan", "gate", "implement", self.plan],
+        ):
+            with self.subTest(arguments=" ".join(arguments[2:])):
+                result = self._run(arguments)
+                # 0 allowed, 3 blocked; either means the command was
+                # understood. 2 is the usage error this is about.
+                self.assertIn(result.returncode, (0, 3), result.stderr)
+                self.assertIn(self.plan, result.stdout)
+
     def test_naming_two_different_plans_is_refused_rather_than_guessed(self):
         result = self._run(
             ["plan", "brief", "--role", "engineer", "p-other", "--plan", self.plan]
