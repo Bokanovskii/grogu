@@ -23,6 +23,42 @@ agreement so concurrent sessions never race or silently overwrite each
 other's work (invoke the `grogu-tasks` skill for the claim/heartbeat/release
 lifecycle and inbox relay steps).
 
+Grogu is a general assistant before it is a build harness. Research, messages,
+email, errands, reading and thinking out loud never touch the architect,
+designer, engineer or tester — `grogu plan triage` returns `software: false` for
+them and the answer is simply the answer. The word "plan" in "plan a trip" is
+not a planning cycle.
+
+Substantial work on a repository is planned before it is built. Run `grogu plan
+triage "<request>"` first: it is deterministic and free, and it exists so that
+questions, steering, retrieval and obvious one-line changes are answered
+directly instead of burning a planning cycle. When it returns `plan`, invoke the
+`grogu-pipeline` skill and follow it — the roles, the sealed stages, the review
+and design gates, the loops and the finish steps are all specified there. Do not
+reconstruct that process from memory; the skill is the source of truth and
+`docs/pipeline.md` is the reasoning behind it.
+
+Treat `grogu plan gate` as binding. It is a state check rather than advice, and
+when the user asked for a plan directly it refuses work until they approve it —
+autopilot does not waive user review. The testing and evaluation plans are
+sealed from the engineer, because an implementation written against its own
+tests only proves the tests were satisfiable; never decode a sealed stage to
+route around that.
+
+Record friction whenever Grogu itself gets in the way — a command that should
+exist, output that had to be parsed by hand, a step that took three calls and
+should have taken one — with `grogu plan friction --harness --note "..."`, from
+any session, inside a plan or not. It pools across every repository and is
+surfaced back to the user unprompted. When it reports a cluster as ripe, the fix
+belongs in the Grogu checkout, and a session there should propose that work
+rather than noting it and moving on.
+
+Record steering with `grogu plan steer` so it reaches agents spawned later, and
+relay it to running subagents by pointing at the command rather than pasting the
+text. Give each repository its own role context in
+`.grogu/roles/{architect,designer,engineer,tester}.md` instead of putting
+repository-specific knowledge in the harness.
+
 Record and query the cross-project relationship catalog with `grogu project
 {init, list, relate, graph}`, not by hand-tracking which repositories depend
 on each other.
@@ -31,16 +67,12 @@ Run `grogu doctor` when the environment seems misconfigured (missing Copilot
 binary, missing or unreadable `.github/AGENTS.md`, trace/catalog database
 paths) before assuming a code change is required.
 
-At the start of every launch, Grogu fast-forwards the primary checkout's
-clean `main` to `origin/main` (never switching branches or discarding
-work), then checks for stale self-modification worktrees (branch merged
-into `main`, remote branch deleted, or pull request merged per `gh`) and
-removes any with no uncommitted changes; `grogu doctor` reports whether
-`main` is behind `origin/main` and any stale worktrees still standing. Use
-`grogu worktree list` / `grogu worktree prune [--dry-run]` to inspect or
-clean them up by hand, `GROGU_SYNC_MAIN=0` to disable the automatic main
-sync, and `GROGU_PRUNE_WORKTREES=0` to disable the automatic worktree
-check.
+Each launch fast-forwards the primary checkout's clean `main` to `origin/main`
+(never switching branches or discarding work) and removes stale self-modification
+worktrees with no uncommitted changes. `grogu doctor` reports what is behind or
+still standing; `grogu worktree list` / `grogu worktree prune [--dry-run]`
+inspect or clean by hand, and `GROGU_SYNC_MAIN=0` / `GROGU_PRUNE_WORKTREES=0`
+disable each.
 
 For coding work, explore narrowly: inspect Git state and project instructions, locate the relevant implementation and tests, trace the smallest useful call chain, edit minimally, and run targeted validation. Do not claim success without evidence.
 
@@ -76,7 +108,19 @@ runs `grogu personal confirm`; never confirm a candidate on the user's
 behalf. Use `grogu personal recall` for bounded context instead of dumping
 the whole personal graph into a prompt.
 
-Use read-only operations by default. Ask for confirmation before destructive changes, external messages, sending email, deployment, spending money, or other irreversible side effects. Never expose secrets or personal data in traces.
+Use read-only operations by default. Ask for confirmation before destructive changes, external messages, sending email, deployment, spending money, or other irreversible side effects.
+
+Grogu reads private repositories, mail and messages and writes to public ones,
+so treat every commit, published plan and outbound message as a boundary the
+user's private context must not cross. Run `grogu guard install` once per
+repository so the pre-commit hook scans staged additions, and `grogu guard
+scan` before pasting collected text anywhere it will be published. Never quote
+a credential, address, phone number or account identifier into a plan, issue,
+pull request, commit message, trace or telemetry record; refer to where the
+value lives instead. The guard sees staged commits, plans being published and
+harness friction — not pull request or issue bodies, commit messages, search
+queries or transcripts — so it catches recognisable mistakes in three places
+and does not replace deciding what is fit to publish.
 
 When a web interface or browser behavior needs validation, use the configured Playwright MCP capability when available. Prefer isolated/headless checks and targeted assertions; browser access does not authorize external side effects.
 

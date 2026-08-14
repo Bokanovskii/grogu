@@ -13,6 +13,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CLI = ROOT / "src" / "grogu_cli.py"
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "tests"))
+
+import _sandbox  # noqa: E402,F401  (redirects GROGU_HOME and HOME away from the real one)
 
 import grogu_banner  # noqa: E402
 import grogu_cli
@@ -21,6 +24,7 @@ import grogu_context  # noqa: E402
 import grogu_gmail  # noqa: E402
 import grogu_imessage  # noqa: E402
 import grogu_mcp  # noqa: E402
+import grogu_plans  # noqa: E402
 import grogu_memory  # noqa: E402
 import grogu_personal_memory  # noqa: E402
 import grogu_telemetry  # noqa: E402
@@ -1806,6 +1810,9 @@ class SeaglassFlatteningTests(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    grogu_mcp.available(), "requires Python 3.10+ with the 'mcp' package installed"
+)
 class CodemodeMcpExecTests(unittest.TestCase):
     """Exercises `grogu codemode exec` calling MCP tools end to end via the
     CLI, using the same echo fixture server as GroguMcpTests. No flag is
@@ -1903,3 +1910,790 @@ class CodemodeMcpExecTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlanSteeringReadTests(unittest.TestCase):
+    """Polling for steering must not cost the history every time."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+
+    def run_cli(self, *arguments, role=""):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = str(self.repo / "home")
+        environment.pop("GROGU_AGENT", None)
+        if role:
+            environment["GROGU_ROLE"] = role
+        else:
+            environment.pop("GROGU_ROLE", None)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def _plan(self):
+        result = self.run_cli("plan", "new", "steering read")
+        return result.stdout.strip()
+
+    def test_a_role_scoped_read_shows_each_note_once(self):
+        plan = self._plan()
+        self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
+        first = self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer", role="engineer"
+        )
+        self.assertIn("use zero for HUF", first.stdout)
+        second = self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer", role="engineer"
+        )
+        self.assertNotIn("use zero for HUF", second.stdout)
+        self.assertIn("no unread steering", second.stdout)
+        replay = self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer", "--all", role="engineer"
+        )
+        self.assertIn("use zero for HUF", replay.stdout)
+
+    def test_the_user_looking_does_not_consume_the_note(self):
+        """Checking that steering landed used to ack it for the agent."""
+        plan = self._plan()
+        self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
+        for _ in range(2):
+            peek = self.run_cli("plan", "steering", "--plan", plan, "--role", "engineer")
+            self.assertIn("use zero for HUF", peek.stdout)
+            self.assertIn("you are looking, not consuming", peek.stdout)
+        agent = self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer", role="engineer"
+        )
+        self.assertIn("use zero for HUF", agent.stdout)
+
+    def test_naming_a_role_to_inspect_does_not_put_the_user_on_the_board(self):
+        """A person checking a note appeared as the agent they had steered."""
+        plan = self._plan()
+        self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
+        self.run_cli("plan", "steering", "--plan", plan, "--role", "engineer")
+        feed = Path(self.repo) / "home" / "activity.jsonl"
+        roles = {
+            json.loads(line).get("role", "")
+            for line in feed.read_text().splitlines()
+            if line.strip()
+        }
+        self.assertEqual(roles, {""})
+
+    def test_acking_for_another_agent_does_not_ack_for_this_one(self):
+        plan = self._plan()
+        self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
+        proxy = self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer",
+            "--ack", "--agent", "s1-engineer",
+        )
+        self.assertIn("s1-engineer", proxy.stdout)
+        status = self.run_cli("plan", "status", plan, "--json")
+        payload = json.loads(status.stdout)
+        self.assertEqual(payload["steering_undelivered"], [])
+
+    def test_status_says_when_a_note_has_reached_nobody(self):
+        plan = self._plan()
+        self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
+        status = self.run_cli("plan", "status", plan)
+        self.assertIn("has not reached engineer", status.stdout)
+
+
+class SteerNoteAliasTests(unittest.TestCase):
+    """Two write commands took the note two different ways."""
+
+    def _run(self, *arguments):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = self.home
+        environment.pop("GROGU_ROLE", None)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments],
+            cwd=self.project,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.home = self.temporary.name
+        self.project = self.temporary.name
+        self.addCleanup(self.temporary.cleanup)
+
+    def test_the_note_can_be_given_the_same_way_friction_takes_it(self):
+        created = self._run("plan", "new", "alias")
+        plan_id = created.stdout.split()[0]
+        result = self._run("plan", "steer", "--plan", plan_id, "--note", "use decimal")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("recorded", result.stdout)
+
+    def test_an_empty_note_is_refused_rather_than_recorded_blank(self):
+        created = self._run("plan", "new", "alias")
+        plan_id = created.stdout.split()[0]
+        result = self._run("plan", "steer", "--plan", plan_id)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("nothing to steer", result.stderr)
+
+
+class DefectResolveAliasTests(unittest.TestCase):
+    """The command an engineer reaches for should be the command that works."""
+
+    def _run(self, *arguments, role=""):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = self.home
+        environment.pop("GROGU_ROLE", None)
+        if role:
+            environment["GROGU_ROLE"] = role
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments],
+            cwd=self.home,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.home = self.temporary.name
+        self.addCleanup(self.temporary.cleanup)
+        self.plan = self._run("plan", "new", "defect alias").stdout.split()[0]
+
+    def test_a_defect_can_be_closed_from_the_command_that_filed_it(self):
+        filed = self._run(
+            "plan", "defect", self.plan, "--report", "rounds the wrong way",
+            "--route", "implementation", role="tester",
+        )
+        self.assertEqual(filed.returncode, 0, filed.stderr)
+        closed = self._run(
+            "plan", "defect", self.plan, "--resolve", "d1",
+            "--note", "restored half-up", role="engineer",
+        )
+        self.assertEqual(closed.returncode, 0, closed.stderr)
+        self.assertIn("d1 resolved", closed.stdout)
+
+    def test_filing_without_a_route_says_what_is_missing(self):
+        result = self._run(
+            "plan", "defect", self.plan, "--report", "broken", role="tester"
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--report and --route", result.stderr)
+
+
+class SubcommandUsageTests(unittest.TestCase):
+    """A mistyped flag printed the usage for the whole binary."""
+
+    def test_the_usage_shown_is_the_subcommands_own(self):
+        with tempfile.TemporaryDirectory() as home:
+            environment = os.environ.copy()
+            environment["GROGU_HOME"] = home
+            result = subprocess.run(
+                [sys.executable, str(CLI), "plan", "stage", "p-1",
+                 "--stage", "implementation", "--state", "complete"],
+                cwd=home,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage: grogu plan stage", result.stderr)
+        self.assertNotIn("{doctor,", result.stderr)
+
+
+class PlanIdFromEnvironmentTests(unittest.TestCase):
+    """Every role prompt exports GROGU_PLAN; the commands ignored it."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.plan = self.store.create("status line")["id"]
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+
+    def _run(self, arguments, environment=None):
+        env = dict(os.environ, **(environment or {}))
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_a_gate_takes_its_plan_from_the_environment(self):
+        result = self._run(
+            ["plan", "gate", "--stage", "implement"], {"GROGU_PLAN": self.plan}
+        )
+        self.assertIn(self.plan, result.stdout)
+
+    def test_a_gate_takes_the_stage_positionally(self):
+        result = self._run(["plan", "gate", "implement"], {"GROGU_PLAN": self.plan})
+        self.assertIn("implement", result.stdout)
+
+    def test_a_missing_plan_says_so_rather_than_printing_usage(self):
+        result = self._run(["plan", "gate", "--stage", "implement"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("GROGU_PLAN", result.stderr)
+
+    def test_a_brief_takes_its_plan_from_the_environment(self):
+        result = self._run(
+            ["plan", "brief", "--role", "engineer"], {"GROGU_PLAN": self.plan}
+        )
+        self.assertIn(self.plan, result.stdout)
+
+    def test_the_plan_id_is_spelled_the_same_way_everywhere(self):
+        # An architect's very first command failed because the spawn prompt
+        # said --id and brief wanted --plan. A fresh agent with one instruction
+        # and no context is the least recoverable place to be wrong, and there
+        # is nothing to be gained by making it guess which of three spellings a
+        # given subcommand happens to take.
+        for command in (["plan", "brief", "--role", "engineer"], ["plan", "status"]):
+            for spelling in (["--plan", self.plan], ["--id", self.plan], [self.plan]):
+                with self.subTest(command=command[1], spelling=spelling[0]):
+                    result = self._run(command + spelling)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(self.plan, result.stdout)
+
+    def test_naming_two_different_plans_is_refused_rather_than_guessed(self):
+        result = self._run(
+            ["plan", "brief", "--role", "engineer", "p-other", "--plan", self.plan]
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("name it once", result.stderr)
+
+
+class AdoptedTasteIsNotReportedAsMissingTests(unittest.TestCase):
+    """The user adopted Apple's set and was told nothing was learned."""
+
+    def test_status_credits_the_set_the_user_chose(self):
+        with tempfile.TemporaryDirectory() as home:
+            environment = dict(os.environ, GROGU_HOME=home)
+            environment.pop("GROGU_ROLE", None)
+            subprocess.run(
+                [sys.executable, str(CLI), "design", "seed", "--apple"],
+                env=environment, capture_output=True, text=True, check=True,
+            )
+            result = subprocess.run(
+                [sys.executable, str(CLI), "design", "status"],
+                env=environment, capture_output=True, text=True, check=True,
+            )
+        self.assertIn("you adopted from Apple's Human Interface Guidelines", result.stdout)
+        self.assertIn("nothing is owed", result.stdout)
+        self.assertNotIn("seeded defaults", result.stdout)
+        self.assertNotIn("learned from you", result.stdout)
+
+
+class SteerTakesThePlanIdLikeEveryOtherCommandTests(unittest.TestCase):
+    """`plan steer p-... --note x` recorded the plan id as the note."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+
+    def run_cli(self, *arguments):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = str(self.repo / "home")
+        environment.pop("GROGU_ROLE", None)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
+            cwd=self.repo, capture_output=True, text=True, env=environment,
+        )
+
+    def test_a_leading_plan_id_scopes_rather_than_becoming_the_note(self):
+        plan = self.run_cli("plan", "new", "steer shape").stdout.strip()
+        recorded = self.run_cli(
+            "plan", "steer", plan, "--role", "engineer", "--note", "use the real feed"
+        )
+        self.assertIn(f"recorded for engineer on {plan}", recorded.stdout)
+        shown = self.run_cli("plan", "steering", "--plan", plan, "--role", "engineer", "--all")
+        self.assertIn("use the real feed", shown.stdout)
+        self.assertNotIn(f": {plan}", shown.stdout)
+
+    def test_two_notes_at_once_is_refused_rather_than_one_dropped(self):
+        plan = self.run_cli("plan", "new", "steer shape").stdout.strip()
+        result = self.run_cli(
+            "plan", "steer", plan, "positional note", "--note", "flag note"
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("pass the note once", result.stderr)
+
+
+class SupervisionIsNotWorkTests(unittest.TestCase):
+    """The user steering appeared on the board as the agent they steered."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+        self.home = str(self.repo / "home")
+
+    def run_cli(self, *arguments, role=""):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = self.home
+        environment.pop("GROGU_AGENT", None)
+        if role:
+            environment["GROGU_ROLE"] = role
+        else:
+            environment.pop("GROGU_ROLE", None)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
+            cwd=self.repo, capture_output=True, text=True, env=environment,
+        )
+
+    def _roles(self):
+        feed = Path(self.home) / "activity.jsonl"
+        return [
+            json.loads(line).get("role", "")
+            for line in feed.read_text().splitlines()
+            if line.strip()
+        ]
+
+    def test_a_bound_agent_does_not_lend_its_role_to_the_user(self):
+        plan = self.run_cli("plan", "new", "binding").stdout.strip()
+        # The engineer's brief binds the role to this working directory.
+        self.run_cli("plan", "brief", "--role", "engineer", "--plan", plan, role="engineer")
+        self.run_cli("plan", "steer", plan, "--note", "prefer the real feed")
+        self.run_cli("watch")
+        self.assertEqual(self._roles()[-2:], ["", ""])
+
+    def test_an_agent_that_declares_itself_is_still_shown(self):
+        plan = self.run_cli("plan", "new", "binding").stdout.strip()
+        self.run_cli("plan", "steer", plan, "--note", "from the architect", role="architect")
+        self.assertEqual(self._roles()[-1], "architect")
+
+
+class ArchitectFrictionTests(unittest.TestCase):
+    """Bugs a real architect hit while planning a real project.
+
+    Every one of these was reported by an opus-5 architect agent that was
+    asked to build a plan for a Washington air quality site and to treat
+    anything that got in its way as a finding.
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+
+    def run_cli(self, *arguments, role="", agent=""):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = str(self.repo / "home")
+        for name, value in (("GROGU_ROLE", role), ("GROGU_AGENT", agent)):
+            if value:
+                environment[name] = value
+            else:
+                environment.pop(name, None)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def _plan(self):
+        return self.run_cli("plan", "new", "air quality").stdout.strip()
+
+    def test_show_takes_the_stage_the_way_write_taught_it(self):
+        """`plan write <id> testing` works, so `plan show <id> testing` must."""
+        plan = self._plan()
+        self.run_cli(
+            "plan", "write", plan, "implementation", "--body", "x" * 200, role="architect"
+        )
+        positional = self.run_cli("plan", "show", plan, "implementation", role="architect")
+        self.assertEqual(positional.returncode, 0, positional.stderr)
+        self.assertIn("x" * 20, positional.stdout)
+        flagged = self.run_cli(
+            "plan", "show", plan, "--stage", "implementation", role="architect"
+        )
+        self.assertEqual(positional.stdout, flagged.stdout)
+
+    def test_show_names_a_bad_stage_instead_of_an_argparse_error(self):
+        plan = self._plan()
+        result = self.run_cli("plan", "show", plan, "implementaton", role="architect")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no stage called", result.stderr)
+        self.assertIn("implementation", result.stderr)
+
+    def test_two_stages_at_once_are_refused(self):
+        plan = self._plan()
+        result = self.run_cli(
+            "plan", "show", plan, "testing", "--stage", "implementation", role="architect"
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("two stages", result.stderr)
+
+    def test_status_never_shows_an_agent_its_own_note_clipped(self):
+        """The clipped supervision line is for the person, not the addressee.
+
+        An architect read 87 characters of the note that invalidated its
+        architecture through `plan status` and believed it had read the note.
+        """
+        plan = self._plan()
+        note = "Late constraint: no build step. " + ("the rest matters too. " * 12)
+        self.run_cli("plan", "steer", plan, "--role", "engineer", "--note", note)
+        supervisor = self.run_cli("plan", "status", plan)
+        self.assertIn("has not reached", supervisor.stdout)
+        self.assertIn("...", supervisor.stdout)
+        agent = self.run_cli("plan", "status", plan, role="engineer", agent="e1")
+        self.assertNotIn("has not reached", agent.stdout)
+        self.assertIn(note.strip(), agent.stdout)
+
+    def test_replace_keeps_the_fields_it_was_not_given(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "workstream", plan, "--name", "ingest", "--path", "js/**",
+            "--model", "claude-opus-5", "--review", "code-review",
+            "--brief", "nulls are not zeroes",
+        )
+        result = self.run_cli(
+            "plan", "workstream", plan, "--replace", "--name", "ingest", "--path", "js/data/**"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        streams = json.loads(
+            self.run_cli("plan", "workstreams", plan, "--json").stdout
+        )["workstreams"]
+        ingest = next(stream for stream in streams if stream["name"] == "ingest")
+        self.assertEqual(ingest["paths"], ["js/data/**"])
+        self.assertEqual(ingest["model"], "claude-opus-5")
+        self.assertEqual(ingest["review"], "code-review")
+        self.assertEqual(ingest["brief"], "nulls are not zeroes")
+
+    def test_replace_can_still_clear_a_field_on_purpose(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "workstream", plan, "--name", "ingest", "--path", "js/**",
+            "--model", "claude-opus-5",
+        )
+        self.run_cli(
+            "plan", "workstream", plan, "--replace", "--name", "ingest",
+            "--path", "js/**", "--model", "",
+        )
+        streams = json.loads(
+            self.run_cli("plan", "workstreams", plan, "--json").stdout
+        )["workstreams"]
+        self.assertEqual(streams[0]["model"], "")
+
+    def test_a_workstream_can_be_withdrawn(self):
+        plan = self._plan()
+        self.run_cli("plan", "workstream", plan, "--name", "scaffold", "--path", "index.html")
+        self.run_cli("plan", "workstream", plan, "--name", "web", "--path", "js/ui/**")
+        dropped = self.run_cli("plan", "workstream", plan, "--drop", "--name", "web")
+        self.assertEqual(dropped.returncode, 0, dropped.stderr)
+        streams = json.loads(
+            self.run_cli("plan", "workstreams", plan, "--json").stdout
+        )["workstreams"]
+        self.assertEqual([stream["name"] for stream in streams], ["scaffold"])
+
+    def test_dropping_something_depended_on_is_refused(self):
+        plan = self._plan()
+        self.run_cli("plan", "workstream", plan, "--name", "scaffold", "--path", "index.html")
+        self.run_cli(
+            "plan", "workstream", plan, "--name", "web", "--path", "js/ui/**",
+            "--depends-on", "scaffold",
+        )
+        result = self.run_cli("plan", "workstream", plan, "--drop", "--name", "scaffold")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("web depend", result.stderr)
+
+    def test_dropping_an_unknown_workstream_lists_the_real_ones(self):
+        plan = self._plan()
+        self.run_cli("plan", "workstream", plan, "--name", "scaffold", "--path", "index.html")
+        result = self.run_cli("plan", "workstream", plan, "--drop", "--name", "scafold")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("scaffold", result.stderr)
+
+    def test_byte_counts_are_the_plan_as_a_person_reads_it(self):
+        """A sealed stage is stored compressed; the counts must not be.
+
+        The same write announced 13178 bytes and "replaced 379 bytes", and the
+        truncation warning was comparing compression ratios.
+        """
+        plan = self._plan()
+        first = "First testing plan. " * 400
+        self.run_cli("plan", "write", plan, "testing", "--body", first, role="architect")
+        second = "Second, much shorter. " * 20
+        result = self.run_cli(
+            "plan", "write", plan, "testing", "--body", second, "--replace", role="architect"
+        )
+        self.assertIn(f"({len(second)} bytes)", result.stdout)
+        self.assertIn(f"replaced {len(first)} bytes", result.stdout)
+        self.assertIn(f"went from {len(first)} bytes to {len(second)}", result.stderr)
+        revisions = self.run_cli(
+            "plan", "show", plan, "testing", "--revisions", role="architect"
+        )
+        self.assertIn(f"{len(first)} bytes", revisions.stdout)
+
+    def test_a_declared_role_cannot_claim_another_one(self):
+        """The seal was a norm because --role was a bare assertion."""
+        plan = self._plan()
+        self.run_cli("plan", "write", plan, "testing", "--body", "y" * 200, role="architect")
+        impersonation = self.run_cli(
+            "plan", "show", plan, "testing", "--role", "tester", role="engineer", agent="e1"
+        )
+        self.assertEqual(impersonation.returncode, 2)
+        self.assertIn("cannot act as the tester", impersonation.stderr)
+        self.assertNotIn("y" * 20, impersonation.stdout)
+
+    def test_steering_another_role_is_still_allowed(self):
+        """--role names a subject on the steering commands, not the caller."""
+        plan = self._plan()
+        result = self.run_cli(
+            "plan", "steer", plan, "--role", "tester", "--note", "check nulls",
+            role="engineer", agent="e1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_polling_for_steering_does_not_print_it_twice(self):
+        """The banner delivers to commands that were about something else.
+
+        `plan steering` already prints the notes, so the banner doubled them
+        in one response -- on the single path built to be token-efficient.
+        """
+        plan = self._plan()
+        self.run_cli("plan", "steer", plan, "--role", "engineer", "--note", "one note only")
+        poll = self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer",
+            role="engineer", agent="e1",
+        )
+        self.assertEqual(poll.stdout.count("one note only"), 1, poll.stdout)
+
+    def test_status_does_not_tell_the_user_notes_are_unread_forever(self):
+        """The pending count is per-caller; the user is not the addressee.
+
+        `plan status` said "1 unread steering note(s) for the engineer" and the
+        count never fell when the engineer read it, because what it actually
+        measured was that the user's own shell had not.
+        """
+        plan = self._plan()
+        self.run_cli("plan", "steer", plan, "--role", "engineer", "--note", "read me")
+        before = self.run_cli("plan", "status", plan)
+        self.assertIn("has not reached", before.stdout)
+        self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer",
+            role="engineer", agent="e1",
+        )
+        after = self.run_cli("plan", "status", plan)
+        self.assertNotIn("unread steering note", after.stdout)
+        self.assertNotIn("has not reached", after.stdout)
+
+    def test_orchestrators_can_still_read_the_pending_count(self):
+        plan = self._plan()
+        self.run_cli("plan", "steer", plan, "--role", "engineer", "--note", "read me")
+        payload = json.loads(self.run_cli("plan", "status", plan, "--json").stdout)
+        self.assertEqual(payload["steering_pending"]["engineer"], 1)
+
+
+class DesignerFrictionTests(ArchitectFrictionTests):
+    """Bugs a real designer hit while writing a real design spec."""
+
+    def test_plan_can_be_named_with_a_flag_everywhere(self):
+        """`--plan` is taught by brief/steering, then rejected by status/gate."""
+        plan = self._plan()
+        for command in (
+            ["plan", "status", "--plan", plan],
+            ["plan", "workstreams", "--plan", plan],
+            ["plan", "gate", "--plan", plan, "--stage", "implement"],
+        ):
+            result = self.run_cli(*command)
+            self.assertNotIn("unrecognized arguments", result.stderr, command)
+            self.assertNotIn("usage:", result.stderr, command)
+
+    def test_two_plans_at_once_are_refused(self):
+        result = self.run_cli("plan", "status", "p-aaaaaaaa-aaaaaa", "--plan", "p-bbbbbbbb-bbbbbb")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("two plans", result.stderr)
+
+    def test_complete_is_spelled_the_way_roles_reach_for_it(self):
+        plan = self._plan()
+        self.run_cli("plan", "write", plan, "implementation", "--body", "z" * 200, role="architect")
+        result = self.run_cli("plan", "complete", plan, "implementation", role="engineer")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        status = self.run_cli("plan", "status", plan)
+        self.assertIn("implementation=complete", status.stdout)
+
+    def test_complete_names_a_bad_stage(self):
+        plan = self._plan()
+        result = self.run_cli("plan", "complete", plan, "implementaton", role="engineer")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no stage called", result.stderr)
+
+    def test_a_relayed_note_can_be_audited_without_consuming_it(self):
+        """Being told "you were acked" is only useful if it is checkable."""
+        plan = self._plan()
+        self.run_cli("plan", "steer", plan, "--role", "designer", "--note", "relayed by hand")
+        self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "designer",
+            "--ack", "--agent", "d1",
+        )
+        audit = self.run_cli(
+            "plan", "steering", "--plan", plan, "--audit", "1", role="designer", agent="d1"
+        )
+        self.assertEqual(audit.returncode, 0, audit.stderr)
+        self.assertIn("designer@d1", audit.stdout)
+        self.assertIn("read by", audit.stdout)
+        second = self.run_cli(
+            "plan", "steering", "--plan", plan, "--audit", "1", role="designer", agent="d1"
+        )
+        self.assertIn("designer@d1", second.stdout)
+
+    def test_auditing_an_unknown_note_says_how_to_list_them(self):
+        plan = self._plan()
+        result = self.run_cli("plan", "steering", "--plan", plan, "--audit", "42")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("--all", result.stderr)
+
+    def test_replacing_a_commission_reopens_work_done_against_the_old_one(self):
+        plan = self._plan()
+        self.run_cli("plan", "shape", plan, "--add", "design", role="architect")
+        self.run_cli("plan", "commission", plan, "designer", "--brief", "first brief", role="architect")
+        self.run_cli("plan", "write", plan, "design", "--file", self._spec(), role="designer")
+        self.run_cli("plan", "complete", plan, "design", role="designer")
+        result = self.run_cli(
+            "plan", "commission", plan, "designer", "--replace",
+            "--brief", "the map is out of scope now", role="architect",
+        )
+        self.assertIn("pending again", result.stderr)
+        status = self.run_cli("plan", "status", plan)
+        self.assertIn("design=pending", status.stdout)
+
+    def test_recommissioning_the_same_brief_changes_nothing(self):
+        plan = self._plan()
+        self.run_cli("plan", "shape", plan, "--add", "design", role="architect")
+        self.run_cli("plan", "commission", plan, "designer", "--brief", "same brief", role="architect")
+        self.run_cli("plan", "write", plan, "design", "--file", self._spec(), role="designer")
+        self.run_cli("plan", "complete", plan, "design", role="designer")
+        result = self.run_cli(
+            "plan", "commission", plan, "designer", "--replace",
+            "--brief", "same brief", role="architect",
+        )
+        self.assertNotIn("pending again", result.stderr)
+        self.assertIn("design=complete", self.run_cli("plan", "status", plan).stdout)
+
+    def _spec(self):
+        """A design spec concrete enough that the harness accepts it."""
+        path = self.repo / "spec.md"
+        path.write_text(
+            "# Reading — design\n\n"
+            "## Surfaces\n- #/ the current reading for one area, the whole "
+            "product.\n- #/area/<slug> one area's detail with a 7-day series.\n"
+            "- #/pick the area picker listing all 59 reporting areas.\n\n"
+            "## Hierarchy\nPrimary action is the reading itself; the picker is "
+            "secondary and sits below the fold. Nothing destructive.\n\n"
+            "## States\nDefault shows the number. Empty reads 'No reading this "
+            "hour'. Loading shows the last cached number. Error reads 'Could "
+            "not reach the sensors'.\n\n"
+            "## Flow\nOpen, read, optionally pick another area. Cancel returns "
+            "to the reading; failure keeps the cached number on screen.\n\n"
+            "## Copy\nHeading: 'Air quality'. Button: 'Choose an area'. Error: "
+            "'Could not reach the sensors'. Voice is plain and unhurried: "
+            "'Updated 4 hours ago', not 'Data staleness: 4h'.\n\n"
+            "## Tokens\n--space-2: 8px and --space-4: 16px on a 4px scale. "
+            "Type ramp 13px/17px/20px/128px, weights 400 and 700. Accent "
+            "#0066CC means interaction. Radius 12px. Motion 200ms.\n\n"
+            "## Accessibility\nNumber contrast 5.9:1 on #FFFFFF and 7.1:1 on "
+            "#1C1C1E. Full keyboard path through the picker, focus order top to "
+            "bottom, reduced-motion disables the 200ms fade, dynamic type wraps "
+            "at 320px. The number carries an aria-label naming the category.\n\n"
+            "## Layout\nAt 375x812, with 16px gutters:\n\n"
+            "```\n"
+            "+-----------------------------+\n"
+            "|                             |\n"
+            "|            142              |  128px/700, category colour\n"
+            "|     Unhealthy for some      |  20px/400, neutral ink\n"
+            "|   Seattle - Duwamish 3.2km  |  17px/400\n"
+            "|      Updated 1 hour ago     |  13px/400, secondary ink\n"
+            "|                             |\n"
+            "|      [ Choose an area ]     |  44px tall, accent #0066CC\n"
+            "+-----------------------------+\n"
+            "```\n\n"
+            "## Acceptance criteria\n"
+            "- A missing reading renders the em dash and 'No reading this "
+            "hour', never the digit 0.\n"
+            "- Every text colour measures at least 4.5:1 against its own "
+            "background in both colour schemes.\n"
+            "- The reading is visible at 375x812 without scrolling and without "
+            "any network call beyond the first JSON fetch.\n"
+            "- Every interactive target measures at least 44x44px.\n\n"
+            "## Left to the engineer\nThe sparkline smoothing algorithm, the "
+            "exact wrap breakpoint for dynamic type above 320px, the picker's "
+            "search match strategy, and whether the cached reading is held in "
+            "localStorage or in memory only. None of these change what the "
+            "screen looks like, so they are implementation calls.\n",
+            encoding="utf8",
+        )
+        return str(path)
+
+
+class SupervisorRoleTests(ArchitectFrictionTests):
+    """The role that coordinates the others, and what it may not do."""
+
+    def test_the_supervisor_may_not_approve_for_the_user(self):
+        plan = self._plan()
+        result = self.run_cli("plan", "approve", plan, role="supervisor", agent="sup")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("approval is the user's alone", result.stderr)
+
+    def test_the_supervisor_may_not_write_a_stage(self):
+        plan = self._plan()
+        result = self.run_cli(
+            "plan", "write", plan, "implementation", "--body", "q" * 200,
+            role="supervisor", agent="sup",
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("may not write", result.stderr)
+
+    def test_a_relayed_note_is_marked_as_the_users_words(self):
+        plan = self._plan()
+        result = self.run_cli(
+            "plan", "steer", plan, "--role", "designer", "--relayed",
+            "--note", "the user's actual words", role="supervisor", agent="sup",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("in the user's words", result.stdout)
+        brief = self.run_cli(
+            "plan", "brief", "--plan", plan, "--role", "designer",
+            role="designer", agent="d1",
+        )
+        self.assertIn("(the user, relayed by the supervisor)", brief.stdout)
+
+    def test_the_supervisors_own_note_is_attributed_to_the_supervisor(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "steer", plan, "--role", "designer", "--note", "my own opinion",
+            role="supervisor", agent="sup",
+        )
+        brief = self.run_cli(
+            "plan", "brief", "--plan", plan, "--role", "designer",
+            role="designer", agent="d1",
+        )
+        self.assertIn("(the supervisor) my own opinion", brief.stdout)
+
+    def test_only_the_supervisor_may_claim_a_relay(self):
+        plan = self._plan()
+        for role in ("", "engineer"):
+            result = self.run_cli(
+                "plan", "steer", plan, "--role", "designer", "--relayed",
+                "--note", "not mine to relay", role=role,
+            )
+            self.assertEqual(result.returncode, 3, role)
+            self.assertIn("only the supervisor relays", result.stderr)
+
+    def test_the_audit_says_when_each_agent_was_last_seen(self):
+        """Listing hour-old probes with no context read as a scoping bug."""
+        plan = self._plan()
+        self.run_cli("plan", "steer", plan, "--role", "engineer", "--note", "check me")
+        self.run_cli("plan", "status", plan, role="engineer", agent="live")
+        audit = self.run_cli("plan", "steering", "--plan", plan, "--audit", "1")
+        self.assertIn("engineer@live", audit.stdout)
+        self.assertIn("last seen", audit.stdout)

@@ -192,9 +192,110 @@ so Grogu can start a separate remote session without replacing the current one.
   instruction directories, not substituted for the user's own.
 * **Skills** live in `.github/skills/<name>/SKILL.md`. Add a directory, add a
   skill; nothing needs to be registered.
+* **Agents** live in `.github/agents/<role>.md`. The architect, designer,
+  engineer and tester roles are defined there, and `grogu plan brief` uses the same files as
+  the base of each role's prompt.
 * **Commands** live in `src/grogu_cli.py` as a subparser plus a handler, and are
   added to `GROGU_COMMANDS` so the launcher does not forward them to Copilot.
   Any argument Grogu does not recognise belongs to Copilot.
+
+## Planning: architect, designer, engineer, tester
+
+Substantial work goes through four roles that hand each other files rather than
+conversation. Plans are artifacts on disk; agents get a plan id and a role.
+
+```sh
+grogu plan triage "add rate limiting to the API"   # plan, or answer directly?
+grogu plan new "Rate limiting" --review-required   # implementation + testing plans
+grogu plan write <id> implementation --role architect --file -
+grogu plan gate <id> --stage implement             # exit 3 = do not start
+grogu plan show <id> --stage implementation --role engineer
+```
+
+Work with a user-visible surface adds a design stage:
+
+```sh
+grogu plan new "Settings page" --design
+grogu design recall --scope web                    # the user's own taste
+grogu design template "Settings page"              # the required structure
+grogu plan design-review <id> --verdict pass --evidence shot.png
+```
+
+Five things make this more than a naming scheme:
+
+* **Most requests never enter it.** Grogu is a general assistant first;
+  research, messages, errands and reading are answered directly, and `grogu plan
+  triage` reports `software: false` rather than routing them to an architect.
+* **Not everything is planned.** `grogu plan triage` is deterministic and free.
+  Questions, steering and obvious small edits route `direct`, because spending a
+  model call to decide whether to spend model calls is the waste being avoided.
+* **The engineer cannot read the testing plan.** It is sealed on disk, and the
+  store refuses the read. An implementation written against its own tests only
+  proves the tests were satisfiable. Sealing stops accidents, not intent — it is
+  not a security boundary.
+* **Gates are state, not advice.** When the user asks for a plan directly,
+  `--review-required` makes `grogu plan gate` refuse work until they approve.
+  Autopilot does not waive user review.
+* **Design is specified, then verified by eye.** The designer writes concrete
+  values rather than adjectives — the store rejects "clean" and "modern" — and
+  is spawned again after implementation to look at the result running. The test
+  gate stays shut until it signs off with evidence.
+* **The loops end somewhere.** The engineer and tester escalate to the architect,
+  who must verify claims against the code itself (`--verified`) before changing
+  the plan. Only questions of intent reach the user.
+
+Each repository supplies its own role context in
+`.grogu/roles/{architect,designer,engineer,tester}.md`, which `grogu plan brief` merges
+with the shared contract. `grogu plan steer` records role-scoped steering that
+reaches agents spawned later and rides out on the output of any `grogu` command a
+running agent happens to run. `grogu watch` is the other direction: a live board
+of which agents are running, what each last did, and what is blocking — assembled
+from the commands agents already run, so no model spends a token producing it.
+`grogu plan friction --harness` pools complaints about Grogu itself across every
+repository and reminds the user's session once three are pending, because
+friction filed where its reader never looks is friction nobody fixes. Those
+complaints are clustered rather than counted, and a cluster that is repeated
+across repositories, hit three times, or left open a month is announced as
+ready to fix and claimed against a PR so it is never proposed twice.
+`grogu plan retro` and `grogu plan friction` turn
+accepted amendments, escalations and user corrections into changes to those
+overlays. `grogu plan finalize` unseals every stage so the pull request carries
+the plans it implements.
+
+`grogu skill propose` covers the other case: not that something was wrong, but
+that the knowledge was missing and the next agent will pay for it again from an
+empty context. Proposals are pooled across repositories, because a lesson
+reached independently in three places is the only evidence available that it
+generalises; near-matches are linked for whoever decides and never merged,
+since a matcher that is sometimes wrong and destroys one of its inputs turns a
+misjudgement into a lost lesson. An agent proposes but never installs — a skill is
+read by every agent that comes after, which is the same authority as a role
+contract, so the user or the supervisor accepts and the result is a file in
+`.github/skills/` reviewed in a diff. A lesson that duplicates an installed
+skill sends the agent to read it; one that was declined comes back with the
+reason it was declined for, because a fresh context has no memory of being told
+no. `grogu skill contest` is how an agent argues with that reason instead of
+re-proposing under a new name.
+
+`grogu guard` is the egress check. Grogu reads private repositories, mail and
+messages, and publishes to public ones, so the risk is not that it leaks
+deliberately but that private context follows it out through an ordinary
+commit, a plan attached to a pull request, or a complaint about the harness
+pooled from a private repository into this public one. `grogu guard staged`
+scans staged additions only — a commit that *removes* a leaked key must never
+be blocked — and `grogu guard install` writes the pre-commit hook that runs it.
+Findings are split in two: a credential blocks everywhere, while personal data
+blocks only where the destination is published, because a colleague's address
+in a private repository is not a leak and a guard that fires on it teaches
+everybody to pass `--no-verify`. `grogu plan finalize` refuses to publish plans
+containing either, and harness friction is redacted on its way out of the
+repository it was written in. It is an accident guard rather than a security
+boundary: it does not see pull request bodies, commit messages, search queries
+or agent transcripts, and it only recognises credentials with a familiar shape.
+Read what Grogu is about to publish; this sits beneath that judgement, not in
+place of it.
+
+[docs/pipeline.md](docs/pipeline.md) explains each constraint and why it exists.
 
 ## Tasks, issues, handoff, and history
 

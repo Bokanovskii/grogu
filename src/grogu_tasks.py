@@ -54,12 +54,19 @@ def _parse(timestamp: str) -> dt.datetime:
 
 
 def actor() -> str:
-    """Identity recorded on task events and leases."""
+    """Identity recorded on task events and leases.
+
+    Deliberately not `user@hostname`. Plan manifests and task files are
+    committed and published in pull requests, and a machine hostname is a
+    piece of personal information that is nowhere else in the repository --
+    it is not in the commit metadata, so recording it here is the only reason
+    it would ever be public. The login name alone distinguishes actors on a
+    shared checkout, which is all this is for.
+    """
     explicit = os.environ.get("GROGU_ACTOR")
     if explicit:
         return explicit
-    user = os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
-    return f"{user}@{socket.gethostname()}"
+    return os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
 
 
 def session_id() -> str:
