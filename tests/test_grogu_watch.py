@@ -118,3 +118,50 @@ class WatchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WaitingOnYouTests(unittest.TestCase):
+    """The question you ask every time you look at the board."""
+
+    def test_a_held_plan_and_an_escalation_are_both_asks(self):
+        state = {
+            "agents": [],
+            "other": [],
+            "plans": {
+                "p-1": {
+                    "title": "held",
+                    "review_required": True,
+                    "approved_at": "",
+                },
+                "p-2": {"title": "stuck", "escalated": True},
+            },
+        }
+        asks = grogu_watch.waiting_on_you(state)
+        self.assertTrue(any("plan approve p-1" in ask for ask in asks))
+        self.assertTrue(any("stopped converging on p-2" in ask for ask in asks))
+
+    def test_an_approved_plan_stops_asking(self):
+        state = {
+            "agents": [],
+            "other": [],
+            "plans": {
+                "p-1": {"title": "done", "review_required": True, "approved_at": "now"}
+            },
+        }
+        self.assertEqual(grogu_watch.waiting_on_you(state), [])
+
+    def test_undelivered_steering_names_the_agent(self):
+        state = {
+            "agents": [],
+            "other": [],
+            "plans": {
+                "p-1": {
+                    "title": "t",
+                    "steering_undelivered": [
+                        {"seq": 1, "unread_by": ["engineer@two"], "text": "use decimal"}
+                    ],
+                }
+            },
+        }
+        asks = grogu_watch.waiting_on_you(state)
+        self.assertIn("engineer@two", asks[0])

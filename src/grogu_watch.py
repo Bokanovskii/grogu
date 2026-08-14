@@ -184,9 +184,44 @@ def board(
     }
 
 
+def waiting_on_you(state: dict) -> list:
+    """The things that stop without the user, gathered from every plan.
+
+    The board answered "who is running", which is the question you ask once.
+    The question you ask every time you look is "is anything stuck on me", and
+    that was buried under one plan block per plan, below a list of agents.
+    """
+    asks: list = []
+    for plan_id, summary in sorted(state.get("plans", {}).items()):
+        title = summary.get("title", "")
+        if summary.get("review_required") and not summary.get("approved_at"):
+            asks.append(
+                f"approve the plan: grogu plan approve {plan_id}   ({title})"
+            )
+        if summary.get("escalated"):
+            asks.append(
+                f"the engineer and tester stopped converging on {plan_id}; "
+                "the architect needs your call"
+            )
+        for note in summary.get("steering_undelivered", []):
+            who = ", ".join(note.get("unread_by") or [])
+            asks.append(
+                f"steering #{note['seq']} has not reached {who} on {plan_id}: "
+                + note.get("text", "")[:60]
+            )
+    return asks
+
+
 def render(state: dict, *, window_minutes: int = DEFAULT_WINDOW_MINUTES) -> str:
-    """The board as text. Reads top-down: who is running, then what blocks."""
+    """The board as text. Reads top-down: what needs you, who is running, what blocks."""
     lines: list = []
+    asks = waiting_on_you(state)
+    if asks:
+        lines.append("waiting on you")
+        lines.append("")
+        for ask in asks:
+            lines.append(f"  ! {ask}")
+        lines.append("")
     agents = state.get("agents", [])
     if not agents:
         lines.append(f"No agent has run a grogu command in the last {window_minutes}m.")
