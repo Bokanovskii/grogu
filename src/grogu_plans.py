@@ -2301,6 +2301,15 @@ class PlanStore:
         """
         agent = (agent or os.environ.get("GROGU_AGENT", "")).strip()
         if not agent:
+            # Fall back to the name this working directory was bound under
+            # before falling back to the directory itself. Without it the same
+            # agent answers to two names depending on whether the variable
+            # happened to be exported in that particular shell.
+            try:
+                agent = (self.session_binding().get("agent", "") or "").strip()
+            except (PlanError, OSError):
+                agent = ""
+        if not agent:
             try:
                 agent = str(Path.cwd().resolve())
             except OSError:
@@ -4070,10 +4079,20 @@ class PlanStore:
         """
         path = self.state_dir / "session-roles.json"
         payload = self._read_json(path) if path.exists() else {}
-        payload[str(Path.cwd().resolve())] = {
+        here = str(Path.cwd().resolve())
+        previous = payload.get(here, {})
+        # The agent's name is remembered with the role, because a subagent runs
+        # every command in a fresh shell: an exported GROGU_AGENT survives only
+        # as long as the model keeps typing it. One architect that exported it
+        # on some calls and not others became two identities to the harness,
+        # each with its own idea of what steering it had seen -- so a note it
+        # had read stayed listed as undelivered, and relaying it would have
+        # pushed the same text into the context that already had it.
+        payload[here] = {
             "role": role,
             "plan": plan_id,
             "at": now(),
+            "agent": os.environ.get("GROGU_AGENT", "").strip() or previous.get("agent", ""),
         }
         self._write_json(path, payload)
 

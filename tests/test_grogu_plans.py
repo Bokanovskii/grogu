@@ -2814,3 +2814,47 @@ class TasteStaysOffTheInternetTests(unittest.TestCase):
         store = grogu_design.DesignStore(self.root / "design")
         store.seed_apple()
         self.assertEqual(store.private_statements(), [])
+
+
+class OneAgentIsOneIdentityTests(unittest.TestCase):
+    """A subagent runs every command in a fresh shell; GROGU_AGENT gets dropped."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.previous_cwd = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, self.previous_cwd)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("identity")["id"]
+
+    def test_a_dropped_environment_variable_does_not_split_the_agent_in_two(self):
+        os.environ["GROGU_AGENT"] = "aq-architect"
+        self.store.bind_session(grogu_plans.ARCHITECT, self.plan)
+        with_variable = self.store._ack_key(grogu_plans.ARCHITECT)
+        del os.environ["GROGU_AGENT"]
+        without = self.store._ack_key(grogu_plans.ARCHITECT)
+        self.assertEqual(with_variable, without)
+        self.assertEqual(without, "architect@aq-architect")
+
+    def test_steering_read_under_one_shell_is_read_under_the_next(self):
+        os.environ["GROGU_AGENT"] = "aq-architect"
+        self.store.bind_session(grogu_plans.ARCHITECT, self.plan)
+        self.store.steer("use the real feed", plan_id=self.plan, role=grogu_plans.ARCHITECT)
+        self.store.ack_steering(role=grogu_plans.ARCHITECT, plan_id=self.plan)
+        del os.environ["GROGU_AGENT"]
+        pending = self.store.steering(
+            role=grogu_plans.ARCHITECT, plan_id=self.plan, unread=True
+        )
+        self.assertEqual(pending["repository"] + pending["plan"], [])
+
+    def test_an_explicit_name_still_wins(self):
+        os.environ["GROGU_AGENT"] = "aq-architect"
+        self.store.bind_session(grogu_plans.ARCHITECT, self.plan)
+        self.assertEqual(
+            self.store._ack_key(grogu_plans.ARCHITECT, "other-one"),
+            "architect@other-one",
+        )
