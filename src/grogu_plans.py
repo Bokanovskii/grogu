@@ -35,6 +35,7 @@ import fnmatch
 import json
 import os
 import re
+import sys
 import subprocess
 import secrets
 import zlib
@@ -2961,6 +2962,35 @@ class PlanStore:
         if missing:
             blockers.append(f"plan stages not written: {', '.join(missing)}")
 
+        if stage_gate == GATE_TEST:
+            checks = [
+                item
+                for item in manifest.get("attachments", [])
+                if item.get("verifier")
+            ]
+            verification = manifest.get("verification") or {}
+            if checks and not verification:
+                blockers.append(
+                    "a verifier is attached to this plan and has never been "
+                    "run: `grogu plan verify` (an artifact nobody runs is a "
+                    "comment)"
+                )
+            elif checks and not verification.get("passed"):
+                failed = [
+                    item["name"]
+                    for item in verification.get("results", [])
+                    if not item.get("passed")
+                ]
+                blockers.append(
+                    f"attached verifier(s) failed: {', '.join(failed)}"
+                )
+            elif checks and verification.get("commit") != head_commit(self.root):
+                blockers.append(
+                    "the attached verifier last passed at "
+                    f"{str(verification.get('commit'))[:8]} and the tree has "
+                    "moved since; `grogu plan verify` again"
+                )
+
         if stage_gate == GATE_IMPLEMENT:
             # `workstreams --check` reported overlaps and then nothing acted on
             # them, so two engineers could be sent at the same file with a
@@ -3429,6 +3459,61 @@ class PlanStore:
             f"--stage {stage}` and read it."
         )
 
+    def verifiers(self, plan_id: str) -> list:
+        return [
+            item for item in self.attachments(plan_id) if item.get("verifier")
+        ]
+
+    def run_verifiers(self, plan_id: str, *, role: str = "") -> dict:
+        """Run the checks a role attached, and record what they said.
+
+        An architect pointed out that the harness carried the designer's
+        verification script -- the one that re-derives every example in the
+        spec from the spec's own rules -- and never ran it, never asked anyone
+        whether it still passed, and opened the test gate regardless. An
+        artifact nobody runs is a comment.
+        """
+        plan_id = self.resolve(plan_id)
+        checks = self.verifiers(plan_id)
+        if not checks:
+            raise PlanError(
+                f"plan {plan_id} has no verifiers; attach one with "
+                "`grogu plan attach <id> --file <path> --verifier`"
+            )
+        directory = self.plan_dir(plan_id) / "attachments"
+        results = []
+        for check in checks:
+            path = directory / check["name"]
+            completed = subprocess.run(
+                [sys.executable, str(path)],
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+            )
+            results.append(
+                {
+                    "name": check["name"],
+                    "passed": completed.returncode == 0,
+                    "code": completed.returncode,
+                    "output": (completed.stdout + completed.stderr)[-2000:],
+                }
+            )
+        with self.locked():
+            manifest = self.load(plan_id)
+            manifest["verification"] = {
+                "at": now(),
+                "by": role or current_role() or actor(),
+                "commit": head_commit(self.root),
+                "results": results,
+                "passed": all(item["passed"] for item in results),
+            }
+            self._save(
+                manifest,
+                "verifiers_run",
+                note=f"{sum(1 for r in results if r['passed'])}/{len(results)} passed",
+            )
+        return manifest["verification"]
+
     def _keep_revision(
         self, plan_id: str, stage: str, previous: str, manifest: dict
     ) -> int:
@@ -3473,6 +3558,7 @@ class PlanStore:
         stage: str = "",
         role: str = "",
         note: str = "",
+        verifier: bool = False,
     ) -> dict:
         """Carry an artifact that is not prose alongside the plan.
 
@@ -3525,6 +3611,7 @@ class PlanStore:
                     "note": note.strip(),
                     "bytes": len(body.encode("utf8")),
                     "at": now(),
+                    "verifier": bool(verifier),
                 }
             )
             manifest["attachments"] = records

@@ -116,6 +116,11 @@ derivable. Attachments are scanned against the published-destination rules on
 the way in, because unlike a plan body they are usually a file lifted whole out
 of a working directory.
 
+Attach a check with `--verifier` and it stops being a comment: `grogu plan
+verify` runs it, records the result against the commit it ran at, and the test
+gate refuses while an attached verifier has never been run, has failed, or last
+passed at a commit the tree has moved past.
+
 An unwritten design stage blocks the *implement* gate, not only the test gate:
 there is no point building against a spec that does not exist yet.
 

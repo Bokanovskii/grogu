@@ -2239,6 +2239,7 @@ def plan_attach(args: argparse.Namespace) -> int:
             stage=args.stage or "",
             role=args.role or os.environ.get("GROGU_ROLE", ""),
             note=args.note or "",
+            verifier=getattr(args, "verifier", False),
         )
     except grogu_plans.PlanError as error:
         print(str(error), file=sys.stderr)
@@ -2247,6 +2248,17 @@ def plan_attach(args: argparse.Namespace) -> int:
     print(f"{verb} {result['name']} ({result['bytes']} bytes)")
     print("every role reading `grogu plan brief` for this plan will be told it exists")
     return 0
+
+
+def plan_verify(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    result = store.run_verifiers(args.id, role=getattr(args, "role", "") or "")
+    for item in result["results"]:
+        mark = "pass" if item["passed"] else "FAIL"
+        print(f"{mark}  {item['name']}")
+        if not item["passed"]:
+            print("    " + (item["output"].strip().splitlines() or [""])[-1])
+    return 0 if result["passed"] else 1
 
 
 def plan_triage(args: argparse.Namespace) -> int:
@@ -3465,7 +3477,20 @@ def build_parser() -> argparse.ArgumentParser:
     plan_attach_parser.add_argument("--body")
     plan_attach_parser.add_argument("--stage", choices=list(grogu_plans.STAGES))
     plan_attach_parser.add_argument("--note", help="what this artifact is for")
+    plan_attach_parser.add_argument(
+        "--verifier",
+        action="store_true",
+        help="this script checks the plan; the test gate will require it to pass",
+    )
     plan_attach_parser.set_defaults(handler=plan_attach)
+
+    plan_verify_parser = plan_subparsers.add_parser(
+        "verify",
+        help="run the checks attached to this plan",
+        parents=[plan_common, role_common],
+    )
+    _plan_id_argument(plan_verify_parser)
+    plan_verify_parser.set_defaults(handler=plan_verify)
 
     plan_steering_parser = plan_subparsers.add_parser(
         "steering", help="steering visible to a role", parents=[plan_common]

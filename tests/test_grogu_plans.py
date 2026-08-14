@@ -2653,3 +2653,42 @@ class RewriteReopensWorkTests(unittest.TestCase):
         )
         states = self.store.load(self.plan)["workstream_state"]
         self.assertEqual(set(states.values()), {grogu_plans.PENDING})
+
+
+class VerifierTests(unittest.TestCase):
+    """The harness carried the designer's check and never ran it."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("status line")["id"]
+        for stage in (grogu_plans.IMPLEMENTATION, grogu_plans.TESTING):
+            self.store.write_stage(self.plan, stage, "the plan", role="architect")
+
+    def _attach(self, body):
+        self.store.attach(
+            self.plan, "check.py", body, role="designer", verifier=True
+        )
+
+    def test_a_passing_verifier_passes(self):
+        self._attach("print('every block derives')\n")
+        self.assertTrue(self.store.run_verifiers(self.plan)["passed"])
+
+    def test_a_failing_verifier_blocks_the_test_gate(self):
+        self._attach("raise SystemExit(1)\n")
+        self.store.run_verifiers(self.plan)
+        gate = self.store.gate(self.plan, grogu_plans.GATE_TEST)
+        self.assertFalse(gate["allowed"])
+        self.assertTrue(any("verifier" in reason for reason in gate["blockers"]))
+
+    def test_an_unrun_verifier_blocks_the_test_gate(self):
+        self._attach("print('fine')\n")
+        gate = self.store.gate(self.plan, grogu_plans.GATE_TEST)
+        self.assertTrue(any("never been run" in reason for reason in gate["blockers"]))
+
+    def test_a_plan_with_no_verifier_says_so(self):
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.run_verifiers(self.plan)

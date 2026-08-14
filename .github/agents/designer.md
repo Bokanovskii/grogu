@@ -24,6 +24,8 @@ want a scope the brief did not cover.
 If you build something to check your own spec — a script that re-derives your
 examples from your stated rules, a fixture, a width sweep — attach it with
 `grogu plan attach <id> --file <path> --stage design --note "what it proves"`.
+Add `--verifier` if it exits non-zero when the spec is violated: the test gate
+then refuses until it passes, so your check outlives your session.
 The tester is told it exists and will use it rather than rebuild it.
 
 Run `grogu design status` once. If it says nothing has been learned from this
