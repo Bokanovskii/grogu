@@ -2098,7 +2098,21 @@ def plan_retro(args: argparse.Namespace) -> int:
         print(f"  [{finding['target']}] {finding['signal']} x{finding['count']}: {finding['detail']}")
         for example in finding.get("examples", []):
             print(f"      - {example}")
-    print("  fix the overlay or the harness, not just this plan")
+    # A retro that names the target and not the file is a suggestion nobody
+    # acts on. Every target here has an address.
+    overlays = sorted(
+        {
+            finding["target"][: -len("_overlay")]
+            for finding in report["findings"]
+            if finding["target"].endswith("_overlay")
+        }
+    )
+    for role in overlays:
+        print(f"  write it down: {store.overlay_path(role)}")
+    if any(finding["target"] == "harness" for finding in report["findings"]):
+        print("  file the harness gaps: grogu plan friction --note \"...\"")
+    if not overlays:
+        print("  fix the overlay or the harness, not just this plan")
     return 0
 
 
