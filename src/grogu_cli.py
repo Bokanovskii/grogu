@@ -1596,8 +1596,16 @@ def plan_stage(args: argparse.Namespace) -> int:
         note=args.note or "",
         role=getattr(args, "role", "") or "",
         as_user=getattr(args, "as_user", False),
+        workstream=getattr(args, "workstream", "") or "",
     )
-    print(f"{plan['id']} {args.stage}={args.state}")
+    state = plan.get("stage_state", {}).get(args.stage, args.state)
+    print(f"{plan['id']} {args.stage}={state}")
+    streams = [stream["name"] for stream in plan.get("workstreams", [])]
+    if len(streams) > 1 and args.stage == grogu_plans.IMPLEMENTATION:
+        done = plan.get("workstream_state", {})
+        outstanding = [name for name in streams if done.get(name) != grogu_plans.COMPLETE]
+        if outstanding:
+            print(f"  still open: {', '.join(outstanding)}")
     return 0
 
 
@@ -1763,6 +1771,7 @@ def plan_workstream(args: argparse.Namespace) -> int:
         model=args.model or "",
         review=args.review or "",
         brief=args.brief or "",
+        replace=getattr(args, "replace", False),
     )
     detail = "".join(
         [
@@ -1780,7 +1789,16 @@ def plan_workstreams(args: argparse.Namespace) -> int:
     conflicts = store.workstream_conflicts(plan_id)
     batches = store.parallel_batches(plan_id)
     if args.json:
-        print_json({"batches": batches, "conflicts": conflicts})
+        # An orchestrator fans out from this. Returning only the wave names
+        # meant the one caller that has to honour --model, --brief and
+        # --review had to scrape them out of the pretty output.
+        print_json(
+            {
+                "batches": batches,
+                "conflicts": conflicts,
+                "workstreams": store.summary(plan_id)["workstreams"],
+            }
+        )
     else:
         streams = {
             stream["name"]: stream
@@ -2831,6 +2849,14 @@ def build_parser() -> argparse.ArgumentParser:
     plan_stage_parser.add_argument("state", choices=grogu_plans.STAGE_STATES)
     plan_stage_parser.add_argument("--note")
     plan_stage_parser.add_argument(
+        "--workstream",
+        default="",
+        help=(
+            "which workstream you finished (default: $GROGU_WORKSTREAM); "
+            "required once a plan is split across more than one"
+        ),
+    )
+    plan_stage_parser.add_argument(
         "--as-user",
         action="store_true",
         help="you are the user, not an agent (needed to complete a sealed stage "
@@ -2938,6 +2964,11 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[plan_common],
     )
     plan_workstream_parser.add_argument("id")
+    plan_workstream_parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="redefine a workstream that is already declared but not finished",
+    )
     plan_workstream_parser.add_argument("--name", required=True)
     plan_workstream_parser.add_argument("--path", action="append", required=True)
     plan_workstream_parser.add_argument("--depends-on", action="append")

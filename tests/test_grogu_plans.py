@@ -1941,3 +1941,115 @@ class PlanRevisionTests(unittest.TestCase):
         self.store.steer("check the scale, not just the value", role="tester", plan_id=plan)
         engineer = self.store.steering(role="engineer", plan_id=plan)["plan"]
         self.assertFalse(any("scale" in note["text"] for note in engineer))
+
+
+class ParallelCompletionTests(unittest.TestCase):
+    """Fanning out is only safe if "done" means "my part", not "all of it"."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT", "GROGU_WORKSTREAM"):
+            os.environ.pop(variable, None)
+
+    def _split(self):
+        plan = self.store.create("parallel")["id"]
+        self.store.write_stage(plan, grogu_plans.IMPLEMENTATION, "body", role="architect")
+        self.store.write_stage(plan, grogu_plans.TESTING, "body", role="architect")
+        self.store.add_workstream(plan, name="parse", paths=["src/parse.py"])
+        self.store.add_workstream(plan, name="render", paths=["src/render.py"])
+        return plan
+
+    def test_one_engineer_finishing_does_not_open_the_test_gate(self):
+        plan = self._split()
+        self.store.set_stage_state(
+            plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+            role="engineer", workstream="parse",
+        )
+        summary = self.store.summary(plan)
+        self.assertEqual(
+            summary["stage_state"][grogu_plans.IMPLEMENTATION], grogu_plans.PENDING
+        )
+        self.assertFalse(self.store.gate(plan, "test")["allowed"])
+        self.store.set_stage_state(
+            plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+            role="engineer", workstream="render",
+        )
+        self.assertEqual(
+            self.store.summary(plan)["stage_state"][grogu_plans.IMPLEMENTATION],
+            grogu_plans.COMPLETE,
+        )
+        self.assertTrue(self.store.gate(plan, "test")["allowed"])
+
+    def test_a_split_plan_refuses_an_unattributed_completion(self):
+        plan = self._split()
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.set_stage_state(
+                plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE, role="engineer"
+            )
+        self.assertIn("--workstream", str(caught.exception))
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.set_stage_state(
+                plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+                role="engineer", workstream="nope",
+            )
+
+    def test_the_workstream_comes_from_the_environment_too(self):
+        plan = self._split()
+        os.environ["GROGU_WORKSTREAM"] = "parse"
+        self.addCleanup(os.environ.pop, "GROGU_WORKSTREAM", None)
+        self.store.set_stage_state(
+            plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE, role="engineer"
+        )
+        states = {
+            stream["name"]: stream["state"]
+            for stream in self.store.summary(plan)["workstreams"]
+        }
+        self.assertEqual(states["parse"], grogu_plans.COMPLETE)
+        self.assertEqual(states["render"], grogu_plans.PENDING)
+
+    def test_a_single_workstream_plan_still_completes_plainly(self):
+        plan = self.store.create("one")["id"]
+        self.store.write_stage(plan, grogu_plans.IMPLEMENTATION, "body", role="architect")
+        self.store.write_stage(plan, grogu_plans.TESTING, "body", role="architect")
+        self.store.add_workstream(plan, name="only", paths=["src/**"])
+        self.store.set_stage_state(
+            plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE, role="engineer"
+        )
+        self.assertEqual(
+            self.store.summary(plan)["stage_state"][grogu_plans.IMPLEMENTATION],
+            grogu_plans.COMPLETE,
+        )
+
+    def test_overlapping_workstreams_block_the_implement_gate(self):
+        plan = self.store.create("collide")["id"]
+        self.store.write_stage(plan, grogu_plans.IMPLEMENTATION, "body", role="architect")
+        self.store.write_stage(plan, grogu_plans.TESTING, "body", role="architect")
+        self.store.add_workstream(plan, name="a", paths=["src/**"])
+        self.store.add_workstream(plan, name="b", paths=["src/parse.py"])
+        verdict = self.store.gate(plan, "implement")
+        self.assertFalse(verdict["allowed"])
+        self.assertTrue(any("both claim" in reason for reason in verdict["blockers"]))
+
+    def test_a_workstream_can_be_corrected_but_not_after_it_is_finished(self):
+        plan = self._split()
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.add_workstream(plan, name="parse", paths=["src/feed.py"])
+        self.store.add_workstream(
+            plan, name="parse", paths=["src/feed.py"], replace=True
+        )
+        paths = {
+            stream["name"]: stream["paths"]
+            for stream in self.store.summary(plan)["workstreams"]
+        }
+        self.assertEqual(paths["parse"], ["src/feed.py"])
+        self.store.set_stage_state(
+            plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+            role="engineer", workstream="parse",
+        )
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.add_workstream(
+                plan, name="parse", paths=["src/other.py"], replace=True
+            )

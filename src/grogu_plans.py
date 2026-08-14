@@ -1620,9 +1620,11 @@ class PlanStore:
         note: str = "",
         role: str = "",
         as_user: bool = False,
+        workstream: str = "",
     ) -> dict:
         if state not in STAGE_STATES:
             raise PlanError(f"unknown stage state {state!r}")
+        workstream = (workstream or os.environ.get("GROGU_WORKSTREAM", "")).strip()
         role = role or current_role()
         owner = STAGE_COMPLETERS.get(stage)
         # Marking the test plan complete is the tester's judgement to make. An
@@ -1672,6 +1674,39 @@ class PlanStore:
                         f"{', '.join(open_defects)} are open: a pass recorded "
                         "over a known failure is not a pass. Resolve or route "
                         "them, then run the tests again."
+                    )
+            streams = [stream["name"] for stream in manifest.get("workstreams", [])]
+            if len(streams) > 1 and stage == IMPLEMENTATION:
+                # Completion used to be plan-wide, so the first of four
+                # engineers to finish opened the test gate for work the other
+                # three had not started. Fanning out is the point of
+                # workstreams; a completion that means "all of it" when it
+                # meant "my file" is the one thing that makes fanning out
+                # unsafe.
+                if not workstream:
+                    raise PlanError(
+                        f"plan {plan_id} is split across {len(streams)} "
+                        f"workstreams ({', '.join(streams)}), so say which one "
+                        "you finished: --workstream <name>, or export "
+                        "GROGU_WORKSTREAM"
+                    )
+                if workstream not in streams:
+                    raise PlanError(
+                        f"plan {plan_id} has no workstream {workstream!r} "
+                        f"(declared: {', '.join(streams)})"
+                    )
+                done = manifest.setdefault("workstream_state", {})
+                done[workstream] = state
+                outstanding = [name for name in streams if done.get(name) != COMPLETE]
+                if state == COMPLETE and outstanding:
+                    manifest["stage_state"][stage] = PENDING
+                    return self._save(
+                        manifest,
+                        "workstream_state",
+                        stage=stage,
+                        state=state,
+                        workstream=workstream,
+                        outstanding=", ".join(outstanding),
                     )
             manifest.setdefault("stage_state", {})[stage] = state
             resolved: list = []
@@ -2284,6 +2319,7 @@ class PlanStore:
         model: str = "",
         review: str = "",
         brief: str = "",
+        replace: bool = False,
     ) -> dict:
         """Declare a piece of parallel work, and who should do it how.
 
@@ -2304,8 +2340,22 @@ class PlanStore:
         with self.locked():
             manifest = self.load(plan_id)
             workstreams = manifest.setdefault("workstreams", [])
-            if any(stream["name"] == name for stream in workstreams):
-                raise PlanError(f"plan {plan_id} already has a workstream {name!r}")
+            existing = next(
+                (stream for stream in workstreams if stream["name"] == name), None
+            )
+            if existing is not None:
+                if not replace:
+                    raise PlanError(
+                        f"plan {plan_id} already has a workstream {name!r}; pass "
+                        "--replace to correct it. Getting a path wrong used to "
+                        "mean superseding the whole plan"
+                    )
+                if manifest.get("workstream_state", {}).get(name) == COMPLETE:
+                    raise PlanError(
+                        f"workstream {name!r} is already complete; redefining it "
+                        "would silently reopen finished work"
+                    )
+                workstreams.remove(existing)
             unknown = [
                 dependency
                 for dependency in (depends_on or [])
@@ -2556,6 +2606,21 @@ class PlanStore:
         if missing:
             blockers.append(f"plan stages not written: {', '.join(missing)}")
 
+        if stage_gate == GATE_IMPLEMENT:
+            # `workstreams --check` reported overlaps and then nothing acted on
+            # them, so two engineers could be sent at the same file with a
+            # warning nobody had to read. The conflict is exactly the condition
+            # under which starting is unsafe.
+            conflicts = self.workstream_conflicts(plan_id)
+            for conflict in conflicts:
+                blockers.append(
+                    "workstreams {} both claim {}; they cannot run at the same "
+                    "time. Narrow the paths or add --depends-on".format(
+                        " and ".join(conflict["workstreams"]),
+                        " / ".join(conflict["paths"]),
+                    )
+                )
+
         unincorporated = [
             amendment["id"]
             for amendment in manifest.get("amendments", [])
@@ -2713,6 +2778,12 @@ class PlanStore:
                     "name": stream["name"],
                     "paths": stream["paths"],
                     "depends_on": stream.get("depends_on", []),
+                    "brief": stream.get("brief", ""),
+                    "model": stream.get("model", ""),
+                    "review": stream.get("review", ""),
+                    "state": manifest.get("workstream_state", {}).get(
+                        stream["name"], PENDING
+                    ),
                 }
                 for stream in manifest.get("workstreams", [])
             ],
