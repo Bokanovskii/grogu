@@ -1523,7 +1523,21 @@ def plan_status(args: argparse.Namespace) -> int:
     if summary.get("escalated"):
         print("  escalated to the architect: the engineer/tester loop stopped converging")
     if summary["review_required"] and summary["status"] != grogu_plans.APPROVED:
-        print("  the user asked for this plan; it needs `grogu plan approve` before work starts")
+        # The designer starts before approval by construction -- the spec is
+        # part of what the user reviews -- so "before work starts" read to the
+        # one role that must go first as "do not go".
+        if "design" in summary.get("stages", []) and not summary.get(
+            "stage_written", {}
+        ).get("design"):
+            print(
+                "  the user asked for this plan; the designer writes the spec "
+                "first, then `grogu plan approve` releases everything else"
+            )
+        else:
+            print(
+                "  the user asked for this plan; it needs `grogu plan approve` "
+                "before anything downstream of the design spec moves"
+            )
     for stream in summary["workstreams"]:
         depends = f" after {', '.join(stream['depends_on'])}" if stream["depends_on"] else ""
         state = stream.get("state", grogu_plans.PENDING)
