@@ -557,6 +557,61 @@ make. Agents also record friction directly with `grogu plan friction --note`,
 so "the fixtures take four minutes to build" reaches a review queue instead of a
 final message nobody reads.
 
+## Skills the agents write for the agents that come after them
+
+Friction covers the case where Grogu or the repository is *wrong*. The other
+case is that nothing is wrong and the knowledge is simply missing: an engineer
+works out which command actually proves a change here, spends an hour on it,
+finishes the task, and the next agent starts from an empty context and spends
+the hour again.
+
+```
+grogu skill propose <name> --description "when does this apply" --file body.md \
+    --why "what happened that made this worth writing"
+grogu skill proposals            # what is waiting on a decision
+grogu skill show <n>             # the body, and any wording folded into it
+grogu skill accept <n>           # writes .github/skills/<name>/SKILL.md
+grogu skill decline <n> --note "why"
+grogu skill contest <n> --note "why that reason no longer holds"
+grogu skill suggest              # lessons that keep recurring, unwritten
+```
+
+Four things keep this from becoming a landfill.
+
+**Proposing is not installing.** A skill is read by every agent that comes
+after, which is the same authority a role contract has, so the four pipeline
+roles propose and only the user or the supervisor accepts. Accepting writes a
+file into `.github/skills/`, where it is reviewed in a diff like any other
+change. An agent that could install one could rewrite the instructions the next
+agent works under, from inside a single task, with nobody reading it.
+
+**Proposals are pooled across repositories**, like harness friction, so the same
+lesson reached in three places becomes one entry with echoes rather than three
+near-duplicate skills. Repetition across independent contexts is the only
+available evidence that a lesson generalises, and splitting it destroys exactly
+that evidence. The echo keeps its own wording: merging is a guess, and a wrong
+merge would silently discard the second agent's lesson while telling it the
+merge succeeded.
+
+**An already-answered lesson comes back with the answer.** A proposal matching
+an installed skill sends the agent to read that skill instead. A proposal
+matching one that was declined is refused *with the reason it was declined for*
+— a fresh context has no memory of being told no, so without that the same
+rejected lesson returns every time an agent hits the same wall. The attempt is
+still counted: a lesson declined once and re-derived by five agents is evidence
+the decline was wrong, and `grogu skill contest` is how an agent argues that
+without re-proposing under a new name.
+
+**A body under 160 characters is refused.** A standing instruction that vague
+costs every future agent a guess about what it meant. Write what to do, in what
+order, and how the result is checked.
+
+`grogu skill suggest` answers the other half: recurring harness friction that
+nobody has turned into either a fix or a procedure. It reads the friction
+clusters that already exist rather than inventing a detector, because the
+harness only ever sees its own commands — it cannot watch an agent repeat itself
+in bash, so self-report is the only channel there is.
+
 ## What must not leave
 
 Grogu reads private repositories, mail and messages, and writes to public ones.

@@ -262,6 +262,19 @@ accepted amendments, escalations and user corrections into changes to those
 overlays. `grogu plan finalize` unseals every stage so the pull request carries
 the plans it implements.
 
+`grogu skill propose` covers the other case: not that something was wrong, but
+that the knowledge was missing and the next agent will pay for it again from an
+empty context. Proposals are pooled across repositories so the same lesson
+reached in three places becomes one entry with echoes rather than three
+near-duplicate skills, and an agent proposes but never installs — a skill is
+read by every agent that comes after, which is the same authority as a role
+contract, so the user or the supervisor accepts and the result is a file in
+`.github/skills/` reviewed in a diff. A lesson that duplicates an installed
+skill sends the agent to read it; one that was declined comes back with the
+reason it was declined for, because a fresh context has no memory of being told
+no. `grogu skill contest` is how an agent argues with that reason instead of
+re-proposing under a new name.
+
 `grogu guard` is the egress check. Grogu reads private repositories, mail and
 messages, and publishes to public ones, so the risk is not that it leaks
 deliberately but that private context follows it out through an ordinary

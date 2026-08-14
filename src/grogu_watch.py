@@ -187,6 +187,7 @@ def board(
     window_minutes: int = DEFAULT_WINDOW_MINUTES,
     home: Optional[Path] = None,
     plan_summaries: Optional[dict] = None,
+    skill_proposals: Optional[list] = None,
 ) -> dict:
     rows = [row for row in sessions(window_minutes=window_minutes, home=home)]
     agents = [row for row in rows if row["role"]]
@@ -194,6 +195,7 @@ def board(
         "agents": agents,
         "other": [row for row in rows if not row["role"]],
         "plans": plan_summaries or {},
+        "skill_proposals": skill_proposals or [],
     }
 
 
@@ -222,6 +224,16 @@ def waiting_on_you(state: dict) -> list:
                 f"steering #{note['seq']} has not reached {who} on {plan_id}: "
                 + note.get("text", "")[:60]
             )
+    # Skills an agent wrote for the next agent sit in a store nobody looks at
+    # until somebody asks. This is the board the user actually reads, and an
+    # unaccepted skill is a lesson the next agent will have to relearn.
+    for proposal in state.get("skill_proposals", []):
+        echoes = len(proposal.get("echoes") or [])
+        weight = f" ({echoes + 1} agents reached it)" if echoes else ""
+        asks.append(
+            f"decide skill #{proposal['seq']} {proposal['name']}{weight}: "
+            f"{proposal.get('description', '')[:60]}"
+        )
     return asks
 
 
@@ -241,6 +253,17 @@ def render(state: dict, *, window_minutes: int = DEFAULT_WINDOW_MINUTES) -> str:
     else:
         lines.append(f"agents active in the last {window_minutes}m")
         lines.append("")
+        # A fan-out makes this column ragged: `engineer@ingest` is twice the
+        # width of `tester`, and a fixed pad chosen for the role names alone
+        # stopped lining up the moment agents were named.
+        width = max(
+            len(
+                f"{row['role']}@{row['agent']}"
+                if row.get("agent") and not row["agent"].startswith("/")
+                else row["role"]
+            )
+            for row in agents
+        )
         for row in agents:
             mark = {"working": "●", "idle": "◐", "gone": "○"}.get(row["state"], "?")
             plan = row["plan"] or "-"
@@ -251,7 +274,7 @@ def render(state: dict, *, window_minutes: int = DEFAULT_WINDOW_MINUTES) -> str:
             if row.get("agent") and not row["agent"].startswith("/"):
                 who = f"{row['role']}@{row['agent']}"
             lines.append(
-                f"  {mark} {who:<9} plan {plan:<10} "
+                f"  {mark} {who:<{width}} plan {plan:<10} "
                 f"last {row['last_command'] or '?'} {_age(row['idle_seconds'])} ago"
                 f"  ({row['calls']} call{'' if row['calls'] == 1 else 's'}{failures})"
             )

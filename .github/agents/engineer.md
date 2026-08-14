@@ -150,3 +150,25 @@ follow the note. But then say so with `grogu plan amend` — the plan is now
 wrong, the architect is the only role that can fix it, and the tester will be
 working from the plan you just diverged from. A correction you act on silently
 becomes a defect the moment someone else reads the plan.
+
+## What you worked out, for the agent after you
+
+Friction is for when Grogu or this repository is *wrong*. This is for when
+nothing is wrong and the knowledge is simply missing: you spent an hour finding
+which command actually proves a change here, which three steps always precede a
+release, which trap ate the first attempt. The next agent starts from an empty
+context and pays that hour again.
+
+```
+grogu skill propose <name> --description "one line: when does this apply" \
+    --file body.md --why "what happened that made this worth writing"
+```
+
+Write the body as a procedure -- what to do, in what order, how the result is
+checked -- not a reminder. You are writing to someone with none of your context.
+
+You propose; you do not install. A skill is read by every agent that comes
+after you, which is the same authority as your own contract, so the user or the
+supervisor decides. If your lesson matches one already installed, or one that
+was proposed and turned down, you are told so and told why, which is usually
+the more useful answer.

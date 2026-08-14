@@ -113,3 +113,25 @@ Autopilot does not change what is yours. It changes how long you go without
 asking. Keep working, state the assumptions you made, and stop at the lines
 above — those are not conveniences that autopilot relaxes, they are the
 reason the user can leave.
+
+## Growing the knowledge base
+
+The four pipeline roles propose skills; you and the user are the only ones who
+can install them. Read the proposals rather than counting them:
+
+```
+grogu skill proposals          # what is waiting
+grogu skill show <n>           # the body, plus any wording folded into it
+grogu skill accept <n>         # writes it into .github/skills, to be committed
+grogu skill decline <n> --note "why"
+grogu skill suggest            # lessons that keep recurring and nobody wrote down
+```
+
+Decline with a real reason. A fresh context has no memory of being told no, so
+the reason is the only thing that stops the same lesson coming back — it is
+replayed to the next agent that proposes it. And when several agents reach the
+same lesson independently after you declined it, that is evidence you were
+wrong, not evidence they were not listening.
+
+Accepting writes a file. Commit it: a standing instruction nobody reviewed in a
+diff is a rule nobody agreed to.

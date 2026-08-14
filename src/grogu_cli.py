@@ -32,6 +32,7 @@ import grogu_memory
 import grogu_personal_memory
 import grogu_plans
 import grogu_privacy
+import grogu_skills
 import grogu_telemetry
 import grogu_tasks
 import grogu_watch
@@ -1287,7 +1288,7 @@ def _record_activity(parsed: argparse.Namespace) -> None:
     try:
         command = getattr(parsed, "command", "") or ""
         sub = ""
-        for attribute in ("plan_command", "design_command", "task_command"):
+        for attribute in ("plan_command", "design_command", "task_command", "skill_command"):
             sub = getattr(parsed, attribute, "") or ""
             if sub:
                 break
@@ -1342,6 +1343,13 @@ def _record_activity(parsed: argparse.Namespace) -> None:
         return  # watching must never be the reason a command fails
 
 
+def _skill_proposals_safely() -> list:
+    try:
+        return grogu_skills.proposals()
+    except (grogu_skills.SkillError, OSError):
+        return []  # the board must never be the reason a command fails
+
+
 def _plan_summaries(args: argparse.Namespace) -> dict:
     summaries: dict = {}
     try:
@@ -1359,7 +1367,9 @@ def _plan_summaries(args: argparse.Namespace) -> dict:
 
 def watch(args: argparse.Namespace) -> int:
     state = grogu_watch.board(
-        window_minutes=args.window, plan_summaries=_plan_summaries(args)
+        window_minutes=args.window,
+        plan_summaries=_plan_summaries(args),
+        skill_proposals=_skill_proposals_safely(),
     )
     if args.json:
         print_json(state)
@@ -1372,7 +1382,9 @@ def watch(args: argparse.Namespace) -> int:
             # Recomputed every pass: a board that shows the plan state from when
             # you started watching is worse than no board.
             state = grogu_watch.board(
-                window_minutes=args.window, plan_summaries=_plan_summaries(args)
+                window_minutes=args.window,
+                plan_summaries=_plan_summaries(args),
+                skill_proposals=_skill_proposals_safely(),
             )
             sys.stdout.write("\033[2J\033[H")
             sys.stdout.write(grogu_watch.render(state, window_minutes=args.window))
@@ -1548,12 +1560,35 @@ def plan_store(args: argparse.Namespace) -> grogu_plans.PlanStore:
 
 def _plan_role(args: argparse.Namespace) -> str:
     role = getattr(args, "role", "") or grogu_plans.current_role()
-    if not role:
-        raise grogu_plans.PlanError(
-            "pass --role, or export GROGU_ROLE. Plan access is role-scoped: "
-            "who is asking decides what may be read."
+    if role:
+        return role
+    # Every other command falls back to the session binding, so being refused
+    # here looks like an inconsistency. It is not, and the message says why:
+    # the binding records that *a* role is working in this directory, which is
+    # enough to route steering to it and nowhere near enough to authorise
+    # reading a sealed stage. The user shares that directory with the agent.
+    message = (
+        "pass --role, or export GROGU_ROLE. Plan access is role-scoped: "
+        "who is asking decides what may be read."
+    )
+    try:
+        bound = (
+            grogu_plans.PlanStore(
+                Path(args.repo).expanduser() if getattr(args, "repo", None) else None
+            )
+            .session_binding()
+            .get("role", "")
         )
-    return role
+    except (grogu_plans.PlanError, OSError):
+        bound = ""
+    if bound:
+        message += (
+            f"\nA {bound} is bound to this directory, and that is deliberately "
+            "not enough: the binding routes steering to whoever works here, "
+            "including you sharing the shell with them. Claim the role you are "
+            f"reading as -- `--role {bound}` if that is you."
+        )
+    raise grogu_plans.PlanError(message)
 
 
 def _read_body(args: argparse.Namespace) -> str:
@@ -2631,6 +2666,221 @@ def plan_friction(args: argparse.Namespace) -> int:
             f" -> {bucket['target']}"
         )
     print(report["verdict"])
+    return 0
+
+
+def _skill_repo(args: argparse.Namespace) -> Path:
+    """The working tree the skill belongs to, not the primary one.
+
+    `PlanStore.root` deliberately resolves to the primary worktree so several
+    worktrees share one set of plans. Skills are the opposite: they are files
+    on a branch, reviewed in that branch's diff. Resolving them the plan way
+    hid every skill added on this branch from `skill list`, and `skill accept`
+    would have written the new file into whatever branch the primary worktree
+    happened to have checked out.
+    """
+    if getattr(args, "repo", None):
+        return Path(args.repo).expanduser().resolve()
+    return Path(grogu_tasks.repository_root())
+
+
+def _skill_decider(action: str) -> Optional[str]:
+    """Who may turn a proposal into a standing instruction.
+
+    A skill is read by every future agent before it starts thinking, which is
+    the same authority a role contract has. An engineer that can install one
+    can rewrite the instructions the next engineer works under, from inside a
+    single task, with nobody reading the diff. So the pipeline roles propose
+    and the user or the supervisor decides -- the same split as `plan approve`,
+    for the same reason.
+    """
+    role = grogu_plans.current_role()
+    if role and role != grogu_plans.SUPERVISOR:
+        return (
+            f"the {role} may propose a skill but not {action} one. A skill is a "
+            "standing instruction to every agent that comes after you, so it is "
+            "the user's call (or the supervisor's). Yours is recorded and "
+            "waiting in `grogu skill proposals`."
+        )
+    return None
+
+
+def skill_list(args: argparse.Namespace) -> int:
+    installed = grogu_skills.installed_skills(_skill_repo(args))
+    if args.json:
+        print_json(installed)
+        return 0
+    if not installed:
+        print("no skills in this repository yet")
+        return 0
+    for skill in installed:
+        print(f"{skill['name']}: {skill['description']}")
+    return 0
+
+
+def skill_propose(args: argparse.Namespace) -> int:
+    root = _skill_repo(args)
+    body = _read_body(args)
+    entry = grogu_skills.propose(
+        args.name,
+        description=args.description,
+        body=body,
+        why=args.why or "",
+        role=getattr(args, "role", "") or grogu_plans.current_role(),
+        plan=getattr(args, "id", "") or "",
+        repository=root.name,
+        repository_path=str(root),
+        actor=grogu_plans.actor(),
+        installed=grogu_skills.installed_skills(root),
+    )
+    echoes = len(entry.get("echoes", []))
+    if echoes and entry["name"] != args.name.strip().lower():
+        print(
+            f"this is the same lesson as skill proposal #{entry['seq']} "
+            f"({entry['name']}), so it was recorded as an echo rather than a "
+            "second skill"
+        )
+    else:
+        print(f"skill proposal #{entry['seq']} {entry['name']}: {entry['description']}")
+    if echoes:
+        print(f"  {echoes + 1} agents have now reached this lesson independently")
+    if entry.get("amends"):
+        print("  this amends an installed skill; the change will show up in a diff")
+    print("  waiting on the user or the supervisor: grogu skill proposals")
+    return 0
+
+
+def skill_proposals(args: argparse.Namespace) -> int:
+    entries = grogu_skills.proposals(include_decided=args.all)
+    if args.json:
+        print_json(entries)
+        return 0
+    if not entries:
+        print("no skill proposals")
+        return 0
+    for entry in entries:
+        echoes = len(entry.get("echoes", []))
+        mark = " (ripe: reached independently by "
+        suffix = f"{mark}{echoes + 1} agents)" if echoes else ""
+        origin = entry.get("repository") or "?"
+        role = entry.get("role") or "unknown role"
+        print(
+            f"#{entry['seq']} {entry['name']} [{entry.get('status')}] "
+            f"from the {role} in {origin}{suffix}"
+        )
+        print(f"    {entry.get('description','')}")
+        if entry.get("why"):
+            print(f"    why: {entry['why']}")
+        if entry.get("contested"):
+            contested = entry["contested"]
+            print(
+                f"    contested by the {contested.get('role') or 'unknown role'}: "
+                f"{contested.get('note','')}"
+            )
+            print(f"    (you declined it for: {contested.get('declined_for','')})")
+        elif entry.get("decision"):
+            print(f"    decision: {entry['decision']}")
+    print("\ngrogu skill show <n> for the body; accept <n> or decline <n> --note ...")
+    return 0
+
+
+def skill_show(args: argparse.Namespace) -> int:
+    for entry in grogu_skills.proposals(include_decided=True):
+        if entry.get("seq") == args.seq:
+            sys.stdout.write(
+                grogu_skills.render(entry["name"], entry["description"], entry["body"])
+            )
+            # Whoever decides this is deciding on behalf of every agent that
+            # was folded into it, so they get to see what was folded in rather
+            # than a count claiming agreement they cannot check.
+            for echo in entry.get("echoes", []):
+                print(
+                    f"\n--- also proposed by the {echo.get('role') or 'unknown role'} "
+                    f"in {echo.get('repository') or '?'} as "
+                    f"{echo.get('name') or 'the same skill'} ---"
+                )
+                if echo.get("description"):
+                    print(echo["description"])
+                if echo.get("why"):
+                    print(f"why: {echo['why']}")
+            return 0
+    print(f"grogu: no skill proposal #{args.seq}", file=sys.stderr)
+    return 2
+
+
+def skill_accept(args: argparse.Namespace) -> int:
+    refusal = _skill_decider("accept")
+    if refusal:
+        print(f"grogu: {refusal}", file=sys.stderr)
+        return 3
+    root = _skill_repo(args)
+    entry = grogu_skills.accept(args.seq, root=root, note=args.note or "")
+    print(f"installed {entry['installed_at']}")
+    # Proposals are pooled across repositories on purpose, so the one you are
+    # accepting was often learned somewhere else. Installing it here is usually
+    # right and occasionally a mistake, and the only way to tell is to be told.
+    if entry.get("repository") and entry["repository"] != root.name:
+        print(
+            f"  note: the {entry.get('role') or 'agent'} learned this in "
+            f"{entry['repository']}; you have installed it in {root.name}"
+        )
+    print("  commit it: a skill nobody reviewed in a diff is a rule nobody agreed to")
+    return 0
+
+
+def skill_decline(args: argparse.Namespace) -> int:
+    refusal = _skill_decider("decline")
+    if refusal:
+        print(f"grogu: {refusal}", file=sys.stderr)
+        return 3
+    entry = grogu_skills.decline(args.seq, note=args.note or "")
+    print(f"declined skill proposal #{entry['seq']}: {entry['decision']}")
+    return 0
+
+
+def skill_contest(args: argparse.Namespace) -> int:
+    root = _skill_repo(args)
+    entry = grogu_skills.contest(
+        args.seq,
+        note=args.note,
+        role=getattr(args, "role", "") or grogu_plans.current_role(),
+        repository=root.name,
+    )
+    print(f"skill proposal #{entry['seq']} {entry['name']} is back in the queue")
+    print(f"  it was declined for: {entry['contested'].get('declined_for') or 'no reason recorded'}")
+    print("  waiting on the user or the supervisor: grogu skill proposals")
+    return 0
+
+
+def skill_suggest(args: argparse.Namespace) -> int:
+    root = _skill_repo(args)
+    installed = grogu_skills.installed_skills(root)
+    pending = grogu_skills.proposals()
+    lessons = grogu_skills.unwritten_lessons(
+        grogu_plans.cluster_harness_friction(), installed=installed
+    )
+    if args.json:
+        print_json({"ripe": grogu_skills.ripe(pending), "unwritten": lessons})
+        return 0
+    ripe = grogu_skills.ripe(pending)
+    if ripe:
+        print("proposals more than one agent arrived at:")
+        for entry in ripe:
+            print(
+                f"  #{entry['seq']} {entry['name']} "
+                f"({len(entry.get('echoes', [])) + 1} agents)"
+            )
+    if lessons:
+        print("recurring friction nobody has written down or fixed:")
+        for lesson in lessons:
+            where = ", ".join(lesson.get("repositories") or []) or "one repository"
+            print(f"  {lesson['id']} x{lesson['count']} in {where}: {lesson['title']}")
+        print(
+            "\nEach of these is either a harness bug to fix or a procedure to "
+            "write: grogu skill propose <name> --description ... --file <body>"
+        )
+    if not ripe and not lessons:
+        print("nothing repeating yet; keep collecting")
     return 0
 
 
@@ -3883,6 +4133,67 @@ def build_parser() -> argparse.ArgumentParser:
     plan_design_review_parser.add_argument("--role")
     plan_design_review_parser.set_defaults(handler=plan_design_review)
 
+    skill = subparsers.add_parser(
+        "skill", help="skills the agents write for the agents that come after them"
+    )
+    skill.add_argument("--repo")
+    skill_subparsers = skill.add_subparsers(dest="skill_command", required=True)
+
+    skill_list_parser = skill_subparsers.add_parser(
+        "list", help="skills installed in this repository"
+    )
+    skill_list_parser.add_argument("--json", action="store_true")
+    skill_list_parser.set_defaults(handler=skill_list)
+
+    skill_propose_parser = skill_subparsers.add_parser(
+        "propose", help="write down a lesson the next agent should not have to rediscover"
+    )
+    skill_propose_parser.add_argument("name")
+    skill_propose_parser.add_argument("--description", required=True)
+    skill_propose_parser.add_argument("--body")
+    skill_propose_parser.add_argument("--file", help="the skill body, or - for stdin")
+    skill_propose_parser.add_argument("--why", help="what happened that made this worth writing")
+    skill_propose_parser.add_argument("--role")
+    skill_propose_parser.add_argument("--id", nargs="?", default="")
+    skill_propose_parser.set_defaults(handler=skill_propose)
+
+    skill_proposals_parser = skill_subparsers.add_parser(
+        "proposals", help="skills waiting on a decision"
+    )
+    skill_proposals_parser.add_argument("--all", action="store_true")
+    skill_proposals_parser.add_argument("--json", action="store_true")
+    skill_proposals_parser.set_defaults(handler=skill_proposals)
+
+    skill_show_parser = skill_subparsers.add_parser("show", help="the body of a proposal")
+    skill_show_parser.add_argument("seq", type=int)
+    skill_show_parser.set_defaults(handler=skill_show)
+
+    skill_accept_parser = skill_subparsers.add_parser(
+        "accept", help="install a proposal into this repository"
+    )
+    skill_accept_parser.add_argument("seq", type=int)
+    skill_accept_parser.add_argument("--note")
+    skill_accept_parser.set_defaults(handler=skill_accept)
+
+    skill_decline_parser = skill_subparsers.add_parser("decline")
+    skill_decline_parser.add_argument("seq", type=int)
+    skill_decline_parser.add_argument("--note", required=True)
+    skill_decline_parser.set_defaults(handler=skill_decline)
+
+    skill_contest_parser = skill_subparsers.add_parser(
+        "contest", help="argue with a decline rather than re-proposing it"
+    )
+    skill_contest_parser.add_argument("seq", type=int)
+    skill_contest_parser.add_argument("--note", required=True)
+    skill_contest_parser.add_argument("--role")
+    skill_contest_parser.set_defaults(handler=skill_contest)
+
+    skill_suggest_parser = skill_subparsers.add_parser(
+        "suggest", help="lessons that have repeated and nobody wrote down"
+    )
+    skill_suggest_parser.add_argument("--json", action="store_true")
+    skill_suggest_parser.set_defaults(handler=skill_suggest)
+
     design = subparsers.add_parser(
         "design", help="design taste the designer works from, and the spec skeleton"
     )
@@ -4152,6 +4463,7 @@ GROGU_COMMANDS = frozenset(
         "worktree",
         "watch",
         "guard",
+        "skill",
     }
 )
 
@@ -4213,6 +4525,9 @@ def main(arguments: list[str]) -> int:
     _PENDING_NOTICE = _notice_for(parsed)
     try:
         return parsed.handler(parsed)
+    except grogu_skills.SkillError as error:
+        print(f"grogu: {error}", file=sys.stderr)
+        return 2
     except grogu_design.DesignError as error:
         print(f"grogu: {error}", file=sys.stderr)
         return 2

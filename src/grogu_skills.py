@@ -1,0 +1,463 @@
+"""Skills the agents write for the agents that come after them.
+
+An agent that works out how to do something awkward -- which command actually
+proves a change in this repository, which three steps always precede a release,
+which trap swallowed an hour -- currently spends that knowledge and throws it
+away. The next agent, in a fresh context, rediscovers it. `plan friction` covers
+the case where the harness is *wrong*; this covers the case where the harness is
+fine and the knowledge is missing.
+
+Two things keep it from becoming a landfill of half-remembered notes:
+
+Proposals are pooled across every repository, the same way harness friction is,
+so the same lesson learned in three places adds up into one entry with echoes
+rather than three near-duplicate skills. Repetition is the evidence that a
+lesson generalises, and it is the only such evidence available.
+
+And an agent may propose but not install. A skill is a standing instruction to
+every future agent, which is the same authority as a role contract; an agent
+granting itself that is how a wrong lesson becomes permanent. The user or the
+supervisor accepts, and acceptance is what writes the file into the repository
+where it can be reviewed in a diff like any other change.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import re
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Iterator, Optional
+
+import grogu_privacy
+
+PENDING = "pending"
+ACCEPTED = "accepted"
+DECLINED = "declined"
+
+SKILLS_DIRNAME = ".github/skills"
+
+# Below this a "skill" is a sentence somebody meant to expand later. A standing
+# instruction that vague costs every future agent a guess about what it meant.
+HOLLOW_SKILL_CHARS = 160
+
+# Same threshold the friction clusters use, for the same reason: high enough
+# that two genuinely different lessons stay apart, low enough that the same
+# lesson phrased differently by two agents lands in one place.
+SKILL_SIMILARITY = 0.34
+
+NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+_STOPWORDS = frozenset(
+    """a an the and or but to of in on for with by is are was were be been it
+    this that these those i we you have has had do does did so should would
+    could there here when then than as at from up out if too very just really
+    use using used when while about into over under after before your our""".split()
+)
+
+
+class SkillError(Exception):
+    """Something about a skill proposal does not hold."""
+
+
+class AlreadyKnown(SkillError):
+    """The repository already has this lesson under another name."""
+
+
+class AlreadyDeclined(SkillError):
+    """This lesson was proposed before and turned down, with a reason."""
+
+
+def skills_path() -> Path:
+    home = os.environ.get("GROGU_HOME", "").strip()
+    return (Path(home) if home else Path.home() / ".grogu") / "skills.json"
+
+
+@contextmanager
+def skills_lock() -> Iterator[None]:
+    path = skills_path().with_name("skills.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        os.close(handle)
+
+
+def _read() -> dict:
+    path = skills_path()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _write(payload: dict) -> None:
+    path = skills_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf8")
+    os.replace(temporary, path)
+
+
+def _tokens(text: str) -> set:
+    """Words, with hyphens split and plurals folded.
+
+    Skill names are hyphen-joined by requirement, and the name is the densest
+    part of a proposal -- so keeping `narrow-tests-first` whole made it share
+    nothing at all with `narrow-first`, and two spellings of one lesson landed
+    as two skills. The plural fold is for the same reason at a smaller scale:
+    these are one-line descriptions, so `test` against `tests` is a tenth of
+    the overlap between two texts this short.
+    """
+    words = re.findall(r"[a-z][a-z0-9_]{2,}", (text or "").lower().replace("-", " "))
+    folded = {word[:-1] if len(word) > 4 and word.endswith("s") else word for word in words}
+    return {word for word in folded if word not in _STOPWORDS}
+
+
+def _similarity(left: set, right: set) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _same_lesson(subject: tuple, entry: dict) -> bool:
+    """Two agents describing one lesson, in their own words.
+
+    `why` is deliberately excluded. It holds the incident that prompted the
+    proposal -- "ran the full suite six times chasing one assertion" -- which is
+    different every time by construction, and including it pushed two verbatim
+    copies of the same procedure apart far enough to be filed twice. The
+    summary and the procedure are what have to match, and either matching is
+    enough: agents converge on the same steps under different headlines about
+    as often as the reverse.
+    """
+    name, description, body = subject
+    headline = _similarity(
+        _tokens(f"{name} {description}"),
+        _tokens(f"{entry.get('name','')} {entry.get('description','')}"),
+    )
+    procedure = _similarity(_tokens(body), _tokens(entry.get("body", "")))
+    return max(headline, procedure) >= SKILL_SIMILARITY
+
+
+def installed_skills(root: Path) -> list:
+    """Skills already available in a repository."""
+    directory = Path(root) / SKILLS_DIRNAME
+    found = []
+    if not directory.is_dir():
+        return found
+    for entry in sorted(directory.iterdir()):
+        manifest = entry / "SKILL.md"
+        if not manifest.is_file():
+            continue
+        text = manifest.read_text(encoding="utf8", errors="replace")
+        found.append(
+            {
+                "name": entry.name,
+                "description": _frontmatter_field(text, "description"),
+                "path": str(manifest),
+            }
+        )
+    return found
+
+
+def _frontmatter_field(text: str, field: str) -> str:
+    if not text.startswith("---"):
+        return ""
+    _, _, rest = text.partition("\n")
+    body, _, _ = rest.partition("\n---")
+    for line in body.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip() == field:
+            return value.strip()
+    return ""
+
+
+def render(name: str, description: str, body: str) -> str:
+    return f"---\nname: {name}\ndescription: {description}\n---\n\n{body.strip()}\n"
+
+
+def proposals(*, include_decided: bool = False) -> list:
+    entries = _read().get("entries", [])
+    if include_decided:
+        return entries
+    return [entry for entry in entries if entry.get("status") == PENDING]
+
+
+def _validate(name: str, description: str, body: str) -> None:
+    if not NAME_PATTERN.match(name):
+        raise SkillError(
+            f"{name!r} is not a skill name: lowercase words joined by hyphens, "
+            "because the name becomes a directory and is how every future agent "
+            "refers to it"
+        )
+    if len(name) > 40:
+        raise SkillError("skill names are directories and prompts; keep it under 40 characters")
+    if not description.strip():
+        raise SkillError(
+            "a skill needs a description: it is the only part an agent reads "
+            "when deciding whether this skill applies to what it is doing"
+        )
+    if len(body.strip()) < HOLLOW_SKILL_CHARS:
+        raise SkillError(
+            f"this skill body is {len(body.strip())} characters, under the "
+            f"{HOLLOW_SKILL_CHARS} it takes to be a procedure rather than a "
+            "reminder. Write what to do, in what order, and how the result is "
+            "checked -- a future agent has none of the context you have now."
+        )
+
+
+def propose(
+    name: str,
+    *,
+    description: str,
+    body: str,
+    why: str = "",
+    role: str = "",
+    plan: str = "",
+    repository: str = "",
+    repository_path: str = "",
+    actor: str = "",
+    installed: Optional[list] = None,
+) -> dict:
+    """Record a skill an agent thinks the next agent should have.
+
+    Bodies are pooled across repositories and end up proposed in a public
+    checkout, so they are redacted on the way out for the same reason harness
+    friction is: the most useful skill quotes the command that actually worked,
+    and that command is where a token from a private repository escapes.
+    """
+    name = (name or "").strip().lower()
+    description = grogu_privacy.redact((description or "").strip())
+    body = grogu_privacy.redact(body or "")
+    why = grogu_privacy.redact((why or "").strip())
+    _validate(name, description, body)
+
+    existing = {skill["name"] for skill in (installed or [])}
+    amends = name in existing
+    if not amends:
+        # An agent that reaches a lesson the repository already wrote down
+        # under another name should be sent to read it, not add a second copy
+        # for the next agent to have to choose between.
+        for skill in installed or []:
+            if _similarity(
+                _tokens(f"{name} {description}"),
+                _tokens(f"{skill.get('name','')} {skill.get('description','')}"),
+            ) >= SKILL_SIMILARITY:
+                raise AlreadyKnown(
+                    f"this is {skill['name']}, already installed: "
+                    f"{skill.get('description','')}\nRead {skill.get('path','it')}. "
+                    f"If it is wrong or incomplete, propose it as an amendment: "
+                    f"`grogu skill propose {skill['name']} ...`."
+                )
+
+    with skills_lock():
+        payload = _read()
+        entries = payload.setdefault("entries", [])
+        subject = (name, description, body)
+        # Pending first. A live proposal for this lesson is somewhere for the
+        # echo to go, and it beats a refusal even when an older version of the
+        # same lesson was declined once -- somebody has since re-opened it.
+        for entry in entries:
+            if entry.get("status") != PENDING:
+                continue
+            if entry.get("name") == name or _same_lesson(subject, entry):
+                # The echo keeps its own wording. Merging is a guess, and a
+                # wrong merge silently destroys the second agent's lesson --
+                # which it cannot tell happened, because it is told the merge
+                # succeeded. Keeping both costs a few hundred bytes and lets
+                # whoever decides see what was folded in.
+                entry.setdefault("echoes", []).append(
+                    {
+                        "role": role,
+                        "repository": repository,
+                        "why": why,
+                        "actor": actor,
+                        "name": name,
+                        "description": description,
+                        "body": body.strip(),
+                    }
+                )
+                _write(payload)
+                return entry
+        for entry in entries:
+            if entry.get("status") != DECLINED:
+                continue
+            if entry.get("name") == name or _same_lesson(subject, entry):
+                # The decline note exists for exactly this moment. A fresh
+                # context has no memory of being told no, so without this the
+                # same rejected lesson comes back every time an agent hits the
+                # same wall, and the reason the user wrote is read by nobody.
+                # The attempt is still counted: a lesson declined once and
+                # re-derived five times is evidence the decline was wrong.
+                entry.setdefault("echoes", []).append(
+                    {"role": role, "repository": repository, "why": why, "actor": actor}
+                )
+                _write(payload)
+                count = len(entry["echoes"])
+                agents = "agent has" if count == 1 else "agents have"
+                raise AlreadyDeclined(
+                    "this was proposed before and declined: "
+                    f"{entry.get('decision') or 'no reason recorded'}\n"
+                    f"({count} {agents} now reached it anyway.)\n"
+                    f"If that reason does not hold any more, say why: "
+                    f"`grogu skill contest {entry['seq']} --note \"...\"`. "
+                    "That puts it back in front of whoever declined it, with "
+                    "your argument attached -- it does not install anything."
+                )
+        entry = {
+            "seq": len(entries) + 1,
+            "name": name,
+            "description": description,
+            "body": body.strip(),
+            "why": why,
+            "role": role,
+            "plan": plan,
+            "repository": repository,
+            "repository_path": repository_path,
+            "actor": actor,
+            "amends": amends,
+            "status": PENDING,
+            "echoes": [],
+        }
+        entries.append(entry)
+        _write(payload)
+        return entry
+
+
+def _find(seq: int, entries: list) -> dict:
+    for entry in entries:
+        if entry.get("seq") == seq:
+            return entry
+    raise SkillError(f"no skill proposal #{seq}")
+
+
+def accept(seq: int, *, root: Path, note: str = "") -> dict:
+    """Install a proposal into a repository, where a diff can review it."""
+    with skills_lock():
+        payload = _read()
+        entry = _find(seq, payload.get("entries", []))
+        if entry.get("status") != PENDING:
+            raise SkillError(
+                f"skill proposal #{seq} was already {entry.get('status')}"
+            )
+        directory = Path(root) / SKILLS_DIRNAME / entry["name"]
+        manifest = directory / "SKILL.md"
+        if manifest.exists() and not entry.get("amends"):
+            raise SkillError(
+                f"{manifest} already exists and this proposal was not written "
+                "as an amendment to it. Re-propose it against the installed "
+                "skill so the change to a standing instruction is visible."
+            )
+        directory.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(
+            render(entry["name"], entry["description"], entry["body"]), encoding="utf8"
+        )
+        entry["status"] = ACCEPTED
+        entry["installed_at"] = str(manifest)
+        entry["decision"] = note.strip()
+        _write(payload)
+        return entry
+
+
+def decline(seq: int, *, note: str = "") -> dict:
+    if not note.strip():
+        raise SkillError(
+            "say why: the agent that proposed this will propose it again from "
+            "a fresh context, and the reason is the only thing that stops it"
+        )
+    with skills_lock():
+        payload = _read()
+        entry = _find(seq, payload.get("entries", []))
+        if entry.get("status") != PENDING:
+            raise SkillError(f"skill proposal #{seq} was already {entry.get('status')}")
+        entry["status"] = DECLINED
+        entry["decision"] = note.strip()
+        _write(payload)
+        return entry
+
+
+def contest(seq: int, *, note: str, role: str = "", repository: str = "") -> dict:
+    """Put a declined lesson back in front of whoever declined it.
+
+    The refusal told agents to say so if the reason no longer held, and gave
+    them no way to say it -- so the only move left was to re-propose under a
+    new name, which is precisely what the refusal exists to stop. Any role may
+    contest, because the agent hitting the wall is the one with the evidence.
+    It returns the proposal to the queue and nothing further: installing is
+    still the user's or the supervisor's call, so this cannot be used to
+    overturn a decision, only to ask again with an argument.
+    """
+    if not note.strip():
+        raise SkillError(
+            "say what changed. Contesting without an argument is re-proposing "
+            "it with extra steps, and the person who declined it already gave "
+            "a reason."
+        )
+    with skills_lock():
+        payload = _read()
+        entry = _find(seq, payload.get("entries", []))
+        if entry.get("status") != DECLINED:
+            raise SkillError(
+                f"skill proposal #{seq} is {entry.get('status')}, not declined; "
+                "there is nothing to contest"
+            )
+        entry["status"] = PENDING
+        entry["contested"] = {
+            "note": grogu_privacy.redact(note.strip()),
+            "role": role,
+            "repository": repository,
+            "declined_for": entry.get("decision", ""),
+        }
+        _write(payload)
+        return entry
+
+
+def ripe(entries: Optional[list] = None) -> list:
+    """Proposals more than one agent independently arrived at."""
+    return [entry for entry in (entries if entries is not None else proposals()) if entry.get("echoes")]
+
+
+def unwritten_lessons(clusters: list, *, installed: Optional[list] = None) -> list:
+    """Recurring harness friction that nobody has turned into anything.
+
+    A complaint filed once is a bad afternoon. The same complaint from three
+    agents in three repositories is either a bug to fix or a procedure nobody
+    wrote down, and this is the half the skill store can answer. It reads the
+    friction clusters that already exist rather than inventing a detector,
+    because the harness only ever sees its own commands -- it cannot watch an
+    agent repeat itself in bash, so self-report is the only channel there is.
+    """
+    known = [
+        _tokens(f"{skill.get('name','')} {skill.get('description','')}")
+        for skill in (installed or [])
+    ]
+    known += [
+        _tokens(f"{entry.get('name','')} {entry.get('description','')} {entry.get('why','')}")
+        for entry in proposals(include_decided=True)
+    ]
+    unwritten = []
+    for cluster in clusters:
+        if cluster.get("count", 1) < 2:
+            continue
+        subject = _tokens(cluster.get("title", ""))
+        if any(_similarity(subject, other) >= SKILL_SIMILARITY for other in known):
+            continue
+        unwritten.append(
+            {
+                "id": cluster.get("id", ""),
+                "title": cluster.get("title", ""),
+                "count": cluster.get("count", 1),
+                "repositories": cluster.get("repositories", []),
+                "roles": cluster.get("roles", []),
+            }
+        )
+    return unwritten
