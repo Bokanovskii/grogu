@@ -125,6 +125,7 @@ def _flatten_seaglass_result(payload: dict, limit: Optional[int] = None) -> List
                         "date": message.get("ts"),
                         "handle": _sender_handle(message),
                         "kind": kind,
+                        "score": message.get("match_score") or 0,
                     }
                 )
         if rows:
@@ -187,7 +188,20 @@ def _share_budget(ranked: List[List[dict]], limit: int) -> List[dict]:
     chosen: List[List[dict]] = [[] for _ in ranked]
     budget = max(0, limit)
     for kind in ("hit", "context"):
-        queues = [[row for row in rows if row["kind"] == kind] for rows in ranked]
+        # A session's `messages` are the whole matched stretch of
+        # conversation, and only some of them actually matched --
+        # `match_score` is 0 for the rest. Taking them in the order they
+        # were sent spent a small limit on whatever the session happened
+        # to open with: "what did kaya say about the boat" led with a
+        # winking emoji while the message about the boat ranked below it.
+        queues = [
+            sorted(
+                (row for row in rows if row["kind"] == kind),
+                key=lambda row: row["score"],
+                reverse=True,
+            )
+            for rows in ranked
+        ]
         cursors = [0] * len(ranked)
         # Breadth: one row each, in rank order.
         for index, queue in enumerate(queues):

@@ -1405,6 +1405,22 @@ class SeaglassFlatteningTests(unittest.TestCase):
         self.assertEqual({r["id"] for r in rows}, {1, 2, 3, 4})
         self.assertTrue(all(r["kind"] == "hit" for r in rows))
 
+    def test_the_budget_is_spent_on_messages_that_actually_matched(self):
+        # A session's `messages` are the whole matched stretch of
+        # conversation and only some of them matched; `match_score` is 0
+        # for the rest. In send order a small limit went to whatever the
+        # session opened with -- "what did kaya say about the boat" led
+        # with a winking emoji and pushed the boat below the cut.
+        payload = self.payload([{
+            "messages": [
+                {"message_id": 1, "text": "hi", "ts": 1.0, "sender": "them", "match_score": 0},
+                {"message_id": 2, "text": "the boat", "ts": 2.0, "sender": "them", "match_score": 1},
+            ],
+            "context_messages": [],
+        }])
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=1)
+        self.assertEqual([r["id"] for r in rows], [2])
+
     def test_context_is_labelled_not_disguised_as_a_match(self):
         # Context is frequently from the *other* participant or from the
         # user. Unlabelled it read as a match and dropped sender purity
