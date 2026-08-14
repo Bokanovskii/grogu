@@ -2079,3 +2079,57 @@ class AgentPresenceTests(unittest.TestCase):
         self.assertEqual(
             [note["unread_by"] for note in undelivered], [["engineer@engineer-two"]]
         )
+
+
+class LateReviewHoldTests(unittest.TestCase):
+    """A hold placed after the work landed does not un-land it."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+
+    def test_requiring_review_over_completed_work_says_so(self):
+        plan = self.store.create("late")["id"]
+        self.store.write_stage(plan, "implementation", "do it", role="architect")
+        self.store.write_stage(plan, "testing", "check it", role="architect")
+        self.store.set_stage_state(plan, "implementation", "complete", role="engineer")
+        manifest = self.store.require_review(plan, role="architect")
+        self.assertTrue(
+            any("already completed" in warning for warning in manifest.get("warnings", []))
+        )
+
+    def test_requiring_review_before_any_work_is_silent(self):
+        plan = self.store.create("early")["id"]
+        manifest = self.store.require_review(plan, role="architect")
+        self.assertEqual(manifest.get("warnings", []), [])
+
+
+class ReviewHoldEnforcementTests(unittest.TestCase):
+    """The hold has to bind the held party, not just answer the gate."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("held", review_required=True)["id"]
+        self.store.write_stage(self.plan, "implementation", "do it", role="architect")
+        self.store.write_stage(self.plan, "testing", "check it", role="architect")
+
+    def test_an_engineer_that_never_checked_the_gate_is_still_stopped(self):
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.set_stage_state(
+                self.plan, "implementation", "complete", role="engineer"
+            )
+        self.assertIn("plan approve", str(caught.exception))
+
+    def test_approval_releases_it(self):
+        self.store.approve(self.plan)
+        manifest = self.store.set_stage_state(
+            self.plan, "implementation", "complete", role="engineer"
+        )
+        self.assertEqual(manifest["stage_state"]["implementation"], "complete")

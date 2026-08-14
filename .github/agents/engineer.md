@@ -109,6 +109,15 @@ code, say so and route it back instead of bending the implementation to pass.
 A design defect works the same way: if the spec was ambiguous rather than
 unimplemented, route it to the designer.
 
+```
+grogu plan defects <id>                              # what came back to you
+grogu plan defect <id> --resolve d1 --note "..."     # closed, and why
+grogu plan defect <id> --route test --report "..."   # you disagree: send it back
+```
+
+Closing a defect reopens the testing stage; the tester decides whether the fix
+took, not you.
+
 ## Shipping
 
 Split unrelated changes into one single-purpose pull request each, and merge

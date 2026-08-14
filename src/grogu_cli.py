@@ -1559,7 +1559,9 @@ def plan_shape(args: argparse.Namespace) -> int:
         store.decline_stage(plan_id, args.decline, args.why or "", role=role)
         print(f"{plan_id}: recorded that no {args.decline} stage is warranted")
         return 0
-    store.require_review(plan_id, role=role)
+    manifest = store.require_review(plan_id, role=role)
+    for warning in manifest.get("warnings", []):
+        print(f"grogu: {warning}", file=sys.stderr)
     print(f"{plan_id}: held for user review; work is blocked until `grogu plan approve`")
     return 0
 
@@ -1729,6 +1731,26 @@ def plan_resolve(args: argparse.Namespace) -> int:
 
 
 def plan_defect(args: argparse.Namespace) -> int:
+    if getattr(args, "resolve", ""):
+        # An engineer handed a routed-back defect reached for `--resolve`
+        # first, because that is what every other command in the pipeline
+        # would have called it. Being right about the name is not worth a
+        # failed call.
+        if not args.note:
+            print(
+                "grogu: closing a defect needs --note saying what you changed",
+                file=sys.stderr,
+            )
+            return 2
+        args.defect = args.resolve
+        return plan_defect_resolve(args)
+    if not args.report or not args.route:
+        print(
+            "grogu: filing a defect needs --report and --route "
+            "(or --resolve DEFECT to close one)",
+            file=sys.stderr,
+        )
+        return 2
     store = plan_store(args)
     plan_id = store.resolve(args.id)
     defect = store.report_defect(
@@ -1852,8 +1874,12 @@ def plan_review(args: argparse.Namespace) -> int:
 def plan_steer(args: argparse.Namespace) -> int:
     store = plan_store(args)
     plan_id = store.resolve(args.id) if args.id else ""
+    text = " ".join(args.text).strip() or (getattr(args, "note", "") or "").strip()
+    if not text:
+        print("grogu: nothing to steer with; pass the note as text or --note", file=sys.stderr)
+        return 2
     note = store.steer(
-        " ".join(args.text),
+        text,
         plan_id=plan_id,
         role=args.role or "all",
         requires_replan=args.requires_replan,
@@ -2954,11 +2980,18 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[plan_common, role_common],
     )
     plan_defect_parser.add_argument("id")
-    plan_defect_parser.add_argument("--report", required=True)
     plan_defect_parser.add_argument(
-        "--route", choices=grogu_plans.DEFECT_ROUTES, required=True
+        "--resolve",
+        default="",
+        metavar="DEFECT",
+        help="close a defect instead of filing one (same as `plan defect-resolve`)",
     )
+    plan_defect_parser.add_argument("--report", default="")
+    plan_defect_parser.add_argument("--route", choices=grogu_plans.DEFECT_ROUTES)
     plan_defect_parser.add_argument("--evidence", default="")
+    plan_defect_parser.add_argument(
+        "--note", default="", help="what you changed, when closing with --resolve"
+    )
     plan_defect_parser.set_defaults(handler=plan_defect)
 
     plan_defects_parser = plan_subparsers.add_parser("defects", parents=[plan_common])
@@ -3030,7 +3063,10 @@ def build_parser() -> argparse.ArgumentParser:
         "steer", help="record steering that reaches agents spawned later",
         parents=[plan_common],
     )
-    plan_steer_parser.add_argument("text", nargs="+")
+    plan_steer_parser.add_argument("text", nargs="*")
+    plan_steer_parser.add_argument(
+        "--note", default="", help="the note, if you would rather not quote it positionally"
+    )
     plan_steer_parser.add_argument("--plan", dest="id", help="scope to one plan")
     plan_steer_parser.add_argument(
         "--role", choices=(*grogu_plans.ROLES, "all"), default="all"

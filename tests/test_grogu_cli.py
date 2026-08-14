@@ -1472,3 +1472,83 @@ class PlanSteeringReadTests(unittest.TestCase):
         self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
         status = self.run_cli("plan", "status", plan)
         self.assertIn("has not reached engineer", status.stdout)
+
+
+class SteerNoteAliasTests(unittest.TestCase):
+    """Two write commands took the note two different ways."""
+
+    def _run(self, *arguments):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = self.home
+        environment.pop("GROGU_ROLE", None)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments],
+            cwd=self.project,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.home = self.temporary.name
+        self.project = self.temporary.name
+        self.addCleanup(self.temporary.cleanup)
+
+    def test_the_note_can_be_given_the_same_way_friction_takes_it(self):
+        created = self._run("plan", "new", "alias")
+        plan_id = created.stdout.split()[0]
+        result = self._run("plan", "steer", "--plan", plan_id, "--note", "use decimal")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("recorded", result.stdout)
+
+    def test_an_empty_note_is_refused_rather_than_recorded_blank(self):
+        created = self._run("plan", "new", "alias")
+        plan_id = created.stdout.split()[0]
+        result = self._run("plan", "steer", "--plan", plan_id)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("nothing to steer", result.stderr)
+
+
+class DefectResolveAliasTests(unittest.TestCase):
+    """The command an engineer reaches for should be the command that works."""
+
+    def _run(self, *arguments, role=""):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = self.home
+        environment.pop("GROGU_ROLE", None)
+        if role:
+            environment["GROGU_ROLE"] = role
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments],
+            cwd=self.home,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.home = self.temporary.name
+        self.addCleanup(self.temporary.cleanup)
+        self.plan = self._run("plan", "new", "defect alias").stdout.split()[0]
+
+    def test_a_defect_can_be_closed_from_the_command_that_filed_it(self):
+        filed = self._run(
+            "plan", "defect", self.plan, "--report", "rounds the wrong way",
+            "--route", "implementation", role="tester",
+        )
+        self.assertEqual(filed.returncode, 0, filed.stderr)
+        closed = self._run(
+            "plan", "defect", self.plan, "--resolve", "d1",
+            "--note", "restored half-up", role="engineer",
+        )
+        self.assertEqual(closed.returncode, 0, closed.stderr)
+        self.assertIn("d1 resolved", closed.stdout)
+
+    def test_filing_without_a_route_says_what_is_missing(self):
+        result = self._run(
+            "plan", "defect", self.plan, "--report", "broken", role="tester"
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--report and --route", result.stderr)

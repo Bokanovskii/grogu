@@ -1404,7 +1404,21 @@ class PlanStore:
             if manifest.get("review_required"):
                 return manifest
             manifest["review_required"] = True
-            return self._save(manifest, "review_required")
+            # Holding a plan for review after work has already landed does
+            # not un-land it. Say so, rather than letting the architect
+            # believe it has closed a gate the work already walked through.
+            done = [
+                stage
+                for stage in manifest.get("stages", [])
+                if manifest.get("stage_state", {}).get(stage) == COMPLETE
+            ]
+            manifest = self._save(manifest, "review_required")
+            if done:
+                manifest["warnings"] = [
+                    f"{', '.join(done)} already completed before review was required; "
+                    "the hold applies to remaining stages only"
+                ]
+            return manifest
 
     # -- stage bodies ------------------------------------------------------
 
@@ -1661,6 +1675,19 @@ class PlanStore:
             manifest = self.load(plan_id)
             if stage not in manifest.get("stages", []):
                 raise PlanError(f"plan {plan_id} has no {stage} stage")
+            if (
+                manifest.get("review_required")
+                and not manifest.get("approved_at")
+                and not as_user
+            ):
+                # `plan gate` said this correctly and an engineer walked
+                # straight past it, because nothing made it ask. A hold the
+                # held party can decline to notice is not a hold.
+                raise PlanError(
+                    f"plan {plan_id} is waiting for the user to review it; "
+                    "nothing moves until `grogu plan approve` "
+                    "(autopilot does not waive review)"
+                )
             if stage in SEALED_STAGES and state == COMPLETE:
                 # The dual of the late-defect hole. Reopening testing when a
                 # defect arrives late only covers defects filed *after* a pass;

@@ -104,6 +104,7 @@ grogu plan amend <id> --role engineer --claim "..." --evidence "..."
 grogu plan gate <id> --stage test
 grogu plan show <id> --stage testing --role tester
 grogu plan defect <id> --role tester --route implementation|test|plan|design --report "..."
+grogu plan defect <id> --role engineer --resolve d1 --note "what changed"
 ```
 
 Run the tester on a different model family from the engineer; it is auditing
