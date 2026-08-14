@@ -1756,3 +1756,187 @@ class SupervisionIsNotWorkTests(unittest.TestCase):
         plan = self.run_cli("plan", "new", "binding").stdout.strip()
         self.run_cli("plan", "steer", plan, "--note", "from the architect", role="architect")
         self.assertEqual(self._roles()[-1], "architect")
+
+
+class ArchitectFrictionTests(unittest.TestCase):
+    """Bugs a real architect hit while planning a real project.
+
+    Every one of these was reported by an opus-5 architect agent that was
+    asked to build a plan for a Washington air quality site and to treat
+    anything that got in its way as a finding.
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+
+    def run_cli(self, *arguments, role="", agent=""):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = str(self.repo / "home")
+        for name, value in (("GROGU_ROLE", role), ("GROGU_AGENT", agent)):
+            if value:
+                environment[name] = value
+            else:
+                environment.pop(name, None)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def _plan(self):
+        return self.run_cli("plan", "new", "air quality").stdout.strip()
+
+    def test_show_takes_the_stage_the_way_write_taught_it(self):
+        """`plan write <id> testing` works, so `plan show <id> testing` must."""
+        plan = self._plan()
+        self.run_cli(
+            "plan", "write", plan, "implementation", "--body", "x" * 200, role="architect"
+        )
+        positional = self.run_cli("plan", "show", plan, "implementation", role="architect")
+        self.assertEqual(positional.returncode, 0, positional.stderr)
+        self.assertIn("x" * 20, positional.stdout)
+        flagged = self.run_cli(
+            "plan", "show", plan, "--stage", "implementation", role="architect"
+        )
+        self.assertEqual(positional.stdout, flagged.stdout)
+
+    def test_show_names_a_bad_stage_instead_of_an_argparse_error(self):
+        plan = self._plan()
+        result = self.run_cli("plan", "show", plan, "implementaton", role="architect")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no stage called", result.stderr)
+        self.assertIn("implementation", result.stderr)
+
+    def test_two_stages_at_once_are_refused(self):
+        plan = self._plan()
+        result = self.run_cli(
+            "plan", "show", plan, "testing", "--stage", "implementation", role="architect"
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("two stages", result.stderr)
+
+    def test_status_never_shows_an_agent_its_own_note_clipped(self):
+        """The clipped supervision line is for the person, not the addressee.
+
+        An architect read 87 characters of the note that invalidated its
+        architecture through `plan status` and believed it had read the note.
+        """
+        plan = self._plan()
+        note = "Late constraint: no build step. " + ("the rest matters too. " * 12)
+        self.run_cli("plan", "steer", plan, "--role", "engineer", "--note", note)
+        supervisor = self.run_cli("plan", "status", plan)
+        self.assertIn("has not reached", supervisor.stdout)
+        self.assertIn("...", supervisor.stdout)
+        agent = self.run_cli("plan", "status", plan, role="engineer", agent="e1")
+        self.assertNotIn("has not reached", agent.stdout)
+        self.assertIn(note.strip(), agent.stdout)
+
+    def test_replace_keeps_the_fields_it_was_not_given(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "workstream", plan, "--name", "ingest", "--path", "js/**",
+            "--model", "claude-opus-5", "--review", "code-review",
+            "--brief", "nulls are not zeroes",
+        )
+        result = self.run_cli(
+            "plan", "workstream", plan, "--replace", "--name", "ingest", "--path", "js/data/**"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        streams = json.loads(
+            self.run_cli("plan", "workstreams", plan, "--json").stdout
+        )["workstreams"]
+        ingest = next(stream for stream in streams if stream["name"] == "ingest")
+        self.assertEqual(ingest["paths"], ["js/data/**"])
+        self.assertEqual(ingest["model"], "claude-opus-5")
+        self.assertEqual(ingest["review"], "code-review")
+        self.assertEqual(ingest["brief"], "nulls are not zeroes")
+
+    def test_replace_can_still_clear_a_field_on_purpose(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "workstream", plan, "--name", "ingest", "--path", "js/**",
+            "--model", "claude-opus-5",
+        )
+        self.run_cli(
+            "plan", "workstream", plan, "--replace", "--name", "ingest",
+            "--path", "js/**", "--model", "",
+        )
+        streams = json.loads(
+            self.run_cli("plan", "workstreams", plan, "--json").stdout
+        )["workstreams"]
+        self.assertEqual(streams[0]["model"], "")
+
+    def test_a_workstream_can_be_withdrawn(self):
+        plan = self._plan()
+        self.run_cli("plan", "workstream", plan, "--name", "scaffold", "--path", "index.html")
+        self.run_cli("plan", "workstream", plan, "--name", "web", "--path", "js/ui/**")
+        dropped = self.run_cli("plan", "workstream", plan, "--drop", "--name", "web")
+        self.assertEqual(dropped.returncode, 0, dropped.stderr)
+        streams = json.loads(
+            self.run_cli("plan", "workstreams", plan, "--json").stdout
+        )["workstreams"]
+        self.assertEqual([stream["name"] for stream in streams], ["scaffold"])
+
+    def test_dropping_something_depended_on_is_refused(self):
+        plan = self._plan()
+        self.run_cli("plan", "workstream", plan, "--name", "scaffold", "--path", "index.html")
+        self.run_cli(
+            "plan", "workstream", plan, "--name", "web", "--path", "js/ui/**",
+            "--depends-on", "scaffold",
+        )
+        result = self.run_cli("plan", "workstream", plan, "--drop", "--name", "scaffold")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("web depend", result.stderr)
+
+    def test_dropping_an_unknown_workstream_lists_the_real_ones(self):
+        plan = self._plan()
+        self.run_cli("plan", "workstream", plan, "--name", "scaffold", "--path", "index.html")
+        result = self.run_cli("plan", "workstream", plan, "--drop", "--name", "scafold")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("scaffold", result.stderr)
+
+    def test_byte_counts_are_the_plan_as_a_person_reads_it(self):
+        """A sealed stage is stored compressed; the counts must not be.
+
+        The same write announced 13178 bytes and "replaced 379 bytes", and the
+        truncation warning was comparing compression ratios.
+        """
+        plan = self._plan()
+        first = "First testing plan. " * 400
+        self.run_cli("plan", "write", plan, "testing", "--body", first, role="architect")
+        second = "Second, much shorter. " * 20
+        result = self.run_cli(
+            "plan", "write", plan, "testing", "--body", second, "--replace", role="architect"
+        )
+        self.assertIn(f"({len(second)} bytes)", result.stdout)
+        self.assertIn(f"replaced {len(first)} bytes", result.stdout)
+        self.assertIn(f"went from {len(first)} bytes to {len(second)}", result.stderr)
+        revisions = self.run_cli(
+            "plan", "show", plan, "testing", "--revisions", role="architect"
+        )
+        self.assertIn(f"{len(first)} bytes", revisions.stdout)
+
+    def test_a_declared_role_cannot_claim_another_one(self):
+        """The seal was a norm because --role was a bare assertion."""
+        plan = self._plan()
+        self.run_cli("plan", "write", plan, "testing", "--body", "y" * 200, role="architect")
+        impersonation = self.run_cli(
+            "plan", "show", plan, "testing", "--role", "tester", role="engineer", agent="e1"
+        )
+        self.assertEqual(impersonation.returncode, 2)
+        self.assertIn("cannot act as the tester", impersonation.stderr)
+        self.assertNotIn("y" * 20, impersonation.stdout)
+
+    def test_steering_another_role_is_still_allowed(self):
+        """--role names a subject on the steering commands, not the caller."""
+        plan = self._plan()
+        result = self.run_cli(
+            "plan", "steer", plan, "--role", "tester", "--note", "check nulls",
+            role="engineer", agent="e1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)

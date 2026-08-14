@@ -1611,12 +1611,19 @@ def plan_status(args: argparse.Namespace) -> int:
     pending = {role: count for role, count in summary["steering_pending"].items() if count}
     for role, count in sorted(pending.items()):
         print(f"  {count} unread steering note(s) for the {role}")
-    for note in summary.get("steering_undelivered", []):
-        text = note["text"]
-        if len(text) > 90:
-            text = text[:87] + "..."
-        who = ", ".join(note.get("unread_by") or [note["role"]])
-        print(f"  steering #{note['seq']} has not reached {who}: {text}")
+    # This list is the supervisor's view: which notes have not landed yet. It
+    # is clipped to 90 characters because it is a summary of many notes. An
+    # agent running `plan status` was shown its *own* pending note through this
+    # clipped line, so the architect read 87 characters of the note that
+    # invalidated its architecture and believed it had read the note. Delivery
+    # is the banner, in full, once. Supervision is this list. Never both.
+    if not grogu_plans.current_role():
+        for note in summary.get("steering_undelivered", []):
+            text = note["text"]
+            if len(text) > 90:
+                text = text[:87] + "... (`grogu plan steering --all` for the rest)"
+            who = ", ".join(note.get("unread_by") or [note["role"]])
+            print(f"  steering #{note['seq']} has not reached {who}: {text}")
     return 0
 
 
@@ -1669,6 +1676,27 @@ def plan_write(args: argparse.Namespace) -> int:
 
 def plan_show(args: argparse.Namespace) -> int:
     store = plan_store(args)
+    # `plan write` takes the stage positionally and `plan show` demanded
+    # `--stage`, so the architect typed `plan show <id> testing` -- the shape
+    # the harness had just taught it -- and got an argparse error.
+    positional = (getattr(args, "stage_positional", "") or "").strip()
+    if positional:
+        if positional not in grogu_plans.STAGES:
+            print(
+                f"grogu: no stage called {positional!r}; expected one of "
+                + ", ".join(grogu_plans.STAGES),
+                file=sys.stderr,
+            )
+            return 2
+        if args.stage and args.stage != positional:
+            print(
+                f"grogu: two stages given, {positional!r} and {args.stage!r}; "
+                "name it once",
+                file=sys.stderr,
+            )
+            return 2
+        args.stage = positional
+    args.stage = args.stage or grogu_plans.IMPLEMENTATION
     plan_id = store.resolve(args.id)
     if getattr(args, "revisions", False):
         history = store.revisions(plan_id, args.stage)
@@ -1949,14 +1977,31 @@ def plan_defect_resolve(args: argparse.Namespace) -> int:
 
 def plan_workstream(args: argparse.Namespace) -> int:
     store = plan_store(args)
+    if getattr(args, "drop", False):
+        if args.path:
+            print(
+                "grogu: --drop removes a workstream; it takes no --path",
+                file=sys.stderr,
+            )
+            return 2
+        stream = store.drop_workstream(store.resolve(args.id), args.name)
+        print(f"dropped workstream {stream['name']}")
+        return 0
+    if not args.path:
+        print(
+            "grogu: a workstream needs at least one --path glob so parallel "
+            "work can be checked for overlap",
+            file=sys.stderr,
+        )
+        return 2
     stream = store.add_workstream(
         store.resolve(args.id),
         name=args.name,
         paths=args.path,
         depends_on=args.depends_on or [],
-        model=args.model or "",
-        review=args.review or "",
-        brief=args.brief or "",
+        model=args.model,
+        review=args.review,
+        brief=args.brief,
         replace=getattr(args, "replace", False),
     )
     detail = "".join(
@@ -3305,7 +3350,14 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[plan_common, role_common],
     )
     _plan_id_argument(plan_show_parser)
-    plan_show_parser.add_argument("--stage", choices=grogu_plans.STAGES, default=grogu_plans.IMPLEMENTATION)
+    plan_show_parser.add_argument(
+        "stage_positional",
+        nargs="?",
+        default="",
+        metavar="stage",
+        help="the stage to read; `--stage` also works",
+    )
+    plan_show_parser.add_argument("--stage", choices=grogu_plans.STAGES, default="")
     plan_show_parser.add_argument(
         "--revision", type=int, default=0, help="an earlier version of this stage"
     )
@@ -3469,8 +3521,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="redefine a workstream that is already declared but not finished",
     )
+    plan_workstream_parser.add_argument(
+        "--drop",
+        action="store_true",
+        help="withdraw a workstream this plan no longer wants",
+    )
     plan_workstream_parser.add_argument("--name", required=True)
-    plan_workstream_parser.add_argument("--path", action="append", required=True)
+    plan_workstream_parser.add_argument("--path", action="append")
     plan_workstream_parser.add_argument("--depends-on", action="append")
     plan_workstream_parser.add_argument(
         "--model", help="model this workstream should be implemented on"
@@ -3955,6 +4012,40 @@ GROGU_COMMANDS = frozenset(
 )
 
 
+def _role_claim_is_honest(parsed: argparse.Namespace) -> bool:
+    """Refuse a role an agent has already contradicted about itself.
+
+    `--role` used to be a bare assertion, which made the seal on the testing
+    plan a norm rather than a control: an engineer could type `--role tester`
+    and read the plan it is supposed to be judged against. This does not make
+    the seal cryptographic -- an agent that never exports GROGU_ROLE is still
+    only bound by the contract, and the sealed file is decodable by anyone who
+    wants to. What it does close is the one path that mattered in practice: an
+    agent that *has* declared itself cannot then declare itself somebody else.
+    """
+    declared = grogu_plans.current_role()
+    if not declared:
+        return True
+    sub = ""
+    for attribute in ("plan_command", "design_command", "task_command"):
+        sub = getattr(parsed, attribute, "") or ""
+        if sub:
+            break
+    if sub in SUBJECT_ROLE_COMMANDS:
+        return True
+    claimed = (getattr(parsed, "role", "") or "").strip().lower()
+    if not claimed or claimed == declared:
+        return True
+    print(
+        f"grogu: this session is the {declared}; it cannot act as the "
+        f"{claimed}. If the {claimed} should do this, spawn one -- reading a "
+        "stage as a role you are not is how an engineer ends up writing to "
+        "the test rather than to the plan.",
+        file=sys.stderr,
+    )
+    return False
+
+
 def main(arguments: list[str]) -> int:
     if arguments[:2] == ["banner", "status-line"]:
         sys.stdout.write(grogu_banner.status_line_frame() + "\n")
@@ -3971,6 +4062,8 @@ def main(arguments: list[str]) -> int:
     if parsed.command is None:
         return launch_copilot(arguments)
     if not _resolve_plan_id(parsed):
+        return 2
+    if not _role_claim_is_honest(parsed):
         return 2
     global _PENDING_NOTICE
     _PENDING_NOTICE = _notice_for(parsed)

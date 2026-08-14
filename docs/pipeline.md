@@ -234,6 +234,13 @@ be deliberate rather than incidental, and that role-scoped reads are recorded in
 the manifest's access log — including refused ones. The same honesty applies
 here as to the codemode sandbox: it stops mistakes, not intent.
 
+One path that *is* closed: `--role` used to be a bare assertion, so an engineer
+could type `grogu plan show <id> testing --role tester` and read the plan it was
+about to be judged against. A session that has declared itself in `GROGU_ROLE`
+can no longer claim to be a different role — the request is refused rather than
+answered. An agent that never declares a role is still bound only by the
+contract, and that remains true by design: the user runs these commands too.
+
 A second consequence is the point of the design. If the testing plan is the only
 thing standing between a plausible implementation and a merge, it has to be
 good. That pressure is intentional; it is what makes testing and evaluation

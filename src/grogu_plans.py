@@ -1704,10 +1704,18 @@ class PlanStore:
             state = manifest.get("stage_state", {}).get(stage)
             payload = seal(body) if sealed else body
             changed = previous != payload
+            # Every byte count below must be the plan as a person reads it. A
+            # sealed stage is stored base64+zlib, so `was`/`now` and the
+            # truncation warning were reporting compressed sizes while the CLI
+            # reported plaintext -- the same write announced 13178 bytes and
+            # "replaced 379 bytes". Worse, the "did this plan just lose half
+            # itself" check was comparing compression ratios, so it fired on
+            # honest edits and stayed quiet on real truncation.
+            previous_text = (unseal(previous) if sealed and previous else previous)
             if changed and previous and state == COMPLETE and not replace:
                 raise PlanError(
                     f"the {stage} stage is complete and this rewrites it "
-                    f"({len(previous)} bytes -> {len(payload)} bytes). That "
+                    f"({len(previous_text)} bytes -> {len(body)} bytes). That "
                     "reopens the stage and invalidates the work done against "
                     "it. Pass --replace if you mean it; the text you replace "
                     "is kept either way."
@@ -1715,15 +1723,17 @@ class PlanStore:
             revision = 0
             warnings: list = []
             if changed and previous:
-                revision = self._keep_revision(plan_id, stage, previous, manifest)
+                revision = self._keep_revision(
+                    plan_id, stage, previous, manifest, plain_bytes=len(previous_text)
+                )
                 # A plan that loses most of itself in one write is almost
                 # always a mistake -- a probe, a truncated pipe, a --body where
                 # a --file was meant. Say so on the spot, while the person who
                 # did it is still looking.
-                if len(payload) * 2 < len(previous):
+                if len(body) * 2 < len(previous_text):
                     warnings.append(
-                        f"the {stage} plan went from {len(previous)} bytes to "
-                        f"{len(payload)}. If that was not deliberate, "
+                        f"the {stage} plan went from {len(previous_text)} bytes to "
+                        f"{len(body)}. If that was not deliberate, "
                         f"`grogu plan show {plan_id} --stage {stage} "
                         f"--revision {revision}` is the text you just replaced."
                     )
@@ -1732,8 +1742,8 @@ class PlanStore:
                 "stage": stage,
                 "by": role,
                 "at": now(),
-                "was": len(previous),
-                "now": len(payload),
+                "was": len(previous_text),
+                "now": len(body),
                 "revision": revision,
             }
             manifest.setdefault("stage_written", {})[stage] = True
@@ -2713,9 +2723,9 @@ class PlanStore:
         name: str,
         paths: list,
         depends_on: Optional[list] = None,
-        model: str = "",
-        review: str = "",
-        brief: str = "",
+        model: Optional[str] = None,
+        review: Optional[str] = None,
+        brief: Optional[str] = None,
         replace: bool = False,
     ) -> dict:
         """Declare a piece of parallel work, and who should do it how.
@@ -2753,6 +2763,13 @@ class PlanStore:
                         "would silently reopen finished work"
                     )
                 workstreams.remove(existing)
+            # --replace was built as delete-then-create, so correcting a path
+            # glob silently blanked the model, the review requirement, the brief
+            # and the reviews already recorded against the workstream. The
+            # architect narrowed one glob and lost the "this one wants a second
+            # pair of eyes" instruction without being told. An omitted flag now
+            # means "leave it alone"; `--model ""` still clears it.
+            carried = existing if (existing is not None and replace) else {}
             unknown = [
                 dependency
                 for dependency in (depends_on or [])
@@ -2760,7 +2777,7 @@ class PlanStore:
             ]
             if unknown:
                 raise PlanError(f"unknown workstream dependency: {', '.join(unknown)}")
-            if review and review not in REVIEW_KINDS:
+            if review is not None and review and review not in REVIEW_KINDS:
                 raise PlanError(
                     f"unknown review {review!r}; expected one of "
                     + ", ".join(REVIEW_KINDS)
@@ -2769,14 +2786,53 @@ class PlanStore:
                 "name": name,
                 "paths": list(paths),
                 "depends_on": list(depends_on or []),
-                "model": model.strip(),
-                "review": review,
-                "brief": brief.strip(),
-                "reviews": [],
+                "model": (carried.get("model", "") if model is None else model).strip(),
+                "review": carried.get("review", "") if review is None else review,
+                "brief": (carried.get("brief", "") if brief is None else brief).strip(),
+                "reviews": list(carried.get("reviews", [])),
             }
             workstreams.append(workstream)
             self._save(manifest, "workstream_added", workstream=name)
             return workstream
+
+    def drop_workstream(self, plan_id: str, name: str) -> dict:
+        """Withdraw a workstream the plan no longer wants.
+
+        A replan that merges two workstreams into one left the third declared
+        forever: `--replace` could redefine it and nothing could remove it, so
+        the only exit was superseding the whole plan. The wave calculation kept
+        scheduling work nobody intended to do.
+        """
+        with self.locked():
+            manifest = self.load(plan_id)
+            workstreams = manifest.setdefault("workstreams", [])
+            existing = next(
+                (stream for stream in workstreams if stream["name"] == name), None
+            )
+            if existing is None:
+                known = ", ".join(stream["name"] for stream in workstreams) or "none"
+                raise PlanError(
+                    f"plan {plan_id} has no workstream {name!r}; it has: {known}"
+                )
+            if manifest.get("workstream_state", {}).get(name) == COMPLETE:
+                raise PlanError(
+                    f"workstream {name!r} is complete; dropping it would erase "
+                    "work that was already done and reviewed"
+                )
+            dependents = [
+                stream["name"]
+                for stream in workstreams
+                if name in stream.get("depends_on", [])
+            ]
+            if dependents:
+                raise PlanError(
+                    f"{', '.join(dependents)} depend(s) on {name!r}; drop or "
+                    "redeclare those first, or the waves lose their ordering"
+                )
+            workstreams.remove(existing)
+            manifest.get("workstream_state", {}).pop(name, None)
+            self._save(manifest, "workstream_dropped", workstream=name)
+            return existing
 
     def record_review(
         self,
@@ -3576,7 +3632,12 @@ class PlanStore:
         return manifest["verification"]
 
     def _keep_revision(
-        self, plan_id: str, stage: str, previous: str, manifest: dict
+        self,
+        plan_id: str,
+        stage: str,
+        previous: str,
+        manifest: dict,
+        plain_bytes: Optional[int] = None,
     ) -> int:
         """Park the text a write is about to replace, and say which slot."""
         directory = self.plan_dir(plan_id) / "revisions"
@@ -3590,7 +3651,7 @@ class PlanStore:
                 "stage": stage,
                 "revision": number,
                 "file": name,
-                "bytes": len(previous),
+                "bytes": len(previous) if plain_bytes is None else plain_bytes,
                 "at": now(),
                 "by": actor(),
             }
