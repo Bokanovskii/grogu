@@ -1437,6 +1437,54 @@ class ParallelSteeringTests(unittest.TestCase):
             "the second engineer never saw the note",
         )
 
+    def test_plan_steering_reaches_an_agent_that_names_the_plan_on_argv(self):
+        """The role prompts tell agents to pass the plan id as an argument, but
+        the banner only ever read GROGU_PLAN — so an engineer following its own
+        instructions was never handed plan-scoped steering at all."""
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        self.addCleanup(os.environ.pop, "GROGU_ROLE", None)
+        os.environ.pop("GROGU_PLAN", None)
+        self._as("worktree-api")
+        plan = self.store.create("Test plan")
+        self.store.steer(
+            "use the shared client",
+            role=grogu_plans.ENGINEER,
+            plan_id=plan["id"],
+        )
+        self.assertEqual(
+            grogu_plans.pending_banner(self.root), "", "no plan is in scope yet"
+        )
+        self.assertIn(
+            "use the shared client",
+            grogu_plans.pending_banner(self.root, plan_hint=plan["id"]),
+        )
+
+    def test_acking_for_a_relayed_agent_stops_the_banner_repeating_it(self):
+        """When the spawner pushes a note in with write_agent the note has
+        arrived, but nothing else knows that, so the agent would be handed the
+        same text again by its next command."""
+        plan = self.store.create("Test plan")
+        self.store.steer(
+            "use the shared client",
+            role=grogu_plans.ENGINEER,
+            plan_id=plan["id"],
+        )
+        self.store.ack_steering(
+            role=grogu_plans.ENGINEER, plan_id=plan["id"], agent="worktree-api"
+        )
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        self.addCleanup(os.environ.pop, "GROGU_ROLE", None)
+        self._as("worktree-api")
+        self.assertEqual(
+            grogu_plans.pending_banner(self.root, plan_hint=plan["id"]), ""
+        )
+        self._as("worktree-store")
+        self.assertIn(
+            "use the shared client",
+            grogu_plans.pending_banner(self.root, plan_hint=plan["id"]),
+            "a peer that was not relayed to must still be told",
+        )
+
     def test_a_binding_note_is_quoted_where_it_actually_bites(self):
         """Shown once means an agent can lose it. The gate is the moment it
         matters, so the refusal carries the text rather than a count."""

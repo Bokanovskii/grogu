@@ -770,7 +770,7 @@ def mark_delivered() -> None:
         pass  # an ack must never be why a command fails
 
 
-def pending_banner(root: Optional[Path] = None) -> str:
+def pending_banner(root: Optional[Path] = None, plan_hint: str = "") -> str:
     """Unread steering for the calling agent, as a block to append to any output.
 
     A running subagent cannot be interrupted from outside: nothing can push text
@@ -787,7 +787,11 @@ def pending_banner(root: Optional[Path] = None) -> str:
     does not see its own notes echoed back.
     """
     role = current_role()
-    plan_id = os.environ.get("GROGU_PLAN", "").strip()
+    # A plan named on the command line identifies the plan just as well as the
+    # environment variable, and the role prompts tell agents to pass it. Reading
+    # only the variable meant an engineer following its own instructions was
+    # never handed plan-scoped steering at all.
+    plan_id = os.environ.get("GROGU_PLAN", "").strip() or plan_hint.strip()
     try:
         store = PlanStore(root)
         if not role:
@@ -1658,7 +1662,7 @@ class PlanStore:
             )
         return result
 
-    def _ack_key(self, role: str) -> str:
+    def _ack_key(self, role: str, agent: str = "") -> str:
         """Who, specifically, has read a steering note.
 
         Acking per role alone was wrong the moment two engineers could run at
@@ -1672,7 +1676,7 @@ class PlanStore:
         that share one. The failure mode of getting this wrong is a note shown
         twice, which is the right direction to fail in.
         """
-        agent = os.environ.get("GROGU_AGENT", "").strip()
+        agent = (agent or os.environ.get("GROGU_AGENT", "")).strip()
         if not agent:
             try:
                 agent = str(Path.cwd().resolve())
@@ -1688,10 +1692,19 @@ class PlanStore:
         """
         return int(acked.get(self._ack_key(role), acked.get(role, 0)) or 0)
 
-    def ack_steering(self, *, role: str, plan_id: str = "") -> dict:
+    def ack_steering(self, *, role: str, plan_id: str = "", agent: str = "") -> dict:
+        """Mark steering read, optionally on another agent's behalf.
+
+        The relay path needs the second form. When the session that spawned an
+        engineer pushes a note into it with `write_agent`, the note has arrived
+        — but the harness has no way to know that, so the next `grogu` command
+        that engineer runs would hand it the same text a second time. Acking
+        for the agent you just relayed to is what keeps one delivery to one
+        context.
+        """
         if role not in ROLES:
             raise PlanError(f"unknown role {role!r}")
-        key = self._ack_key(role)
+        key = self._ack_key(role, agent)
         with self.locked():
             payload = self._repo_steering()
             repo_high = max(

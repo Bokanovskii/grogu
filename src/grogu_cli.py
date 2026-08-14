@@ -1215,9 +1215,13 @@ def _notice_for(parsed: argparse.Namespace) -> str:
         and getattr(parsed, "plan_command", "") == "friction"
     ):
         return ""
+    hint = ""
+    if getattr(parsed, "command", "") == "plan":
+        hint = getattr(parsed, "plan", "") or getattr(parsed, "id", "") or ""
     try:
         return grogu_plans.pending_banner(
-            Path(parsed.repo).expanduser() if getattr(parsed, "repo", None) else None
+            Path(parsed.repo).expanduser() if getattr(parsed, "repo", None) else None,
+            plan_hint=hint if isinstance(hint, str) else "",
         )
     except Exception:  # a notice must never be why a command fails
         return ""
@@ -1760,35 +1764,46 @@ def plan_steer(args: argparse.Namespace) -> int:
 
 
 def _relay_hint(note: dict, plan_id: str) -> None:
-    """Name the agents that should be told now rather than at their next poll.
+    """Tell the spawner to push the note now rather than wait for a poll.
 
-    Steering rides out on the next `grogu` command an agent happens to run, and
-    an engineer deep in an edit may not run one for half an hour. Nothing can
-    push text into a running subagent except its spawner, so the spawner is
-    told, here, while the user is still looking at the terminal. The banner
-    stays as the path for agents nobody is holding a handle to.
+    A queued message lands at the agent's next turn boundary, which is seconds
+    to minutes away; the banner lands whenever it next happens to run `grogu`,
+    which may be much longer. So the fast path is the spawner relaying with
+    `write_agent`, and this is the reminder, printed where the user's own
+    session will read it.
+
+    The reminder is unconditional. The activity log only knows agents that have
+    already run a `grogu` command, and an engineer spawned a minute ago has not
+    — exactly the agent most likely to be steered. Naming who we know about is
+    a floor, never the list.
     """
+    role = note.get("role", "all")
     try:
-        targets = [
+        known = [
             row
             for row in grogu_watch.sessions(window_minutes=30)
             if row.get("role")
-            and note["role"] in ("all", row["role"])
+            and role in ("all", row["role"])
             and (not plan_id or row.get("plan") in ("", plan_id))
             and row.get("state") != "gone"
         ]
     except Exception:  # a hint must never be why steering fails to record
-        return
-    if not targets:
-        return
-    who = ", ".join(
-        f"{row['role']} (idle {int(row['idle_seconds'] // 60)}m)" for row in targets
-    )
-    print(f"  running now: {who}")
+        known = []
+    if known:
+        print(
+            "  seen recently: "
+            + ", ".join(
+                f"{row['role']} (idle {int(row['idle_seconds'] // 60)}m)" for row in known
+            )
+        )
+    target = "" if role == "all" else f" --role {role}"
     print(
-        "  relay it with write_agent rather than waiting for their next grogu "
-        "call; they poll at decision points, not on a clock"
+        f"  relay this into any running {role} agent with write_agent now, then "
+        f"`grogu plan steering{target}"
+        + (f" --plan {plan_id}" if plan_id else "")
+        + " --ack --agent <id>` for each,"
     )
+    print("  so it is not handed to them a second time by the banner.")
 
 
 def plan_steering(args: argparse.Namespace) -> int:
@@ -2843,6 +2858,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_steering_parser.add_argument(
         "--ack", action="store_true", help="mark everything visible as seen"
+    )
+    plan_steering_parser.add_argument(
+        "--agent",
+        default="",
+        help=(
+            "ack for the named agent instead of this one, after relaying the "
+            "note into it with write_agent"
+        ),
     )
     plan_steering_parser.add_argument("--json", action="store_true")
     plan_steering_parser.set_defaults(handler=plan_steering)
