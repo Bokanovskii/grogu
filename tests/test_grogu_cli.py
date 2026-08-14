@@ -1979,3 +1979,144 @@ class ArchitectFrictionTests(unittest.TestCase):
         self.run_cli("plan", "steer", plan, "--role", "engineer", "--note", "read me")
         payload = json.loads(self.run_cli("plan", "status", plan, "--json").stdout)
         self.assertEqual(payload["steering_pending"]["engineer"], 1)
+
+
+class DesignerFrictionTests(ArchitectFrictionTests):
+    """Bugs a real designer hit while writing a real design spec."""
+
+    def test_plan_can_be_named_with_a_flag_everywhere(self):
+        """`--plan` is taught by brief/steering, then rejected by status/gate."""
+        plan = self._plan()
+        for command in (
+            ["plan", "status", "--plan", plan],
+            ["plan", "workstreams", "--plan", plan],
+            ["plan", "gate", "--plan", plan, "--stage", "implement"],
+        ):
+            result = self.run_cli(*command)
+            self.assertNotIn("unrecognized arguments", result.stderr, command)
+            self.assertNotIn("usage:", result.stderr, command)
+
+    def test_two_plans_at_once_are_refused(self):
+        result = self.run_cli("plan", "status", "p-aaaaaaaa-aaaaaa", "--plan", "p-bbbbbbbb-bbbbbb")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("two plans", result.stderr)
+
+    def test_complete_is_spelled_the_way_roles_reach_for_it(self):
+        plan = self._plan()
+        self.run_cli("plan", "write", plan, "implementation", "--body", "z" * 200, role="architect")
+        result = self.run_cli("plan", "complete", plan, "implementation", role="engineer")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        status = self.run_cli("plan", "status", plan)
+        self.assertIn("implementation=complete", status.stdout)
+
+    def test_complete_names_a_bad_stage(self):
+        plan = self._plan()
+        result = self.run_cli("plan", "complete", plan, "implementaton", role="engineer")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no stage called", result.stderr)
+
+    def test_a_relayed_note_can_be_audited_without_consuming_it(self):
+        """Being told "you were acked" is only useful if it is checkable."""
+        plan = self._plan()
+        self.run_cli("plan", "steer", plan, "--role", "designer", "--note", "relayed by hand")
+        self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "designer",
+            "--ack", "--agent", "d1",
+        )
+        audit = self.run_cli(
+            "plan", "steering", "--plan", plan, "--audit", "1", role="designer", agent="d1"
+        )
+        self.assertEqual(audit.returncode, 0, audit.stderr)
+        self.assertIn("designer@d1", audit.stdout)
+        self.assertIn("read by", audit.stdout)
+        second = self.run_cli(
+            "plan", "steering", "--plan", plan, "--audit", "1", role="designer", agent="d1"
+        )
+        self.assertIn("designer@d1", second.stdout)
+
+    def test_auditing_an_unknown_note_says_how_to_list_them(self):
+        plan = self._plan()
+        result = self.run_cli("plan", "steering", "--plan", plan, "--audit", "42")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("--all", result.stderr)
+
+    def test_replacing_a_commission_reopens_work_done_against_the_old_one(self):
+        plan = self._plan()
+        self.run_cli("plan", "shape", plan, "--add", "design", role="architect")
+        self.run_cli("plan", "commission", plan, "designer", "--brief", "first brief", role="architect")
+        self.run_cli("plan", "write", plan, "design", "--file", self._spec(), role="designer")
+        self.run_cli("plan", "complete", plan, "design", role="designer")
+        result = self.run_cli(
+            "plan", "commission", plan, "designer", "--replace",
+            "--brief", "the map is out of scope now", role="architect",
+        )
+        self.assertIn("pending again", result.stderr)
+        status = self.run_cli("plan", "status", plan)
+        self.assertIn("design=pending", status.stdout)
+
+    def test_recommissioning_the_same_brief_changes_nothing(self):
+        plan = self._plan()
+        self.run_cli("plan", "shape", plan, "--add", "design", role="architect")
+        self.run_cli("plan", "commission", plan, "designer", "--brief", "same brief", role="architect")
+        self.run_cli("plan", "write", plan, "design", "--file", self._spec(), role="designer")
+        self.run_cli("plan", "complete", plan, "design", role="designer")
+        result = self.run_cli(
+            "plan", "commission", plan, "designer", "--replace",
+            "--brief", "same brief", role="architect",
+        )
+        self.assertNotIn("pending again", result.stderr)
+        self.assertIn("design=complete", self.run_cli("plan", "status", plan).stdout)
+
+    def _spec(self):
+        """A design spec concrete enough that the harness accepts it."""
+        path = self.repo / "spec.md"
+        path.write_text(
+            "# Reading — design\n\n"
+            "## Surfaces\n- #/ the current reading for one area, the whole "
+            "product.\n- #/area/<slug> one area's detail with a 7-day series.\n"
+            "- #/pick the area picker listing all 59 reporting areas.\n\n"
+            "## Hierarchy\nPrimary action is the reading itself; the picker is "
+            "secondary and sits below the fold. Nothing destructive.\n\n"
+            "## States\nDefault shows the number. Empty reads 'No reading this "
+            "hour'. Loading shows the last cached number. Error reads 'Could "
+            "not reach the sensors'.\n\n"
+            "## Flow\nOpen, read, optionally pick another area. Cancel returns "
+            "to the reading; failure keeps the cached number on screen.\n\n"
+            "## Copy\nHeading: 'Air quality'. Button: 'Choose an area'. Error: "
+            "'Could not reach the sensors'. Voice is plain and unhurried: "
+            "'Updated 4 hours ago', not 'Data staleness: 4h'.\n\n"
+            "## Tokens\n--space-2: 8px and --space-4: 16px on a 4px scale. "
+            "Type ramp 13px/17px/20px/128px, weights 400 and 700. Accent "
+            "#0066CC means interaction. Radius 12px. Motion 200ms.\n\n"
+            "## Accessibility\nNumber contrast 5.9:1 on #FFFFFF and 7.1:1 on "
+            "#1C1C1E. Full keyboard path through the picker, focus order top to "
+            "bottom, reduced-motion disables the 200ms fade, dynamic type wraps "
+            "at 320px. The number carries an aria-label naming the category.\n\n"
+            "## Layout\nAt 375x812, with 16px gutters:\n\n"
+            "```\n"
+            "+-----------------------------+\n"
+            "|                             |\n"
+            "|            142              |  128px/700, category colour\n"
+            "|     Unhealthy for some      |  20px/400, neutral ink\n"
+            "|   Seattle - Duwamish 3.2km  |  17px/400\n"
+            "|      Updated 1 hour ago     |  13px/400, secondary ink\n"
+            "|                             |\n"
+            "|      [ Choose an area ]     |  44px tall, accent #0066CC\n"
+            "+-----------------------------+\n"
+            "```\n\n"
+            "## Acceptance criteria\n"
+            "- A missing reading renders the em dash and 'No reading this "
+            "hour', never the digit 0.\n"
+            "- Every text colour measures at least 4.5:1 against its own "
+            "background in both colour schemes.\n"
+            "- The reading is visible at 375x812 without scrolling and without "
+            "any network call beyond the first JSON fetch.\n"
+            "- Every interactive target measures at least 44x44px.\n\n"
+            "## Left to the engineer\nThe sparkline smoothing algorithm, the "
+            "exact wrap breakpoint for dynamic type above 320px, the picker's "
+            "search match strategy, and whether the cached reading is held in "
+            "localStorage or in memory only. None of these change what the "
+            "screen looks like, so they are implementation calls.\n",
+            encoding="utf8",
+        )
+        return str(path)

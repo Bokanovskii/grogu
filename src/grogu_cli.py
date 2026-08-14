@@ -1495,6 +1495,13 @@ def _plan_id_argument(parser: argparse.ArgumentParser) -> None:
     variable it had exported was being ignored.
     """
     parser.add_argument("id", nargs="?", default="")
+    # `plan brief`, `plan steering` and `plan friction` take `--plan <id>`, so
+    # every agent learns `--plan` as the convention and then spends a failed
+    # call per command discovering that `plan status`, `plan gate` and
+    # `plan workstreams` want it positionally. Both spellings work everywhere.
+    parser.add_argument(
+        "--plan", dest="plan_flag", default="", help=argparse.SUPPRESS
+    )
     parser.set_defaults(_plan_id_required=True)
 
 
@@ -1502,6 +1509,16 @@ def _resolve_plan_id(parsed: argparse.Namespace) -> bool:
     """Fill in the plan id from the environment; False when there is none."""
     if not hasattr(parsed, "id"):
         return True
+    flagged = (getattr(parsed, "plan_flag", "") or "").strip()
+    if flagged:
+        if parsed.id and parsed.id != flagged:
+            print(
+                f"grogu: two plans given, {parsed.id!r} and {flagged!r}; name "
+                "it once",
+                file=sys.stderr,
+            )
+            return False
+        parsed.id = flagged
     if not parsed.id:
         parsed.id = os.environ.get("GROGU_PLAN", "").strip()
     if not getattr(parsed, "_plan_id_required", False):
@@ -1638,6 +1655,27 @@ def plan_status(args: argparse.Namespace) -> int:
             who = ", ".join(note.get("unread_by") or [note["role"]])
             print(f"  steering #{note['seq']} has not reached {who}: {text}")
     return 0
+
+
+def plan_complete(args: argparse.Namespace) -> int:
+    """`plan complete <id> <stage>` -- the spelling every role tries first."""
+    stage = (getattr(args, "stage_positional", "") or args.stage or "").strip()
+    if not stage:
+        print(
+            "grogu: which stage? " + ", ".join(grogu_plans.STAGES),
+            file=sys.stderr,
+        )
+        return 2
+    if stage not in grogu_plans.STAGES:
+        print(
+            f"grogu: no stage called {stage!r}; expected one of "
+            + ", ".join(grogu_plans.STAGES),
+            file=sys.stderr,
+        )
+        return 2
+    args.stage = stage
+    args.state = grogu_plans.COMPLETE
+    return plan_stage(args)
 
 
 def plan_shape(args: argparse.Namespace) -> int:
@@ -2092,13 +2130,15 @@ def plan_review(args: argparse.Namespace) -> int:
 def plan_commission(args: argparse.Namespace) -> int:
     store = plan_store(args)
     plan_id = store.resolve(args.id)
-    store.commission(
+    manifest = store.commission(
         plan_id,
         args.for_role,
         args.brief,
         by=getattr(args, "role", "") or "",
         replace=args.replace,
     )
+    for warning in manifest.get("warnings", []):
+        print(f"grogu: {warning}", file=sys.stderr)
     print(
         f"{plan_id}: commissioned the {args.for_role}; it arrives in "
         f"`grogu plan brief --role {args.for_role} --plan {plan_id}`"
@@ -2224,6 +2264,17 @@ def plan_steering(args: argparse.Namespace) -> int:
     # A declared role is an agent asking "is there anything new for me",
     # and answering with the whole history every time is how a poll-at-
     # decision-points instruction turns into a context leak.
+    if getattr(args, "audit", 0):
+        note = store.audit_note(args.audit, plan_id=plan_id)
+        if args.json:
+            print_json(note)
+            return 0
+        state = " (retracted)" if note["retracted"] else ""
+        print(f"{note['source']} #{note['seq']} ->{note['role']}{state}: {note['text']}")
+        print("  read by: " + (", ".join(note["read_by"]) or "nobody yet"))
+        if note["unread_by"]:
+            print("  not yet read by: " + ", ".join(note["unread_by"]))
+        return 0
     unread_only = args.unread or (role != "all" and not args.all)
     # Who is *asking* is not the same as whose steering is being asked about.
     # The user checking that a note landed was acking it on the agent's behalf,
@@ -3310,6 +3361,7 @@ def build_parser() -> argparse.ArgumentParser:
         "status", help="bounded plan summary with no plan prose", parents=[plan_common]
     )
     plan_status_parser.add_argument("id", nargs="?", default="")
+    plan_status_parser.add_argument("--plan", dest="plan_flag", default="", help=argparse.SUPPRESS)
     plan_status_parser.add_argument("--json", action="store_true")
     plan_status_parser.set_defaults(handler=plan_status)
 
@@ -3319,6 +3371,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[plan_common, role_common],
     )
     plan_shape_parser.add_argument("id", nargs="?", default="")
+    plan_shape_parser.add_argument("--plan", dest="plan_flag", default="", help=argparse.SUPPRESS)
     plan_shape_group = plan_shape_parser.add_mutually_exclusive_group(required=True)
     plan_shape_group.add_argument(
         "--add",
@@ -3415,6 +3468,25 @@ def build_parser() -> argparse.ArgumentParser:
         "without a role)",
     )
     plan_stage_parser.set_defaults(handler=plan_stage)
+
+    # Roles reach for `plan complete <id> <stage>` because that is what
+    # finishing sounds like, and the real spelling inverts it into
+    # `plan stage <id> <stage> complete`. Same reasoning as the gate aliases:
+    # answer the correct question rather than printing a choice list at it.
+    plan_complete_parser = plan_subparsers.add_parser(
+        "complete",
+        help="mark a stage complete (same as `plan stage <id> <stage> complete`)",
+        parents=[plan_common, role_common],
+    )
+    _plan_id_argument(plan_complete_parser)
+    plan_complete_parser.add_argument(
+        "stage_positional", nargs="?", default="", metavar="stage"
+    )
+    plan_complete_parser.add_argument("--stage", default="")
+    plan_complete_parser.add_argument("--note")
+    plan_complete_parser.add_argument("--workstream", default="")
+    plan_complete_parser.add_argument("--as-user", action="store_true")
+    plan_complete_parser.set_defaults(handler=plan_complete)
 
     plan_supersede_parser = plan_subparsers.add_parser("supersede", parents=[plan_common])
     _plan_id_argument(plan_supersede_parser)
@@ -3651,6 +3723,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_steering_parser.add_argument("plan", nargs="?", default="", help="plan id")
     plan_steering_parser.add_argument("--plan", dest="id")
+    plan_steering_parser.add_argument(
+        "--audit",
+        type=int,
+        default=0,
+        metavar="N",
+        help="who has read note N; never consumes it",
+    )
     plan_steering_parser.add_argument(
         "--unread", action="store_true", help="only notes this role has not acked"
     )

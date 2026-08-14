@@ -1622,7 +1622,37 @@ class PlanStore:
                 "by": by,
                 "replaced": existing.get("brief") if existing else "",
             }
-            return self._save(manifest, "commissioned", stage=role)
+            # A commission is read once, at the start. Replacing it after the
+            # role has already delivered against the old one left a finished
+            # stage attached to a statement of work nobody had ever seen --
+            # the same failure `write_stage` already refuses for plan bodies.
+            # Reopening is the honest state: the work may be fine, but nothing
+            # has checked it against what the architect now says it wants.
+            warnings = []
+            written = (manifest.get("stage_written") or {})
+            unchanged = bool(existing) and existing.get("brief", "") == brief.strip()
+            for stage, writers in STAGE_WRITERS.items():
+                if unchanged:
+                    break
+                if role not in writers or not written.get(stage):
+                    continue
+                if manifest.get("stage_state", {}).get(stage) == COMPLETE:
+                    manifest["stage_state"][stage] = PENDING
+                    warnings.append(
+                        f"the {stage} stage was complete against the brief you "
+                        f"just replaced, so it is pending again. Tell the "
+                        f"{role} what changed -- it read the commission once, "
+                        "at the start, and will not read it again by itself."
+                    )
+                else:
+                    warnings.append(
+                        f"the {role} has already written the {stage} stage "
+                        "against the brief you just replaced. It will not "
+                        "re-read the commission on its own; relay the change."
+                    )
+            saved = self._save(manifest, "commissioned", stage=role)
+            saved["warnings"] = warnings
+            return saved
 
     # -- stage bodies ------------------------------------------------------
 
@@ -1997,6 +2027,20 @@ class PlanStore:
                     "nothing moves until `grogu plan approve` "
                     "(autopilot does not waive review)"
                 )
+            if state == COMPLETE and not manifest.get("stage_written", {}).get(stage):
+                # `plan status` printed "testing=complete (unwritten)" and let
+                # it stand: a recorded claim that the tests passed against a
+                # plan that was never written. The most likely way to get here
+                # is a rejected write -- the design spec is refused for missing
+                # sections, the role does not notice, and completes anyway --
+                # so the failure mode is a green stage produced by an error
+                # message nobody read.
+                raise PlanError(
+                    f"the {stage} stage has no body, so there is nothing to "
+                    f"have completed. Write it first (`grogu plan write "
+                    f"{plan_id} {stage} --file ...`); if a write was refused, "
+                    "the refusal is the thing to fix"
+                )
             if stage in SEALED_STAGES and state == COMPLETE:
                 # The dual of the late-defect hole. Reopening testing when a
                 # defect arrives late only covers defects filed *after* a pass;
@@ -2294,6 +2338,48 @@ class PlanStore:
                 for note in result["plan"]
             )
         return result
+
+    def audit_note(self, seq: int, plan_id: str = "") -> dict:
+        """Who has actually read one specific note.
+
+        The relay path asks an agent to take somebody else's word that a note
+        was delivered and acked on its behalf. A designer that was told this
+        had no way to check it -- `plan steering` cannot address a single note
+        and `plan status` shows only an aggregate -- so it re-polled anyway,
+        which is exactly the round trip the relay exists to save.
+        """
+        repository = self._repo_steering()
+        sources = [("repository", repository["notes"], repository["acked"])]
+        if plan_id:
+            manifest = self.load(plan_id)
+            sources.append(
+                ("plan", manifest.get("steering", []), manifest.get("steering_acked", {}))
+            )
+        for source, notes, acked in reversed(sources):
+            note = next((item for item in notes if item.get("seq") == seq), None)
+            if note is None:
+                continue
+            target = note.get("role", "all")
+            roles = set(ROLES) if target == "all" else {target}
+            read, unread = [], []
+            for key, value in acked.items():
+                if "@" not in key or key.split("@", 1)[0] not in roles:
+                    continue
+                (read if int(value or 0) >= seq else unread).append(key)
+            return {
+                "seq": seq,
+                "source": source,
+                "role": target,
+                "text": note.get("text", ""),
+                "retracted": bool(note.get("retracted")),
+                "read_by": sorted(read),
+                "unread_by": sorted(unread),
+            }
+        raise PlanError(
+            f"no steering note #{seq}"
+            + (f" on {plan_id}" if plan_id else "")
+            + "; `grogu plan steering --all` lists them with their numbers"
+        )
 
     def _ack_key(self, role: str, agent: str = "") -> str:
         """Who, specifically, has read a steering note.
