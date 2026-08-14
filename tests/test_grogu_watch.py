@@ -196,3 +196,60 @@ class TheSuiteDoesNotWriteToTheRealHomeTests(unittest.TestCase):
         finally:
             if previous is not None:
                 os.environ["GROGU_HOME"] = previous
+
+
+class ParallelAgentTests(unittest.TestCase):
+    """A fan-out is the case the board exists for and showed worst."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.home = Path(self.temporary.name)
+
+    def test_two_agents_of_one_role_are_two_rows(self):
+        for agent in ("ingest", "scaffold"):
+            grogu_watch.record(
+                command="plan status",
+                role="engineer",
+                agent=agent,
+                plan="p-20260101-aaaaaa",
+                cwd="/tmp/project",
+                home=self.home,
+            )
+        rows = grogu_watch.sessions(window_minutes=5, home=self.home)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            sorted(row["agent"] for row in rows), ["ingest", "scaffold"]
+        )
+
+    def test_the_board_names_each_agent(self):
+        for agent in ("ingest", "scaffold"):
+            grogu_watch.record(
+                command="plan status",
+                role="engineer",
+                agent=agent,
+                plan="p-20260101-aaaaaa",
+                cwd="/tmp/project",
+                home=self.home,
+            )
+        board = grogu_watch.render(
+            grogu_watch.board(window_minutes=5, home=self.home),
+            window_minutes=5,
+        )
+        self.assertIn("engineer@ingest", board)
+        self.assertIn("engineer@scaffold", board)
+
+    def test_an_unnamed_agent_still_shows_as_its_role(self):
+        grogu_watch.record(
+            command="plan status",
+            role="tester",
+            plan="p-20260101-aaaaaa",
+            cwd="/tmp/project",
+            home=self.home,
+        )
+        board = grogu_watch.render(
+            grogu_watch.board(window_minutes=5, home=self.home),
+            window_minutes=5,
+        )
+        self.assertIn("tester", board)
+        self.assertNotIn("tester@", board)

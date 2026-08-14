@@ -1210,7 +1210,12 @@ def task_inbox(args: argparse.Namespace) -> int:
 
 # Commands only the user may run. Running one is evidence the caller is not an
 # agent, regardless of which role last bound this working directory.
-USER_ONLY_COMMANDS = frozenset({"approve"})
+# `steer` is here because steering is the user's channel by contract -- the
+# architect is told to commission rather than steer. Without it, the user's own
+# `plan steer` inherited whatever role last fetched a brief in this directory
+# and printed that agent's unread notes back at the person who wrote them,
+# under an instruction addressed to somebody else ("fold this in now").
+USER_ONLY_COMMANDS = frozenset({"approve", "steer"})
 
 # Commands where `--role` names *whose* steering is being asked about, not who
 # is asking. A person checking that their note landed was appearing on the
@@ -1310,19 +1315,24 @@ def _record_activity(parsed: argparse.Namespace) -> None:
             or sub in USER_ONLY_COMMANDS
             or getattr(parsed, "command", "") in USER_SURFACE_COMMANDS
         )
+        agent = os.environ.get("GROGU_AGENT", "").strip()
         if user_shaped and not grogu_plans.current_role():
             role = ""
-        elif not role:
+            agent = ""
+        else:
             try:
                 bound = grogu_plans.PlanStore(
                     Path(parsed.repo).expanduser() if getattr(parsed, "repo", None) else None
                 ).session_binding()
-                role, plan = bound.get("role", ""), plan or bound.get("plan", "")
+                if not role:
+                    role, plan = bound.get("role", ""), plan or bound.get("plan", "")
+                agent = agent or bound.get("agent", "")
             except (grogu_plans.PlanError, OSError):
                 pass
         grogu_watch.record(
             command=f"{command} {sub}".strip(),
             role=role,
+            agent=agent,
             plan=plan,
             repository=Path(cwd).name,
             cwd=cwd,
@@ -2229,24 +2239,44 @@ def _relay_hint(note: dict, plan_id: str) -> None:
         ]
     except Exception:  # a hint must never be why steering fails to record
         known = []
+    target = "" if role == "all" else f" --role {role}"
+    plan_part = f" --plan {plan_id}" if plan_id else ""
+    # Name each agent separately. A fan-out is the case where relaying matters
+    # most and the case this hint used to handle worst: two engineers on one
+    # plan printed as one word, "engineer", with no way to tell how many there
+    # were or what to pass to --agent for each.
+    named = [row for row in known if row.get("agent") and not row["agent"].startswith("/")]
     if known:
         print(
             "  seen recently: "
             + ", ".join(
-                f"{row['role']} (idle {int(row['idle_seconds'] // 60)}m)" for row in known
+                (f"{row['role']}@{row['agent']}" if row in named else row["role"])
+                + f" (idle {int(row['idle_seconds'] // 60)}m)"
+                for row in known
             )
         )
-    target = "" if role == "all" else f" --role {role}"
     print(
-        f"  relay this into any running {role} agent with write_agent now, then "
-        f"`grogu plan steering{target}"
-        + (f" --plan {plan_id}" if plan_id else "")
-        + " --ack --agent <GROGU_AGENT>` for each,"
+        f"  relay this into any running {role} agent with write_agent now, "
+        "then ack it for each one so it is not delivered twice:"
     )
-    print(
-        "  where <GROGU_AGENT> is the value you set in that agent's environment "
-        "when you spawned it, so it is not handed the note a second time."
-    )
+    if named:
+        for row in named:
+            print(
+                f"    grogu plan steering{target}{plan_part} --ack "
+                f"--agent {row['agent']}"
+            )
+        print(
+            "  and once more for any agent above that has not run a grogu "
+            "command yet, naming the GROGU_AGENT you spawned it with."
+        )
+    else:
+        print(
+            f"    grogu plan steering{target}{plan_part} --ack --agent <GROGU_AGENT>"
+        )
+        print(
+            "  where <GROGU_AGENT> is the value you set in that agent's "
+            "environment when you spawned it."
+        )
 
 
 def plan_steering(args: argparse.Namespace) -> int:

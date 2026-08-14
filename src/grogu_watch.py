@@ -48,6 +48,7 @@ def record(
     *,
     command: str,
     role: str = "",
+    agent: str = "",
     plan: str = "",
     repository: str = "",
     cwd: str = "",
@@ -64,6 +65,7 @@ def record(
         "at": time.time(),
         "command": command,
         "role": role,
+        "agent": agent,
         "plan": plan,
         "repository": repository,
         "cwd": cwd,
@@ -120,18 +122,29 @@ def sessions(
 ) -> list:
     """Collapse the feed into one row per agent.
 
-    Identity is (cwd, role, plan) rather than pid, because a subagent is a
-    sequence of separate `grogu` processes in one working directory, and pid
+    Identity is (cwd, role, plan, agent) rather than pid, because a subagent is
+    a sequence of separate `grogu` processes in one working directory, and pid
     would show a hundred one-command agents instead of one working agent.
+
+    The agent name is part of the key because parallel workstreams are the
+    whole point of the fan-out: two engineers on one plan in one checkout
+    collapsed into a single row, so the board could not show the thing it
+    exists to show, and the relay hint could not name who to relay to.
     """
     rows: dict = {}
     for entry in activity(window_minutes=window_minutes, home=home):
-        key = (entry.get("cwd", ""), entry.get("role", ""), entry.get("plan", ""))
+        key = (
+            entry.get("cwd", ""),
+            entry.get("role", ""),
+            entry.get("plan", ""),
+            entry.get("agent", ""),
+        )
         row = rows.setdefault(
             key,
             {
                 "cwd": entry.get("cwd", ""),
                 "role": entry.get("role", ""),
+                "agent": entry.get("agent", ""),
                 "plan": entry.get("plan", ""),
                 "repository": entry.get("repository", ""),
                 "calls": 0,
@@ -232,8 +245,13 @@ def render(state: dict, *, window_minutes: int = DEFAULT_WINDOW_MINUTES) -> str:
             mark = {"working": "●", "idle": "◐", "gone": "○"}.get(row["state"], "?")
             plan = row["plan"] or "-"
             failures = f"  {row['failures']} failed" if row["failures"] else ""
+            # Naming the agent is what makes a fan-out legible: three engineers
+            # on one plan were three identical lines saying "engineer".
+            who = row["role"]
+            if row.get("agent") and not row["agent"].startswith("/"):
+                who = f"{row['role']}@{row['agent']}"
             lines.append(
-                f"  {mark} {row['role']:<9} plan {plan:<10} "
+                f"  {mark} {who:<9} plan {plan:<10} "
                 f"last {row['last_command'] or '?'} {_age(row['idle_seconds'])} ago"
                 f"  ({row['calls']} call{'' if row['calls'] == 1 else 's'}{failures})"
             )
