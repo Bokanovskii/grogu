@@ -148,7 +148,10 @@ def print_json(value: object) -> None:
 
     An agent that only ever calls `--json` commands has no other channel: a
     trailer appended after the document would break the parse it is asking for,
-    so the notice becomes a field of the document instead.
+    so the notice becomes a `grogu_notice` field of the document instead. It can
+    appear on any JSON object Grogu prints — that is the delivery mechanism, not
+    a quirk of the plan commands, and every JSON payload is therefore an object
+    rather than a bare array so that there is always somewhere to put it.
     """
     global _PENDING_NOTICE
     if _PENDING_NOTICE and isinstance(value, dict) and "grogu_notice" not in value:
@@ -1101,7 +1104,7 @@ def task_list(args: argparse.Namespace) -> int:
         tasks = [t for t in tasks if t.get("assignee") == grogu_tasks.actor()]
     tasks.sort(key=lambda task: (task["status"], task["id"]))
     if args.json:
-        print_json([store.view(task["id"]) for task in tasks])
+        print_json({"tasks": [store.view(task["id"]) for task in tasks]})
         return 0
     for task in tasks:
         print(_task_line(task, store))
@@ -1234,6 +1237,8 @@ def _emit_notice(banner: str, parsed: argparse.Namespace) -> None:
         redirected = False
     wants_json = bool(getattr(parsed, "json", False))
     print(banner, file=sys.stdout if (redirected and not wants_json) else sys.stderr)
+    global _PENDING_NOTICE
+    _PENDING_NOTICE = ""
 
 
 def _record_activity(parsed: argparse.Namespace) -> None:
@@ -1437,7 +1442,7 @@ def plan_list(args: argparse.Namespace) -> int:
         plans = [plan for plan in plans if plan.get("status") != grogu_plans.SUPERSEDED]
     plans.sort(key=lambda plan: plan["id"])
     if args.json:
-        print_json([store.summary(plan["id"]) for plan in plans])
+        print_json({"plans": [store.summary(plan["id"]) for plan in plans]})
         return 0
     for plan in plans:
         review = " [awaiting review]" if plan.get("review_required") and plan.get("status") != grogu_plans.APPROVED else ""

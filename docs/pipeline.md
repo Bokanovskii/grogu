@@ -214,11 +214,27 @@ requires a declared role — `GROGU_ROLE`, `--role`, or `--as-user` for the user
 — because a check that only applies to callers who identify themselves is
 optional to exactly the role it exists to stop.
 
+Be clear about how strong that is. Everything here runs as the same user, so an
+agent can pass `--as-user` as easily as it can omit a role; `--as-user` is
+refused when `GROGU_ROLE` is set, and that is the whole of the enforcement. This
+is the same class of protection as the seal itself: it stops the drift, the
+shortcut and the plausible-sounding rationalisation at three in the morning. It
+does not stop an agent that has decided to lie, and nothing available inside one
+process would.
+
 Verification expires. A defect filed after the tests were marked complete
 reopens the testing and evaluation stages, because "complete" was a claim about
-a build that the fix is about to replace. Without that, a defect could
-auto-close when the engineer re-completed implementation and the plan would ship
-with nothing having been re-run.
+a build that the fix is about to replace. The dual matters just as much: testing
+cannot be *marked* complete while a defect is open, because a pass recorded over
+a known failure is not a pass. Without both, a defect could auto-close when the
+engineer re-completed implementation, and the plan would ship with nothing
+having been re-run.
+
+Rounds count bounces, not bugs. A first test pass that finds three real problems
+is a good test pass; what signals that the engineer and tester are not
+converging is a failure arriving on a route that was already fixed once. And
+while an escalation is open the defects stay open too, because they are the
+evidence the architect was called in to look at.
 
 ## The loops
 

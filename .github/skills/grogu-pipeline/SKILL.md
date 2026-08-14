@@ -156,7 +156,8 @@ grogu plan friction           # signals recurring across plans
 
 Completing a sealed stage and finalizing both require a declared role, because
 a check that only applies to callers who identify themselves is optional to the
-one role it exists to stop. `finalize` also scans the plans it is about to
+one role it exists to stop. Testing cannot be completed while a defect is open:
+a pass recorded over a known failure is not a pass. `finalize` also scans the plans it is about to
 publish and refuses to unseal one carrying a credential or personal data; fix
 the plan rather than forcing it.
 

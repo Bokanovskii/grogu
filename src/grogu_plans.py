@@ -1383,6 +1383,11 @@ class PlanStore:
                 f"the {role} may not change the {stage} stage state; that belongs "
                 f"to the {owner}"
             )
+        if as_user and current_role():
+            raise PlanError(
+                f"--as-user is for the user; this session is running as the "
+                f"{current_role()}"
+            )
         if not role and stage in SEALED_STAGES and state == COMPLETE and not as_user:
             # Default-deny, because the check above was only ever as strong as
             # the caller's willingness to declare itself. An engineer that
@@ -1398,13 +1403,40 @@ class PlanStore:
             manifest = self.load(plan_id)
             if stage not in manifest.get("stages", []):
                 raise PlanError(f"plan {plan_id} has no {stage} stage")
+            if stage in SEALED_STAGES and state == COMPLETE:
+                # The dual of the late-defect hole. Reopening testing when a
+                # defect arrives late only covers defects filed *after* a pass;
+                # a pass recorded while a defect was already open needed no
+                # reopening, and the defect then auto-closed when the engineer
+                # re-completed implementation, leaving a complete test stage and
+                # no open defects. A verdict of "the tests pass" is not
+                # available while something is known to be broken.
+                open_defects = [
+                    defect.get("id", "?")
+                    for defect in manifest.get("defects", [])
+                    if defect.get("status") == PENDING
+                ]
+                if open_defects:
+                    raise PlanError(
+                        f"cannot complete {stage} while defect(s) "
+                        f"{', '.join(open_defects)} are open: a pass recorded "
+                        "over a known failure is not a pass. Resolve or route "
+                        "them, then run the tests again."
+                    )
             manifest.setdefault("stage_state", {})[stage] = state
             resolved: list = []
             if state == COMPLETE:
-                resolved = self._close_defects_for(
-                    manifest,
-                    routes=_STAGE_DEFECT_ROUTES.get(stage, ()),
-                    reason=f"{stage} was completed again after the fix",
+                resolved = (
+                    []
+                    if manifest.get("escalated")
+                    # While the architect is adjudicating, the defects are the
+                    # evidence. Closing them because a stage was re-completed
+                    # leaves the escalation with nothing to look at.
+                    else self._close_defects_for(
+                        manifest,
+                        routes=_STAGE_DEFECT_ROUTES.get(stage, ()),
+                        reason=f"{stage} was completed again after the fix",
+                    )
                 )
                 if stage == TESTING:
                     # The loop converged: tests were run to completion rather
@@ -1817,7 +1849,23 @@ class PlanStore:
             # that state changes.
             invalidated = self._invalidate_verification(manifest)
             if route in (ROUTE_IMPLEMENTATION, ROUTE_TEST, ROUTE_DESIGN):
-                rounds = manifest.get("defect_rounds", 0) + 1
+                # A round is a *bounce*, not a bug. Counting filings meant a
+                # perfectly healthy first test pass that found three real
+                # problems escalated to the architect before the engineer had
+                # been given a chance to fix any of them. What actually signals
+                # non-convergence is a new failure arriving on a route that was
+                # already fixed once, so a round opens only when the previous
+                # wave on that route has been resolved and this is the first
+                # defect of the next one.
+                siblings = [
+                    other
+                    for other in defects[:-1]
+                    if other.get("route") == route
+                ]
+                new_wave = bool(siblings) and not any(
+                    other.get("status") == PENDING for other in siblings
+                )
+                rounds = manifest.get("defect_rounds", 0) + (1 if new_wave else 0)
                 manifest["defect_rounds"] = rounds
                 cap = manifest.get("max_defect_rounds", DEFAULT_MAX_DEFECT_ROUNDS)
                 # An engineer and a tester trading fixes past this point are no
@@ -2391,6 +2439,11 @@ class PlanStore:
             raise PlanError(
                 f"the {role} may not finalize a plan: finalizing unseals the "
                 "testing and evaluation stages. Ask the architect."
+            )
+        if as_user and current_role():
+            raise PlanError(
+                f"--as-user is for the user; this session is running as the "
+                f"{current_role()}"
             )
         if not role and not as_user:
             raise PlanError(

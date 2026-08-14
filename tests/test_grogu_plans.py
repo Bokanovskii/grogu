@@ -214,22 +214,30 @@ class PlanStoreTests(unittest.TestCase):
         pending = self.store.summary(plan_id)["open_amendments"]
         self.assertEqual(len(pending), 1)
 
-    def test_stalled_engineer_tester_loop_escalates_to_the_architect(self):
-        plan_id = self.plan()
-        for index in range(grogu_plans.DEFAULT_MAX_DEFECT_ROUNDS - 1):
-            defect = self.store.report_defect(
-                plan_id,
-                report=f"still failing {index}",
-                route=grogu_plans.ROUTE_IMPLEMENTATION,
-                raised_by="tester",
-            )
-            self.assertFalse(defect.get("escalated"))
-        final = self.store.report_defect(
-            plan_id,
-            report="no convergence",
-            route=grogu_plans.ROUTE_IMPLEMENTATION,
+    def _bounce(self, plan_id, report):
+        """One failed fix round: the engineer says it is fixed, it is not.
+
+        Rounds count bounces, not bugs, so a round needs a resolution between
+        the defects or it is still the same wave.
+        """
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+            role=grogu_plans.ENGINEER,
+        )
+        return self.store.report_defect(
+            plan_id, report=report, route=grogu_plans.ROUTE_IMPLEMENTATION,
             raised_by="tester",
         )
+
+    def test_stalled_engineer_tester_loop_escalates_to_the_architect(self):
+        plan_id = self.plan()
+        self.store.report_defect(
+            plan_id, report="first wave", route=grogu_plans.ROUTE_IMPLEMENTATION,
+            raised_by="tester",
+        )
+        for index in range(grogu_plans.DEFAULT_MAX_DEFECT_ROUNDS - 1):
+            self.assertFalse(self._bounce(plan_id, f"still failing {index}").get("escalated"))
+        final = self._bounce(plan_id, "no convergence")
         self.assertTrue(final["escalated"])
         manifest = self.store.load(plan_id)
         self.assertTrue(manifest["escalated"])
@@ -245,24 +253,37 @@ class PlanStoreTests(unittest.TestCase):
 
     def test_escalation_does_not_consume_architect_amendment_rounds(self):
         plan_id = self.plan()
+        self.store.report_defect(
+            plan_id, report="first", route=grogu_plans.ROUTE_IMPLEMENTATION,
+            raised_by="tester",
+        )
         for index in range(grogu_plans.DEFAULT_MAX_DEFECT_ROUNDS + 1):
-            self.store.report_defect(
-                plan_id,
-                report=f"failure {index}",
-                route=grogu_plans.ROUTE_IMPLEMENTATION,
-                raised_by="tester",
-            )
+            self._bounce(plan_id, f"failure {index}")
         self.assertEqual(self.store.load(plan_id)["rounds"], 0)
+
+    def test_a_first_test_pass_finding_several_bugs_does_not_escalate(self):
+        """Rounds are bounces, not bugs. A healthy first pass that finds three
+        real problems used to reach the architect before the engineer had been
+        given a chance to fix any of them."""
+        plan_id = self.plan()
+        for index in range(grogu_plans.DEFAULT_MAX_DEFECT_ROUNDS + 2):
+            defect = self.store.report_defect(
+                plan_id, report=f"bug {index}",
+                route=grogu_plans.ROUTE_IMPLEMENTATION, raised_by="tester",
+            )
+            self.assertFalse(defect.get("escalated"))
+        manifest = self.store.load(plan_id)
+        self.assertFalse(manifest.get("escalated"))
+        self.assertEqual(manifest["defect_rounds"], 0)
 
     def test_resolved_escalation_resets_the_loop_budget(self):
         plan_id = self.plan()
+        self.store.report_defect(
+            plan_id, report="first", route=grogu_plans.ROUTE_IMPLEMENTATION,
+            raised_by="tester",
+        )
         for index in range(grogu_plans.DEFAULT_MAX_DEFECT_ROUNDS + 1):
-            self.store.report_defect(
-                plan_id,
-                report=f"failure {index}",
-                route=grogu_plans.ROUTE_IMPLEMENTATION,
-                raised_by="tester",
-            )
+            self._bounce(plan_id, f"failure {index}")
         escalation = self.store.summary(plan_id)["open_amendments"][0]
         self.store.resolve_amendment(
             plan_id,
@@ -1385,3 +1406,74 @@ class ReAuditRegressionTests(unittest.TestCase):
             grogu_plans.working_head(), grogu_plans.head_commit(repo)
         )
         self.assertNotEqual(grogu_plans.working_head(), "")
+
+    def test_testing_cannot_be_completed_over_an_open_defect(self):
+        """The dual of the late-defect hole. Reopening testing when a defect
+        arrives late does nothing for a pass recorded while one was already
+        open — the defect then auto-closed on the next implementation
+        completion and the plan shipped with no retest."""
+        plan_id = self._plan()
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+            role=grogu_plans.ENGINEER,
+        )
+        self.store.report_defect(
+            plan_id, report="the retry path drops the last attempt",
+            route=grogu_plans.ROUTE_IMPLEMENTATION, raised_by=grogu_plans.TESTER,
+        )
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.set_stage_state(
+                plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE,
+                role=grogu_plans.TESTER,
+            )
+        self.assertIn("while defect", str(caught.exception))
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+            role=grogu_plans.ENGINEER,
+        )
+        self.store.set_stage_state(
+            plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE, role=grogu_plans.TESTER
+        )
+        self.assertTrue(self.store.finalize(plan_id, as_user=True)["emitted"])
+
+    def test_an_escalation_keeps_its_evidence(self):
+        """Auto-closing defects while the architect is adjudicating left the
+        escalation with nothing to look at."""
+        plan_id = self._plan()
+        self.store.report_defect(
+            plan_id, report="first wave", route=grogu_plans.ROUTE_IMPLEMENTATION,
+            raised_by=grogu_plans.TESTER,
+        )
+        for index in range(grogu_plans.DEFAULT_MAX_DEFECT_ROUNDS):
+            self.store.set_stage_state(
+                plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+                role=grogu_plans.ENGINEER,
+            )
+            self.store.report_defect(
+                plan_id, report=f"still broken {index}",
+                route=grogu_plans.ROUTE_IMPLEMENTATION, raised_by=grogu_plans.TESTER,
+            )
+        self.assertTrue(self.store.load(plan_id)["escalated"])
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE,
+            role=grogu_plans.ENGINEER,
+        )
+        self.assertTrue(
+            [
+                defect
+                for defect in self.store.load(plan_id)["defects"]
+                if defect["status"] == grogu_plans.PENDING
+            ],
+            "the escalation lost the defects it was raised about",
+        )
+
+    def test_an_agent_cannot_claim_to_be_the_user(self):
+        plan_id = self._plan()
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        self.addCleanup(os.environ.pop, "GROGU_ROLE", None)
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.set_stage_state(
+                plan_id, grogu_plans.TESTING, grogu_plans.COMPLETE, as_user=True
+            )
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.finalize(plan_id, force=True, as_user=True)
