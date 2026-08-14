@@ -164,6 +164,14 @@ the gates check and what steering is addressed to; the plan is what a bare
 it is worse — it reads no steering and its stage completions are refused with a
 message about a missing role rather than about the work.
 
+Start every pipeline role in **background mode**. The pipeline is a loop: the
+engineer raises an amendment the architect has to rule on, the tester finds a
+defect the engineer has to answer for. A role started in sync mode cannot be
+spoken to again, so every one of those exchanges costs a fresh agent that has
+to re-read the plan, the code and its own role prompt to get back to where the
+last one already was. Background agents keep their context and take a
+`write_agent` follow-up, which is the whole reason the loop is affordable.
+
 Never pass `--as-user` to a subagent. It exists so that a human at the terminal
 can do what a role may not, and everything here runs as the same user, so it is
 the one flag that turns the gates off.

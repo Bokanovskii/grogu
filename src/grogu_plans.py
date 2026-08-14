@@ -513,6 +513,19 @@ _CHANGE_PATTERNS = (
     r"\bstop\b[^.]{0,40}\b(drift|double|leaking|racing|duplicating)\b",
 )
 
+# Joining two things that were not joined before. These arrive phrased as if
+# they were plumbing -- "wire the notifier up to SMTP" -- and they are never
+# plumbing: they are a new failure surface, usually credentials, usually
+# somebody else's uptime.
+_INTEGRATION_PATTERNS = (
+    r"\b(wire|hook|plug)\b[^.]{0,40}\b(up|in|into|to|through)\b",
+    r"\bintegrate\b",
+    r"\b(connect|point)\b[^.]{0,40}\b(to|at|against)\b[^.]{0,40}"
+    r"\b(api|service|provider|endpoint|queue|bucket|database|db|smtp|webhook)\b",
+    r"\b(switch|move|migrate|cut) (us |it |them |everything )?(over )?to\b",
+    r"\breplace\b[^.]{0,40}\bwith\b",
+)
+
 # Domains where "it is a small change" is reliably wrong. Naming them is not a
 # heuristic about wording but about engineering: these are the places where the
 # second and third cases are the whole job.
@@ -710,6 +723,12 @@ def triage(prompt: str) -> dict:
             score += 2
             plan_hits += 1
             note("asks for different behaviour")
+            break
+    for pattern in _INTEGRATION_PATTERNS:
+        if re.search(pattern, lowered):
+            score += 2
+            plan_hits += 1
+            note("joins this system to another one")
             break
     trivial = any(re.search(pattern, lowered) for pattern in _TRIVIAL_PATTERNS)
     for pattern in _SUBTLE_PATTERNS:

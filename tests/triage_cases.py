@@ -90,4 +90,15 @@ CASES = [
     ("we need to check whether the cache is stale", "direct"),
     ("we need proper multi-tenant isolation", "plan"),
     ("the exporter should never emit duplicate rows", "plan"),
+    # Integration phrasing. These sound like plumbing and are not: each one
+    # adds a failure surface, and most of them add a credential.
+    ("wire up the notifier to actually send mail through our smtp account", "plan"),
+    ("hook the exporter up to the new billing api", "plan"),
+    ("switch us over to the new auth provider", "plan"),
+    ("replace the csv writer with the parquet one", "plan"),
+    ("integrate the search backend", "plan"),
+    ("point the worker at the staging queue", "plan"),
+    # ... but asking about an integration is still a question.
+    ("what does the notifier hook up to", "direct"),
+    ("show me where we integrate with stripe", "direct"),
 ]
