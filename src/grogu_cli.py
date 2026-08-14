@@ -1626,17 +1626,45 @@ def plan_write(args: argparse.Namespace) -> int:
     body = _read_body(args)
     plan_id = store.resolve(args.id)
     manifest = store.write_stage(
-        plan_id, args.stage, body, role=getattr(args, "role", "") or ""
+        plan_id,
+        args.stage,
+        body,
+        role=getattr(args, "role", "") or "",
+        replace=getattr(args, "replace", False),
     )
     for warning in manifest.get("warnings", []):
         print(f"grogu: {warning}", file=sys.stderr)
     print(f"wrote {args.stage} plan for {plan_id} ({len(body)} bytes)")
+    last = manifest.get("last_write") or {}
+    if last.get("revision"):
+        print(
+            f"  replaced {last['was']} bytes, kept as revision {last['revision']}: "
+            f"`grogu plan show {plan_id} --stage {args.stage} "
+            f"--revision {last['revision']}`"
+        )
     return 0
 
 
 def plan_show(args: argparse.Namespace) -> int:
     store = plan_store(args)
     plan_id = store.resolve(args.id)
+    if getattr(args, "revisions", False):
+        history = store.revisions(plan_id, args.stage)
+        if not history:
+            print(f"{args.stage} has never been rewritten")
+            return 0
+        for item in history:
+            print(
+                f"revision {item['revision']}  {item['bytes']} bytes  "
+                f"{item['at']}  by {item['by']}"
+            )
+        return 0
+    if getattr(args, "revision", 0):
+        # Reading an old revision is a read of that stage, so it goes through
+        # the same role check the current text does.
+        store.read_stage(plan_id, args.stage, role=_plan_role(args))
+        sys.stdout.write(store.revision_body(plan_id, args.stage, args.revision))
+        return 0
     sys.stdout.write(store.read_stage(plan_id, args.stage, role=_plan_role(args)))
     return 0
 
@@ -1708,13 +1736,26 @@ def plan_finalize(args: argparse.Namespace) -> int:
     return 0
 
 
+_GATE_ALIASES = {
+    "implementation": grogu_plans.GATE_IMPLEMENT,
+    "testing": grogu_plans.GATE_TEST,
+    "evaluation": grogu_plans.GATE_EVALUATE,
+}
+
+
 def plan_gate(args: argparse.Namespace) -> int:
     # `grogu plan gate implement` is what agents type, every time, because it
     # is what a gate sounds like. Stage names cannot be confused with plan ids,
     # so accept it rather than answering a correct question with a usage error.
-    stage = args.stage
-    if args.id in grogu_plans.GATES and not stage:
-        stage, args.id = args.id, os.environ.get("GROGU_PLAN", "").strip()
+    # `plan status` prints stage names (implementation, testing) and the gate
+    # took verbs (implement, test), so the vocabulary the harness taught was
+    # rejected by the harness.
+    stage = _GATE_ALIASES.get(args.stage, args.stage)
+    if _GATE_ALIASES.get(args.id, args.id) in grogu_plans.GATES and not stage:
+        stage, args.id = (
+            _GATE_ALIASES.get(args.id, args.id),
+            os.environ.get("GROGU_PLAN", "").strip(),
+        )
     if not stage:
         print(
             "which gate? " + "|".join(grogu_plans.GATES),
@@ -1778,6 +1819,22 @@ def plan_amendments(args: argparse.Namespace) -> int:
         # not: `resolve` already refused those.
         scope = "" if args.all else " open"
         print(f"{manifest['id']} has no{scope} amendments")
+        # The engineer that raised one runs this command to find out what the
+        # architect decided, and got "no open amendments" -- true, and the
+        # opposite of the answer it wanted. The ruling is the news.
+        if not args.all:
+            recent = [
+                item
+                for item in manifest.get("amendments", [])
+                if item.get("resolved_at")
+            ][-3:]
+            for item in recent:
+                print(
+                    f"  {item['id']} was {item['status']} by the architect: "
+                    f"{item.get('reason', '')}"
+                )
+            if recent:
+                print("  `--all` for the full history")
         return 0
     for amendment in amendments:
         print(f"{amendment['id']}  {amendment['status']:<9} {amendment['raised_by']}: {amendment['claim']}")
@@ -3134,6 +3191,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan_write_parser.add_argument("stage", choices=grogu_plans.STAGES)
     plan_write_parser.add_argument("--body", default="")
     plan_write_parser.add_argument("--file", help="read the body from a file, or - for stdin")
+    plan_write_parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="rewrite a stage that is already complete, reopening it",
+    )
     plan_write_parser.set_defaults(handler=plan_write)
 
     plan_show_parser = plan_subparsers.add_parser(
@@ -3142,6 +3204,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _plan_id_argument(plan_show_parser)
     plan_show_parser.add_argument("--stage", choices=grogu_plans.STAGES, default=grogu_plans.IMPLEMENTATION)
+    plan_show_parser.add_argument(
+        "--revision", type=int, default=0, help="an earlier version of this stage"
+    )
+    plan_show_parser.add_argument(
+        "--revisions", action="store_true", help="list what this stage used to say"
+    )
     plan_show_parser.set_defaults(handler=plan_show)
 
     plan_approve_parser = plan_subparsers.add_parser("approve", parents=[plan_common])
@@ -3210,7 +3278,9 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[plan_common],
     )
     _plan_id_argument(plan_gate_parser)
-    plan_gate_parser.add_argument("--stage", choices=grogu_plans.GATES)
+    plan_gate_parser.add_argument(
+        "--stage", choices=list(grogu_plans.GATES) + sorted(_GATE_ALIASES)
+    )
     plan_gate_parser.add_argument("--json", action="store_true")
     plan_gate_parser.set_defaults(handler=plan_gate)
 

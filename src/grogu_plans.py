@@ -1593,8 +1593,24 @@ class PlanStore:
 
     # -- stage bodies ------------------------------------------------------
 
-    def write_stage(self, plan_id: str, stage: str, body: str, *, role: str = "") -> dict:
-        """Stages are written by the role that owns them; others propose."""
+    def write_stage(
+        self,
+        plan_id: str,
+        stage: str,
+        body: str,
+        *,
+        role: str = "",
+        replace: bool = False,
+    ) -> dict:
+        """Stages are written by the role that owns them; others propose.
+
+        Every write keeps the text it replaced. An architect probing this
+        command replaced thirteen kilobytes of a *completed* implementation
+        plan with a fifty-five byte test string, exit 0, no confirmation, and
+        got it back only because it had thought to copy the file out of
+        `.grogu` first. One wrong command was the only place in the pipeline
+        where work was lost that no other role could recover.
+        """
         role = role or current_role() or ARCHITECT
         writers = STAGE_WRITERS.get(stage, frozenset({ARCHITECT}))
         if role not in writers:
@@ -1652,9 +1668,42 @@ class PlanStore:
             path = self.stage_path(plan_id, stage)
             sealed = path.suffix == ".sealed"
             previous = path.read_text(encoding="utf8") if path.exists() else ""
-            path.write_text(seal(body) if sealed else body, encoding="utf8")
+            state = manifest.get("stage_state", {}).get(stage)
+            payload = seal(body) if sealed else body
+            changed = previous != payload
+            if changed and previous and state == COMPLETE and not replace:
+                raise PlanError(
+                    f"the {stage} stage is complete and this rewrites it "
+                    f"({len(previous)} bytes -> {len(payload)} bytes). That "
+                    "reopens the stage and invalidates the work done against "
+                    "it. Pass --replace if you mean it; the text you replace "
+                    "is kept either way."
+                )
+            revision = 0
+            warnings: list = []
+            if changed and previous:
+                revision = self._keep_revision(plan_id, stage, previous, manifest)
+                # A plan that loses most of itself in one write is almost
+                # always a mistake -- a probe, a truncated pipe, a --body where
+                # a --file was meant. Say so on the spot, while the person who
+                # did it is still looking.
+                if len(payload) * 2 < len(previous):
+                    warnings.append(
+                        f"the {stage} plan went from {len(previous)} bytes to "
+                        f"{len(payload)}. If that was not deliberate, "
+                        f"`grogu plan show {plan_id} --stage {stage} "
+                        f"--revision {revision}` is the text you just replaced."
+                    )
+            path.write_text(payload, encoding="utf8")
+            manifest["last_write"] = {
+                "stage": stage,
+                "by": role,
+                "at": now(),
+                "was": len(previous),
+                "now": len(payload),
+                "revision": revision,
+            }
             manifest.setdefault("stage_written", {})[stage] = True
-            changed = previous != (seal(body) if sealed else body)
             if changed and manifest.get("stage_state", {}).get(stage) == COMPLETE:
                 # A completed stage is a claim that the work matches the plan.
                 # Rewriting the plan under it leaves that claim attached to
@@ -1679,8 +1728,13 @@ class PlanStore:
                     }
                 )
             for amendment in manifest.get("amendments", []):
+                # An accepted amendment is answered by the plan actually
+                # changing. Marking it incorporated on any write meant a
+                # byte-identical no-op re-write flipped the gate from blocked
+                # to allowed without a word of the plan being different.
                 if (
-                    amendment.get("status") == ACCEPTED
+                    changed
+                    and amendment.get("status") == ACCEPTED
                     and amendment.get("stage") == stage
                     and not amendment.get("incorporated")
                 ):
@@ -1720,7 +1774,7 @@ class PlanStore:
                             APPROVED if manifest.get("approved_at") else DRAFT
                         )
             manifest = self._save(manifest, "stage_written", stage=stage, bytes=len(body))
-            manifest["warnings"] = (
+            manifest["warnings"] = warnings + (
                 [
                     "this plan adopts something external ("
                     + ", ".join(uncited_dependencies(body))
@@ -1761,6 +1815,7 @@ class PlanStore:
                 {
                     "at": now(),
                     "actor": actor(),
+                    "agent": self._ack_key(role),
                     "role": role,
                     "stage": stage,
                     "allowed": allowed,
@@ -2317,14 +2372,23 @@ class PlanStore:
             raise PlanError(
                 f"unknown outcome {outcome!r}; expected one of {', '.join(AMENDMENT_OUTCOMES)}"
             )
+        if not reason.strip():
+            raise PlanError("an amendment resolution needs a reason")
+        manifest = self.load(plan_id)
+        for amendment in manifest.get("amendments", []):
+            if amendment.get("id") == amendment_id:
+                break
+        else:
+            # Asking for --verified before saying the amendment does not exist
+            # sends the architect off to verify a claim nobody made.
+            raise PlanError(f"plan {plan_id} has no amendment {amendment_id!r}")
         if not verified:
             raise PlanError(
                 "pass --verified: the architect must confirm the claim against the "
                 "code itself. Taking another agent's word for it is how a wrong "
                 "plan becomes an agreed plan."
             )
-        if not reason.strip():
-            raise PlanError("an amendment resolution needs a reason")
+        self._require_having_read(manifest, amendment)
         with self.locked():
             manifest = self.load(plan_id)
             for amendment in manifest.get("amendments", []):
@@ -3317,6 +3381,73 @@ class PlanStore:
                 "status": COMPLETE,
                 "shipped_incomplete": blockers if force else [],
             }
+
+    def _require_having_read(self, manifest: dict, amendment: dict) -> None:
+        """`--verified` was an honour system, and it did not survive contact.
+
+        An architect probing this typed `--verified --reason "I did not read
+        this amendment"` and the harness accepted it, from an agent that had
+        read nothing at all. The manifest already logs every stage read with
+        the agent that made it, so the claim is checkable rather than merely
+        asserted: the architect must have opened the stage the amendment is
+        about, after the amendment was raised.
+        """
+        if amendment.get("kind") != KIND_AMENDMENT:
+            # An escalation is the harness reporting that a loop ran out of
+            # room. There is no claim about the plan's text to check.
+            return
+        stage = amendment.get("stage") or IMPLEMENTATION
+        raised = str(amendment.get("at", ""))
+        agent = self._ack_key(ARCHITECT)
+        for entry in manifest.get("access_log", []):
+            if (
+                entry.get("allowed")
+                and entry.get("stage") == stage
+                and entry.get("agent") == agent
+                and str(entry.get("at", "")) >= raised
+            ):
+                return
+        raise PlanError(
+            f"nothing records you reading the {stage} stage since "
+            f"{amendment.get('id')} was raised, so --verified is an assertion "
+            f"rather than a check. Run `grogu plan show {manifest.get('id')} "
+            f"--stage {stage}` and read it."
+        )
+
+    def _keep_revision(
+        self, plan_id: str, stage: str, previous: str, manifest: dict
+    ) -> int:
+        """Park the text a write is about to replace, and say which slot."""
+        directory = self.plan_dir(plan_id) / "revisions"
+        directory.mkdir(parents=True, exist_ok=True)
+        history = manifest.setdefault("revisions", [])
+        number = len([item for item in history if item.get("stage") == stage]) + 1
+        name = f"{stage}.{number}.txt"
+        (directory / name).write_text(previous, encoding="utf8")
+        history.append(
+            {
+                "stage": stage,
+                "revision": number,
+                "file": name,
+                "bytes": len(previous),
+                "at": now(),
+                "by": actor(),
+            }
+        )
+        return number
+
+    def revisions(self, plan_id: str, stage: str = "") -> list:
+        history = self.load(self.resolve(plan_id)).get("revisions", [])
+        return [item for item in history if not stage or item.get("stage") == stage]
+
+    def revision_body(self, plan_id: str, stage: str, revision: int) -> str:
+        plan_id = self.resolve(plan_id)
+        for item in self.revisions(plan_id, stage):
+            if int(item.get("revision", 0)) == int(revision):
+                path = self.plan_dir(plan_id) / "revisions" / item["file"]
+                text = path.read_text(encoding="utf8")
+                return unseal(text) if SEAL_HEADER in text.split("\n", 1)[0] else text
+        raise PlanError(f"{stage} has no revision {revision}")
 
     def attach(
         self,

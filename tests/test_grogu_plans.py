@@ -155,6 +155,7 @@ class PlanStoreTests(unittest.TestCase):
         plan_id = self.plan()
         amendment = self.store.amend(plan_id, claim="cannot work", raised_by="engineer")
         with self.assertRaises(grogu_plans.PlanError):
+            self.store.read_stage(plan_id, grogu_plans.IMPLEMENTATION, role="architect")
             self.store.resolve_amendment(
                 plan_id,
                 amendment["id"],
@@ -168,6 +169,7 @@ class PlanStoreTests(unittest.TestCase):
         plan_id = self.plan()
         amendment = self.store.amend(plan_id, claim="cannot work", raised_by="engineer")
         with self.assertRaises(grogu_plans.PlanError):
+            self.store.read_stage(plan_id, grogu_plans.IMPLEMENTATION, role="architect")
             self.store.resolve_amendment(
                 plan_id,
                 amendment["id"],
@@ -188,6 +190,7 @@ class PlanStoreTests(unittest.TestCase):
             amendment = self.store.amend(
                 plan_id, claim=f"claim {index}", raised_by="engineer"
             )
+            self.store.read_stage(plan_id, grogu_plans.IMPLEMENTATION, role="architect")
             self.store.resolve_amendment(
                 plan_id,
                 amendment["id"],
@@ -203,6 +206,7 @@ class PlanStoreTests(unittest.TestCase):
     def test_guidance_reaches_engineer_and_tester_as_steering(self):
         plan_id = self.plan()
         amendment = self.store.amend(plan_id, claim="ambiguous", raised_by="engineer")
+        self.store.read_stage(plan_id, grogu_plans.IMPLEMENTATION, role="architect")
         self.store.resolve_amendment(
             plan_id,
             amendment["id"],
@@ -606,6 +610,7 @@ class PlanStoreTests(unittest.TestCase):
             stage=grogu_plans.IMPLEMENTATION,
             raised_by="engineer",
         )
+        self.store.read_stage(plan_id, grogu_plans.IMPLEMENTATION, role="architect")
         self.store.resolve_amendment(
             plan_id,
             amendment["id"],
@@ -899,6 +904,7 @@ class PlanStoreTests(unittest.TestCase):
     def test_retro_attributes_findings_to_a_target(self):
         plan_id = self.plan()
         amendment = self.store.amend(plan_id, claim="module is wrong", raised_by="engineer")
+        self.store.read_stage(plan_id, grogu_plans.IMPLEMENTATION, role="architect")
         self.store.resolve_amendment(
             plan_id,
             amendment["id"],
@@ -920,6 +926,7 @@ class PlanStoreTests(unittest.TestCase):
         for _ in range(2):
             plan_id = self.plan()
             amendment = self.store.amend(plan_id, claim="same gap", raised_by="engineer")
+            self.store.read_stage(plan_id, grogu_plans.IMPLEMENTATION, role="architect")
             self.store.resolve_amendment(
                 plan_id,
                 amendment["id"],
@@ -1139,6 +1146,7 @@ class LoopClosureTests(unittest.TestCase):
             raised_by="tester",
         )
         self.assertFalse(self.store.gate(plan_id, grogu_plans.GATE_IMPLEMENT)["allowed"])
+        self.store.read_stage(plan_id, grogu_plans.IMPLEMENTATION, role="architect")
         self.store.resolve_amendment(
             plan_id,
             defect["amendment"],
@@ -1932,7 +1940,7 @@ class PlanRevisionTests(unittest.TestCase):
     def test_rewriting_a_stage_reopens_the_completion_it_invalidates(self):
         plan = self._ready()
         self.store.set_stage_state(plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE, role="engineer")
-        self.store.write_stage(plan, grogu_plans.IMPLEMENTATION, "second", role="architect")
+        self.store.write_stage(plan, grogu_plans.IMPLEMENTATION, "second", role="architect", replace=True)
         summary = self.store.summary(plan)
         self.assertEqual(
             summary["stage_state"][grogu_plans.IMPLEMENTATION], grogu_plans.PENDING
@@ -1953,7 +1961,7 @@ class PlanRevisionTests(unittest.TestCase):
         plan = self._ready()
         self.store.set_stage_state(plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE, role="engineer")
         self.store.set_stage_state(plan, grogu_plans.TESTING, grogu_plans.COMPLETE, role="tester")
-        self.store.write_stage(plan, grogu_plans.TESTING, "second", role="architect")
+        self.store.write_stage(plan, grogu_plans.TESTING, "second", role="architect", replace=True)
         self.assertEqual(
             self.store.summary(plan)["stage_state"][grogu_plans.TESTING], grogu_plans.PENDING
         )
@@ -2489,3 +2497,123 @@ class UserCommandPresenceTests(unittest.TestCase):
         grogu_plans.pending_banner(Path(self.temporary.name), plan_hint=self.plan)
         seen = self.store.load(self.plan).get("agents_seen", {})
         self.assertTrue(any(key.startswith("tester") for key in seen))
+
+
+class DestructiveWriteTests(unittest.TestCase):
+    """One command silently lost work no other role could recover."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("status line")["id"]
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "the real plan\n" * 200, role="architect"
+        )
+
+    def test_rewriting_a_complete_stage_needs_saying_so(self):
+        self.store.set_stage_state(
+            self.plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE, role="engineer"
+        )
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.write_stage(
+                self.plan, grogu_plans.IMPLEMENTATION, "probe", role="architect"
+            )
+
+    def test_the_replaced_text_is_recoverable(self):
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "probe", role="architect"
+        )
+        latest = self.store.revisions(self.plan, grogu_plans.IMPLEMENTATION)[-1]
+        recovered = self.store.revision_body(
+            self.plan, grogu_plans.IMPLEMENTATION, latest["revision"]
+        )
+        self.assertIn("the real plan", recovered)
+
+    def test_losing_most_of_a_plan_says_so(self):
+        result = self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "probe", role="architect"
+        )
+        self.assertTrue(
+            any("bytes to" in warning for warning in result.get("warnings", []))
+        )
+
+    def test_a_sealed_stage_is_recoverable_as_plain_text(self):
+        self.store.write_stage(
+            self.plan, grogu_plans.TESTING, "the real test plan", role="architect"
+        )
+        self.store.write_stage(
+            self.plan, grogu_plans.TESTING, "replaced", role="architect"
+        )
+        latest = self.store.revisions(self.plan, grogu_plans.TESTING)[-1]
+        self.assertEqual(
+            self.store.revision_body(
+                self.plan, grogu_plans.TESTING, latest["revision"]
+            ),
+            "the real test plan",
+        )
+
+
+class VerifiedIsCheckedTests(unittest.TestCase):
+    """`--verified` was an honour system and an architect walked through it."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("status line")["id"]
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "the plan", role="architect"
+        )
+        self.amendment = self.store.amend(
+            self.plan, claim="the seam cannot carry it", raised_by="engineer"
+        )
+
+    def _resolve(self):
+        return self.store.resolve_amendment(
+            self.plan,
+            self.amendment["id"],
+            outcome=grogu_plans.ACCEPTED,
+            reason="checked it",
+            verified=True,
+            role=grogu_plans.ARCHITECT,
+        )
+
+    def test_an_architect_that_read_nothing_is_refused(self):
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self._resolve()
+        self.assertIn("nothing records you reading", str(caught.exception))
+
+    def test_reading_the_stage_is_what_makes_it_verified(self):
+        self.store.read_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, role=grogu_plans.ARCHITECT
+        )
+        self.assertEqual(self._resolve()["status"], grogu_plans.ACCEPTED)
+
+    def test_a_missing_amendment_says_so_before_demanding_verification(self):
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.resolve_amendment(
+                self.plan,
+                "a99",
+                outcome=grogu_plans.ACCEPTED,
+                reason="x",
+                verified=False,
+                role=grogu_plans.ARCHITECT,
+            )
+        self.assertIn("no amendment", str(caught.exception))
+
+    def test_a_no_op_rewrite_does_not_answer_an_accepted_amendment(self):
+        self.store.read_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, role=grogu_plans.ARCHITECT
+        )
+        self._resolve()
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "the plan", role="architect"
+        )
+        self.assertFalse(
+            self.store.gate(self.plan, grogu_plans.GATE_IMPLEMENT)["allowed"]
+        )
