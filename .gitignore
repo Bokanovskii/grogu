@@ -10,6 +10,13 @@ __pycache__/
 # Per-machine Grogu session state: leases, inbox, lock files
 .grogu/state/
 
+# Per-repository intelligence cache, rebuilt from the git head on demand.
+# Running `grogu memory index` should not leave a checkout dirty, and it did.
+.grogu/intelligence/
+
+# Written by version managers, not by anything here
+.python-version
+
 # Local editor and OS noise
 .DS_Store
 

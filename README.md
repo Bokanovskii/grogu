@@ -560,3 +560,14 @@ python3 -m unittest discover -s tests -v
 
 Local state stays outside the repository, and `.scratch/` is ignored, so a test
 run leaves the working tree clean.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+Grogu keeps everything about you outside the repository. Your design taste, your
+plans' steering history, the skill proposals agents write, and the activity log
+behind `grogu watch` all live under `$GROGU_HOME` (`~/.grogu` by default), never
+in a checkout and never in a commit. The iMessage and Gmail adapters are opt-in
+and read nothing until you turn them on. Someone who clones this gets the
+harness and none of your history.
