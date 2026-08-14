@@ -250,7 +250,10 @@ with the shared contract. `grogu plan steer` records role-scoped steering that
 reaches agents spawned later and rides out on the output of any `grogu` command a
 running agent happens to run. `grogu plan friction --harness` pools complaints about Grogu itself across every
 repository and reminds the user's session once three are pending, because
-friction filed where its reader never looks is friction nobody fixes.
+friction filed where its reader never looks is friction nobody fixes. Those
+complaints are clustered rather than counted, and a cluster that is repeated
+across repositories, hit three times, or left open a month is announced as
+ready to fix and claimed against a PR so it is never proposed twice.
 `grogu plan retro` and `grogu plan friction` turn
 accepted amendments, escalations and user corrections into changes to those
 overlays. `grogu plan finalize` unseals every stage so the pull request carries

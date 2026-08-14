@@ -114,6 +114,7 @@ ROUTE_DESIGN = "design"
 DEFECT_ROUTES = (ROUTE_IMPLEMENTATION, ROUTE_TEST, ROUTE_PLAN, ROUTE_DESIGN)
 
 HARNESS_FRICTION_THRESHOLD = 3
+FRICTION_STALE_DAYS = 30
 
 TARGET_REPO = "repo"
 TARGET_HARNESS = "harness"
@@ -172,6 +173,120 @@ def harness_friction(*, include_resolved: bool = False) -> list:
     if include_resolved:
         return entries
     return [entry for entry in entries if entry.get("status") == PENDING]
+
+
+_FRICTION_STOPWORDS = frozenset(
+    """a an the and or but to of in on for with by is are was were be been it
+    this that these those i we you it's its no not have has had do does did so
+    should would could there here when then than as at from up out if too very
+    just really quite thing things way ways time times""".split()
+)
+
+
+def _friction_tokens(note: str) -> set:
+    words = re.findall(r"[a-z][a-z0-9_-]{2,}", note.lower())
+    return {word for word in words if word not in _FRICTION_STOPWORDS}
+
+
+def cluster_harness_friction(entries: Optional[list] = None) -> list:
+    """Group friction notes that are plainly the same complaint.
+
+    Counting notes is the wrong measure: five people describing one missing
+    command is one change, and five unrelated papercuts are five. Ripeness is a
+    property of the cluster, so the clustering has to happen before the
+    judgement does.
+
+    Greedy overlap rather than anything clever — the corpus is tens of short
+    sentences written by the same handful of agents, and a wrong grouping costs
+    a glance, not a mistake.
+    """
+    entries = harness_friction() if entries is None else entries
+    clusters: list = []
+    for entry in sorted(entries, key=lambda item: item.get("seq", 0)):
+        tokens = _friction_tokens(entry.get("note", ""))
+        for cluster in clusters:
+            shared = tokens & cluster["tokens"]
+            union = tokens | cluster["tokens"]
+            if union and len(shared) / len(union) >= 0.34:
+                cluster["entries"].append(entry)
+                cluster["tokens"] = union
+                break
+        else:
+            clusters.append({"tokens": tokens, "entries": [entry]})
+
+    report = []
+    for index, cluster in enumerate(clusters, start=1):
+        members = cluster["entries"]
+        repositories = sorted(
+            {member.get("repository", "?") for member in members if member.get("repository")}
+        )
+        roles = sorted({member.get("role", "?") for member in members})
+        first = min(member.get("at", "") for member in members)
+        age = _days_since(first)
+        claimed = any(member.get("claim") for member in members)
+        # Repeated across repositories is the strongest signal available: it
+        # cannot be explained by one project's quirks. Repetition within one
+        # repository counts too, just later.
+        ripe = (len(repositories) > 1 or len(members) >= 3) and not claimed
+        report.append(
+            {
+                "id": f"f{index}",
+                "title": members[0].get("note", "")[:72],
+                "count": len(members),
+                "repositories": repositories,
+                "roles": roles,
+                "first_seen": first,
+                "age_days": age,
+                "ripe": ripe,
+                "stale": age >= FRICTION_STALE_DAYS and not claimed,
+                "claim": next(
+                    (member["claim"] for member in members if member.get("claim")), ""
+                ),
+                "seqs": [member.get("seq") for member in members],
+                "notes": [member.get("note", "") for member in members],
+                "reason": (
+                    f"hit in {len(repositories)} repositories"
+                    if len(repositories) > 1
+                    else f"hit {len(members)} times"
+                    if len(members) >= 3
+                    else f"open {age} days"
+                    if age >= FRICTION_STALE_DAYS
+                    else "not yet repeated"
+                ),
+            }
+        )
+    return sorted(
+        report,
+        key=lambda cluster: (not cluster["ripe"], -cluster["count"], -cluster["age_days"]),
+    )
+
+
+def _days_since(stamp: str) -> int:
+    try:
+        when = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    return max(0, (dt.datetime.now(dt.timezone.utc) - when).days)
+
+
+def claim_harness_friction(cluster_id: str, *, reference: str) -> dict:
+    """Mark a cluster as being worked on, so it stops being proposed."""
+    if not reference.strip():
+        raise PlanError("claiming friction needs a reference: a PR, branch or issue")
+    clusters = {cluster["id"]: cluster for cluster in cluster_harness_friction()}
+    if cluster_id not in clusters:
+        raise PlanError(f"no friction cluster {cluster_id!r}")
+    cluster = clusters[cluster_id]
+    path = harness_friction_path()
+    payload = json.loads(path.read_text(encoding="utf8"))
+    for entry in payload.get("entries", []):
+        if entry.get("seq") in cluster["seqs"]:
+            entry["claim"] = reference.strip()
+            entry["claimed_at"] = now()
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf8")
+    os.replace(temporary, path)
+    return {"cluster": cluster_id, "claim": reference.strip(), "notes": cluster["seqs"]}
 
 
 def resolve_harness_friction(seq: int, *, resolution: str) -> bool:
@@ -527,7 +642,7 @@ def pending_banner(root: Optional[Path] = None) -> str:
             bound = store.session_binding()
             role, plan_id = bound.get("role", ""), plan_id or bound.get("plan", "")
         if not role:
-            return harness_friction_banner()
+            return harness_friction_banner(root)
         pending = store.steering(role=role, plan_id=plan_id, unread=True)
     except (PlanError, OSError):
         return ""  # steering must never be the reason a command fails
@@ -555,7 +670,7 @@ def pending_banner(root: Optional[Path] = None) -> str:
     return "\n".join(lines)
 
 
-def harness_friction_banner() -> str:
+def harness_friction_banner(root: Optional[Path] = None) -> str:
     """Remind the user's own session of unreviewed friction with Grogu itself.
 
     Friction that only surfaces when somebody remembers to ask for it is
@@ -566,6 +681,10 @@ def harness_friction_banner() -> str:
     entries = harness_friction(include_resolved=False)
     if len(entries) < HARNESS_FRICTION_THRESHOLD:
         return ""
+    clusters = cluster_harness_friction(entries)
+    actionable = [cluster for cluster in clusters if cluster["ripe"] or cluster["stale"]]
+    if not actionable:
+        return ""
     stamp_path = harness_friction_path().with_name(".friction-reminded")
     today = now()[:10]
     try:
@@ -575,17 +694,35 @@ def harness_friction_banner() -> str:
         stamp_path.write_text(today, encoding="utf8")
     except OSError:
         return ""
-    repositories = sorted({entry.get("repository", "?") for entry in entries})
+    in_harness = is_harness_repo(root)
     lines = [
         "",
-        f"── {len(entries)} unreviewed friction note(s) about Grogu itself ──",
+        f"── {len(actionable)} friction cluster(s) ready to fix in Grogu ──",
     ]
-    for entry in entries[-5:]:
-        lines.append(f"  #{entry['seq']} [{entry.get('repository', '?')}] {entry['note']}")
-    lines.append(f"  from: {', '.join(repositories)}")
-    lines.append("  `grogu plan friction --harness` for all of them.")
+    for cluster in actionable[:5]:
+        mark = "ripe" if cluster["ripe"] else "stale"
+        lines.append(f"  {cluster['id']} [{mark}: {cluster['reason']}] {cluster['title']}")
+    if in_harness:
+        lines.append(
+            "  You are in the Grogu repository: this is where these get fixed. "
+            "Propose the work, or `grogu plan friction --ripe` for the detail."
+        )
+    else:
+        lines.append(
+            "  These are fixed in the Grogu repository, not here. "
+            "`grogu plan friction --ripe` for the detail."
+        )
     lines.append("──────────────────────────────────────────────────────")
     return "\n".join(lines)
+
+
+def is_harness_repo(root: Optional[Path] = None) -> bool:
+    """Whether the working tree is Grogu's own, where friction gets fixed."""
+    try:
+        base = Path(root or repository_root()).expanduser().resolve()
+    except (OSError, ValueError):
+        return False
+    return (base / "src" / "grogu_cli.py").is_file()
 
 
 # -- design spec structure -------------------------------------------------

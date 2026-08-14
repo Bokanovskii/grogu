@@ -310,6 +310,32 @@ on the command that least needed it. Every role records friction, including the
 architect, and so does an ordinary Grogu session outside any plan, which is
 where most of it is actually hit.
 
+### Knowing when to open a PR against Grogu
+
+A list of complaints is not a work queue, so the notes are clustered and judged
+rather than counted. Counting is the wrong measure: five agents describing one
+missing command is a single change, and five unrelated papercuts are five. Notes
+are grouped by token overlap — greedy, deliberately unclever, because the corpus
+is tens of short sentences and a wrong grouping costs a glance, not a mistake —
+and a cluster becomes **ripe** when any of these holds:
+
+| signal | why it is enough |
+| --- | --- |
+| hit in two or more repositories | cannot be explained by one project's quirks |
+| hit three or more times | repetition inside one repository counts, just later |
+| open thirty days or more | a real gap nobody got to is still a real gap |
+
+Ripe clusters are what the daily banner announces, and it says where they get
+fixed: outside Grogu it points at the Grogu repository, and a session *inside*
+Grogu is told to propose the work now. `grogu plan friction --ripe` prints the
+detail, `--ripe --all` shows the clusters that are still accumulating.
+
+Claiming closes the loop. `grogu plan friction --claim f1 --reference <pr>`
+marks a cluster as being dealt with, which drops it out of the ripe set so it is
+never proposed twice, and `--harness --resolve <seq>` retires the notes when the
+fix ships. The result is that the question "is there harness work worth doing?"
+is answered without either of us having to ask it.
+
 `grogu plan friction` aggregates across plans and marks signals that have
 repeated. One bad plan is noise; the same finding three times is a change to
 make. Agents also record friction directly with `grogu plan friction --note`,

@@ -84,6 +84,13 @@ one worth fixing, and it is surfaced back to the user's own session rather than
 waiting to be asked for. This applies to any Grogu session, not only to pipeline
 roles: most friction is hit outside a plan.
 
+When a session in *this* repository is told a friction cluster is ripe — the
+same complaint from two repositories, three hits, or thirty days open — treat it
+as available work and propose it, rather than noting it and moving on. This is
+the only repository where that work can be done. Claim it with `grogu plan
+friction --claim <id> --reference <pr>` when the PR goes up so it is not proposed
+twice, and `--harness --resolve <seq>` when it ships.
+
 Record steering with `grogu plan steer` so it reaches agents spawned later, and
 relay it to running subagents by pointing at the command rather than pasting the
 text. Give each repository its own role context in

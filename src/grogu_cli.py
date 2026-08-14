@@ -1648,6 +1648,40 @@ def plan_friction(args: argparse.Namespace) -> int:
     if args.json:
         print_json(report)
         return 0
+    if args.claim:
+        result = grogu_plans.claim_harness_friction(args.claim, reference=args.reference or "")
+        print(f"{result['cluster']} claimed by {result['claim']}")
+        return 0
+    if args.ripe:
+        clusters = grogu_plans.cluster_harness_friction()
+        if args.json:
+            print_json(clusters)
+            return 0
+        shown = [
+            cluster
+            for cluster in clusters
+            if args.all or cluster["ripe"] or cluster["stale"]
+        ]
+        if not shown:
+            print("nothing ripe; friction is still accumulating")
+            return 0
+        for cluster in shown:
+            mark = "ripe" if cluster["ripe"] else "stale" if cluster["stale"] else "-"
+            print(f"{cluster['id']}  [{mark}: {cluster['reason']}]  {cluster['title']}")
+            for note in cluster["notes"]:
+                print(f"    - {note}")
+            print(
+                f"    seen {cluster['count']}x in {', '.join(cluster['repositories']) or '?'}"
+                f"; raised by {', '.join(cluster['roles'])}; open {cluster['age_days']}d"
+            )
+            if cluster["claim"]:
+                print(f"    claimed: {cluster['claim']}")
+        print(
+            "\nFix these in the Grogu repository. Claim one with "
+            "`grogu plan friction --claim f1 --reference <pr>` so it stops being "
+            "proposed, and `--harness --resolve <seq>` when it ships."
+        )
+        return 0
     if args.harness:
         for entry in report["harness"]:
             print(f"#{entry['seq']}  [{entry.get('repository', '?')}] {entry['note']}")
@@ -2511,6 +2545,15 @@ def build_parser() -> argparse.ArgumentParser:
     plan_friction_parser.add_argument("--resolve", type=int, metavar="SEQ")
     plan_friction_parser.add_argument("--resolution")
     plan_friction_parser.add_argument("--all", action="store_true")
+    plan_friction_parser.add_argument(
+        "--ripe",
+        action="store_true",
+        help="harness friction grouped into clusters worth a pull request",
+    )
+    plan_friction_parser.add_argument("--claim", metavar="CLUSTER")
+    plan_friction_parser.add_argument(
+        "--reference", help="the PR, branch or issue taking on a claimed cluster"
+    )
     plan_friction_parser.add_argument(
         "--harness",
         action="store_true",

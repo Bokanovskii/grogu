@@ -601,8 +601,92 @@ class PlanStoreTests(unittest.TestCase):
                 target=grogu_plans.TARGET_HARNESS,
             )
         banner = grogu_plans.pending_banner(self.root)
-        self.assertIn("about Grogu itself", banner)
+        self.assertIn("ready to fix in Grogu", banner)
         self.assertEqual(grogu_plans.pending_banner(self.root), "")
+
+    def _harness_home(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        os.environ["GROGU_HOME"] = home.name
+        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        return home
+
+    def test_the_same_complaint_worded_differently_forms_one_cluster(self):
+        self._harness_home()
+        self.store.note_friction(
+            "no way to diff two plan stages without unsealing by hand",
+            role=grogu_plans.ENGINEER,
+            target=grogu_plans.TARGET_HARNESS,
+        )
+        self.store.note_friction(
+            "diff two plan stages needed unsealing by hand again",
+            role=grogu_plans.TESTER,
+            target=grogu_plans.TARGET_HARNESS,
+        )
+        self.store.note_friction(
+            "design recall has no scope for watch surfaces",
+            role=grogu_plans.DESIGNER,
+            target=grogu_plans.TARGET_HARNESS,
+        )
+        clusters = grogu_plans.cluster_harness_friction(grogu_plans.harness_friction())
+        sizes = sorted(cluster["count"] for cluster in clusters)
+        self.assertEqual(sizes, [1, 2])
+
+    def test_a_complaint_from_two_repositories_is_ripe_before_the_third_hit(self):
+        self._harness_home()
+        other = tempfile.TemporaryDirectory()
+        self.addCleanup(other.cleanup)
+        elsewhere = grogu_plans.PlanStore(Path(other.name))
+        self.store.note_friction(
+            "worktree setup takes four commands every time",
+            role=grogu_plans.ENGINEER,
+            target=grogu_plans.TARGET_HARNESS,
+        )
+        elsewhere.note_friction(
+            "worktree setup takes four commands again here",
+            role=grogu_plans.ENGINEER,
+            target=grogu_plans.TARGET_HARNESS,
+        )
+        ripe = [
+            cluster
+            for cluster in grogu_plans.cluster_harness_friction(
+                grogu_plans.harness_friction()
+            )
+            if cluster["ripe"]
+        ]
+        self.assertEqual(len(ripe), 1)
+        self.assertIn("2 repositories", ripe[0]["reason"])
+
+    def test_a_claimed_cluster_stops_being_proposed(self):
+        self._harness_home()
+        for index in range(grogu_plans.HARNESS_FRICTION_THRESHOLD):
+            self.store.note_friction(
+                f"plan stage diffing is manual, attempt {index}",
+                role=grogu_plans.ENGINEER,
+                target=grogu_plans.TARGET_HARNESS,
+            )
+        self.assertIn("ready to fix in Grogu", grogu_plans.pending_banner(self.root))
+        self.assertTrue(
+            grogu_plans.claim_harness_friction("f1", reference="pull/33")
+        )
+        clusters = grogu_plans.cluster_harness_friction(grogu_plans.harness_friction())
+        self.assertEqual([c for c in clusters if c["ripe"] or c["stale"]], [])
+
+    def test_the_banner_says_where_the_fix_belongs(self):
+        self._harness_home()
+        for index in range(grogu_plans.HARNESS_FRICTION_THRESHOLD):
+            self.store.note_friction(
+                f"steering delivery is invisible, case {index}",
+                role=grogu_plans.ENGINEER,
+                target=grogu_plans.TARGET_HARNESS,
+            )
+        outside = grogu_plans.harness_friction_banner(self.root)
+        self.assertIn("fixed in the Grogu repository, not here", outside)
+        (self.root / "src").mkdir(exist_ok=True)
+        (self.root / "src" / "grogu_cli.py").write_text("", encoding="utf8")
+        (grogu_plans.harness_friction_path().with_name(".friction-reminded")).unlink()
+        inside = grogu_plans.harness_friction_banner(self.root)
+        self.assertIn("You are in the Grogu repository", inside)
 
     def test_below_the_threshold_nobody_is_nagged(self):
         home = tempfile.TemporaryDirectory()
