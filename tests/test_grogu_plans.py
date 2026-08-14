@@ -1882,3 +1882,62 @@ class SteeringDeliveryVisibilityTests(unittest.TestCase):
             tuple(note["unread_by"]) for note in self.store.summary(plan)["steering_undelivered"]
         }
         self.assertEqual(unread, {("engineer", "tester")})
+
+
+class PlanRevisionTests(unittest.TestCase):
+    """A completed stage is a claim about a plan that still exists."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+
+    def _ready(self):
+        plan = self.store.create("revision")["id"]
+        self.store.write_stage(plan, grogu_plans.IMPLEMENTATION, "first", role="architect")
+        self.store.write_stage(plan, grogu_plans.TESTING, "first", role="architect")
+        return plan
+
+    def test_rewriting_a_stage_reopens_the_completion_it_invalidates(self):
+        plan = self._ready()
+        self.store.set_stage_state(plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE, role="engineer")
+        self.store.write_stage(plan, grogu_plans.IMPLEMENTATION, "second", role="architect")
+        summary = self.store.summary(plan)
+        self.assertEqual(
+            summary["stage_state"][grogu_plans.IMPLEMENTATION], grogu_plans.PENDING
+        )
+        notes = self.store.steering(role="engineer", plan_id=plan)["plan"]
+        self.assertTrue(any("re-read it" in note["text"] for note in notes))
+
+    def test_rewriting_a_stage_with_identical_text_changes_nothing(self):
+        plan = self._ready()
+        self.store.set_stage_state(plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE, role="engineer")
+        self.store.write_stage(plan, grogu_plans.IMPLEMENTATION, "first", role="architect")
+        self.assertEqual(
+            self.store.summary(plan)["stage_state"][grogu_plans.IMPLEMENTATION],
+            grogu_plans.COMPLETE,
+        )
+
+    def test_rewriting_the_sealed_testing_plan_reopens_the_tester(self):
+        plan = self._ready()
+        self.store.set_stage_state(plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE, role="engineer")
+        self.store.set_stage_state(plan, grogu_plans.TESTING, grogu_plans.COMPLETE, role="tester")
+        self.store.write_stage(plan, grogu_plans.TESTING, "second", role="architect")
+        self.assertEqual(
+            self.store.summary(plan)["stage_state"][grogu_plans.TESTING], grogu_plans.PENDING
+        )
+        notes = self.store.steering(role="tester", plan_id=plan)["plan"]
+        self.assertTrue(any("re-read it" in note["text"] for note in notes))
+
+    def test_the_architect_sees_steering_aimed_at_other_roles(self):
+        plan = self._ready()
+        self.store.steer("HUF has zero minor units", role="engineer", plan_id=plan)
+        seen = self.store.steering(role="architect", plan_id=plan)["plan"]
+        self.assertTrue(any("HUF" in note["text"] for note in seen))
+        # ...and the engineer still does not see the tester's mail.
+        self.store.steer("check the scale, not just the value", role="tester", plan_id=plan)
+        engineer = self.store.steering(role="engineer", plan_id=plan)["plan"]
+        self.assertFalse(any("scale" in note["text"] for note in engineer))
