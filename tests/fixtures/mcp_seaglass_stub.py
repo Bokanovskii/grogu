@@ -24,8 +24,12 @@ def search_messages(query: str, max_sessions: int = 8, redact: bool = False) -> 
         # db on every result, so a caller can tell a complete answer from
         # one that is missing the last N messages.
         "ordering": "recent" if query == "__recent__" else "relevance",
-        "index_stale": query == "__stale__",
-        "n_messages_since_index": 12 if query == "__stale__" else 0,
+        "index_stale": query in ("__stale__", "__stale_but_covered__"),
+        "n_messages_since_index": 12 if query in ("__stale__", "__stale_but_covered__") else 0,
+        # A filters-only query is served from chat.db directly, so the
+        # index being behind costs the answer nothing. Seaglass says how
+        # many unindexed messages it folded in.
+        "unindexed_included": 12 if query == "__stale_but_covered__" else 0,
         "sessions": [
             {
                 "chat_id": 42,

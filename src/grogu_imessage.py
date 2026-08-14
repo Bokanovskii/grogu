@@ -341,8 +341,18 @@ def _warn_if_stale(payload: dict) -> None:
     A stale result is indistinguishable from a complete one, so "what did
     she just say" answers confidently with yesterday's conversation. The
     count rides along in the search payload, so this costs no extra call.
+
+    Silent when seaglass served the gap from chat.db directly. A
+    filters-only query needs no models and no ranking, so seaglass answers
+    it from the live database and the index being behind costs the answer
+    nothing. Warning anyway would send the user off to sync to fix a
+    result that is already complete -- and a warning that fires when
+    nothing is wrong is one the user learns to scroll past, which is how
+    it gets missed on the query where it mattered.
     """
     behind = payload.get("n_messages_since_index") or 0
+    if payload.get("unindexed_included"):
+        return
     if payload.get("index_stale") and behind:
         print(
             f"warning: seaglass index is {behind} message(s) behind; "

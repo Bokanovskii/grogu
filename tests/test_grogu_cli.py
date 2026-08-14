@@ -1410,6 +1410,25 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
         self.assertIn("12 message(s) behind", stderr.getvalue())
         self.assertIn("grogu imessage sync", stderr.getvalue())
 
+    def test_no_warning_when_seaglass_served_the_gap_from_chat_db(self):
+        """A filters-only query is answered from the live database, so the
+        index being behind costs the answer nothing. Warning anyway would
+        send the user to sync to fix a result that is already complete --
+        and a warning that fires when nothing is wrong is one they learn
+        to scroll past, which is how it gets missed when it matters."""
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            grogu_imessage.search_via_seaglass("__stale_but_covered__")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_a_stale_index_still_warns_when_the_gap_was_not_covered(self):
+        """The silence above must come from the coverage flag, not from
+        having broken the warning outright."""
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            grogu_imessage.search_via_seaglass("__stale__")
+        self.assertIn("12 message(s) behind", stderr.getvalue())
+
     def test_a_current_index_says_nothing(self):
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
