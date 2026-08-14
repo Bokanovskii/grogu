@@ -2697,6 +2697,31 @@ def _skill_repo(args: argparse.Namespace) -> Path:
     return Path(grogu_tasks.repository_root())
 
 
+BINDING_STALE_HOURS = 12
+
+
+def _stale(stamp: Optional[str]) -> bool:
+    """Whether a session binding is too old to refuse on.
+
+    A binding is written once and never cleared -- the shell that made it just
+    stops existing. Refusing forever on a role that finished last week turns
+    the user out of his own checkout with a message about an agent that is not
+    there, and the only way back is to guess at `--role supervisor`. Steering
+    still honours old bindings, because delivering a note to a shell that has
+    gone costs nothing; refusing on one costs the user his commands.
+    """
+    if not stamp:
+        return True
+    try:
+        when = dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.timezone.utc)
+    age = dt.datetime.now(dt.timezone.utc) - when
+    return age > dt.timedelta(hours=BINDING_STALE_HOURS)
+
+
 def _skill_decider(action: str, args: argparse.Namespace) -> Optional[str]:
     """Who may turn a proposal into a standing instruction.
 
@@ -2713,25 +2738,24 @@ def _skill_decider(action: str, args: argparse.Namespace) -> Optional[str]:
     has already said who it is and then drops the variable on one command --
     the session binding remembers, and remembering is enough to refuse.
     """
-    role = grogu_plans.current_role()
+    role = (getattr(args, "role", "") or "").strip() or grogu_plans.current_role()
     if not role:
+        binding = {}
         try:
-            bound = (
-                grogu_plans.PlanStore(
-                    Path(args.repo).expanduser() if getattr(args, "repo", None) else None
-                )
-                .session_binding()
-                .get("role", "")
-            )
+            binding = grogu_plans.PlanStore().binding_covering(_skill_repo(args))
         except (grogu_plans.PlanError, OSError):
-            bound = ""
-        if bound and bound != grogu_plans.SUPERVISOR:
+            binding = {}
+        bound = binding.get("role", "")
+        if bound and bound != grogu_plans.SUPERVISOR and not _stale(binding.get("at")):
+            article = "an" if bound[:1] in "aeiou" else "a"
+            when = binding.get("at") or "recently"
             return (
-                f"a {bound} is working in this directory and this command "
-                f"arrived without a role, so it is either that {bound} having "
-                "dropped GROGU_ROLE or the user sharing its shell. Deciding a "
-                "skill is the user's call, so it is refused either way: run it "
-                "from your own shell, or say so with `--role supervisor`."
+                f"{article} {bound} declared itself in this tree at {when} and "
+                "this command arrived without a role, so it is either that "
+                f"{bound} having dropped GROGU_ROLE or the user sharing its "
+                "shell. Deciding a skill is the user's call, so it is refused "
+                "either way: run it from your own shell, or say so with "
+                "`--role supervisor`."
             )
         return None
     if role != grogu_plans.SUPERVISOR:
@@ -2789,6 +2813,8 @@ def skill_propose(args: argparse.Namespace) -> int:
         repository_path=str(root),
         actor=grogu_plans.actor(),
         installed=grogu_skills.installed_skills(root),
+        overrode=getattr(args, "not_the_same", None) or [],
+        liked=[int(seq) for seq in (getattr(args, "like", None) or [])],
     )
     print(f"skill proposal #{entry['seq']} {entry['name']}: {entry['description']}")
     related = entry.get("related_to") or []
@@ -2798,6 +2824,19 @@ def skill_propose(args: argparse.Namespace) -> int:
             f"  this looks close to {listed}, so they are linked for whoever "
             "decides. Both are kept: if they are one lesson, one gets declined "
             "with the other named."
+        )
+    nearby = entry.get("nearby") or []
+    if nearby:
+        # Word counting cannot see a paraphrase, so the agent that just wrote
+        # the lesson is told what is closest and left to judge it. It is the
+        # only party with both texts and the context they came from.
+        print("  nearest existing proposals, in case one of them is this lesson:")
+        for other in grogu_skills.proposals():
+            if other["seq"] in nearby:
+                print(f"    #{other['seq']} {other['name']}: {other['description']}")
+        print(
+            "    if one of them is, link it: "
+            f"`grogu skill propose ... --like <n>` (or leave it; nothing is lost)"
         )
     if entry.get("amends"):
         print("  this amends an installed skill; the change will show up in a diff")
@@ -2813,11 +2852,20 @@ def skill_proposals(args: argparse.Namespace) -> int:
     if not entries:
         print("no skill proposals")
         return 0
+    everything = {
+        other["seq"]: other for other in grogu_skills.proposals(include_decided=True)
+    }
     for entry in entries:
         related = entry.get("related_to") or []
-        suffix = (
-            f" (close to {', '.join('#' + str(seq) for seq in related)})" if related else ""
-        )
+        # A bare "(close to #4)" reads as an open question the reviewer still
+        # has to settle, when #4 may already have been declined as the
+        # duplicate -- so the state travels with the link, and a link to
+        # nothing says so rather than pointing at a number that is not there.
+        marks = []
+        for seq in related:
+            other = everything.get(seq)
+            marks.append(f"#{seq} ({other['status']})" if other else f"#{seq} (missing)")
+        suffix = f" (close to {', '.join(marks)})" if marks else ""
         origin = entry.get("repository") or "?"
         role = entry.get("role") or "unknown role"
         print(
@@ -2853,11 +2901,15 @@ def skill_show(args: argparse.Namespace) -> int:
                 for other in grogu_skills.proposals(include_decided=True):
                     if other.get("seq") != seq:
                         continue
+                    state = other.get("status")
                     print(
-                        f"\n--- #{seq}, filed separately and possibly the same "
-                        f"lesson, by the {other.get('role') or 'unknown role'} "
+                        f"\n--- #{seq} [{state}], filed separately and possibly "
+                        f"the same lesson, by the "
+                        f"{other.get('role') or 'unknown role'} "
                         f"in {other.get('repository') or '?'} ---"
                     )
+                    if other.get("decision"):
+                        print(f"decision: {other['decision']}")
                     sys.stdout.write(
                         grogu_skills.render(
                             other["name"], other["description"], other["body"]
@@ -4221,6 +4273,19 @@ def build_parser() -> argparse.ArgumentParser:
     skill_propose_parser.add_argument("--body")
     skill_propose_parser.add_argument("--file", help="the skill body, or - for stdin")
     skill_propose_parser.add_argument("--why", help="what happened that made this worth writing")
+    skill_propose_parser.add_argument(
+        "--not-the-same",
+        action="append",
+        dest="not_the_same",
+        help="an installed skill name or a declined proposal number you have "
+        "read and judged to be a different lesson",
+    )
+    skill_propose_parser.add_argument(
+        "--like",
+        action="append",
+        type=int,
+        help="a pending proposal number this is the same lesson as",
+    )
     skill_propose_parser.add_argument("--role")
     skill_propose_parser.add_argument("--id", nargs="?", default="")
     skill_propose_parser.set_defaults(handler=skill_propose)
@@ -4241,11 +4306,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     skill_accept_parser.add_argument("seq", type=int)
     skill_accept_parser.add_argument("--note")
+    skill_accept_parser.add_argument("--role")
     skill_accept_parser.set_defaults(handler=skill_accept)
 
     skill_decline_parser = skill_subparsers.add_parser("decline")
     skill_decline_parser.add_argument("seq", type=int)
     skill_decline_parser.add_argument("--note", required=True)
+    skill_decline_parser.add_argument("--role")
     skill_decline_parser.set_defaults(handler=skill_decline)
 
     skill_contest_parser = skill_subparsers.add_parser(

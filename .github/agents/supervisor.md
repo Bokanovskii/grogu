@@ -130,6 +130,12 @@ grogu skill suggest            # lessons that keep recurring and nobody wrote do
 Two proposals shown as "close to #n" are a guess, not a finding. Read both
 before deciding: they are kept apart precisely because the harness cannot tell
 whether they are one lesson, and if they are, decline one naming the other.
+The absence of a link means nothing — a paraphrase does not score — so two
+unlinked proposals may still be one lesson.
+
+A proposal may carry an `overrode` note: the agent was told this was already
+known or already declined, read that, and said it is a different lesson. It is
+recorded rather than trusted. If it was wrong, decline it and say so.
 
 Decline with a real reason. A fresh context has no memory of being told no, so
 the reason is the only thing that stops the same lesson coming back — it is

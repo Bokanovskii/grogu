@@ -6,10 +6,13 @@ merge, hollow bodies bounce, an already-answered lesson comes back with the
 answer, and an agent cannot install one at all.
 """
 
+import datetime as dt
+import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -468,3 +471,188 @@ class SkillCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OverrideTests(unittest.TestCase):
+    """The escape hatches from a refusal that is wrong.
+
+    Both refusals are word counts, so both are sometimes wrong, and a wrong one
+    is worse than a wrong acceptance: the lesson is never written at all. Each
+    one names a flag that gets past it, and these pin that the flag works and
+    that the override is recorded rather than swallowed.
+    """
+
+    def setUp(self) -> None:
+        self.home = tempfile.TemporaryDirectory()
+        os.environ["GROGU_HOME"] = self.home.name
+
+    def tearDown(self) -> None:
+        self.home.cleanup()
+
+    def test_an_agent_that_has_read_the_installed_skill_may_still_propose(self) -> None:
+        installed = [
+            {
+                "name": "narrow-first",
+                "description": "Prove a change with the narrowest test first.",
+                "body": BODY,
+                "path": ".github/skills/narrow-first/SKILL.md",
+            }
+        ]
+        with self.assertRaises(grogu_skills.AlreadyKnown) as refused:
+            grogu_skills.propose(
+                "narrowest-test-first",
+                description="Prove a change with the narrowest test first.",
+                body=BODY,
+                installed=installed,
+            )
+        self.assertIn("--not-the-same narrow-first", str(refused.exception))
+        entry = grogu_skills.propose(
+            "narrowest-test-first",
+            description="Prove a change with the narrowest test first.",
+            body=BODY,
+            installed=installed,
+            overrode=["narrow-first"],
+        )
+        self.assertEqual(entry["overrode"], ["narrow-first"])
+
+    def test_an_agent_may_override_a_replayed_decline(self) -> None:
+        first = grogu_skills.propose(
+            "narrow-first", description="Narrowest test first.", body=BODY
+        )
+        grogu_skills.decline(first["seq"], note="we already do this")
+        with self.assertRaises(grogu_skills.AlreadyDeclined) as refused:
+            grogu_skills.propose(
+                "narrow-first", description="Narrowest test first.", body=BODY
+            )
+        self.assertIn(f"--not-the-same {first['seq']}", str(refused.exception))
+        entry = grogu_skills.propose(
+            "narrow-first",
+            description="Narrowest test first.",
+            body=BODY,
+            overrode=[str(first["seq"])],
+        )
+        self.assertEqual(entry["status"], grogu_skills.PENDING)
+
+    def test_an_oversized_body_is_refused_before_it_is_scanned(self) -> None:
+        # The cap exists because redaction reads every byte. Applying it after
+        # the scan meant the caller waited for the cost the cap was there to
+        # avoid, then got told the input was too big.
+        huge = "x" * (grogu_skills.MAX_SKILL_CHARS + 1)
+        started = time.time()
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.propose("big-one", description="A very large lesson.", body=huge)
+        self.assertLess(time.time() - started, 1.0)
+
+    def test_the_closest_proposals_are_named_even_when_nothing_links(self) -> None:
+        # Word counting cannot see a paraphrase; the agent that wrote the
+        # lesson can. It gets told what is nearest rather than nothing.
+        grogu_skills.propose(
+            "narrow-first", description="Narrowest test first.", body=BODY
+        )
+        entry = grogu_skills.propose(
+            "audit-licences",
+            description="Audit every new dependency licence.",
+            body=LICENSE_BODY,
+        )
+        self.assertEqual(entry["related_to"], [])
+        self.assertEqual(entry["nearby"], [1])
+
+    def test_an_agent_may_link_a_paraphrase_the_harness_cannot_see(self) -> None:
+        grogu_skills.propose(
+            "narrow-first", description="Narrowest test first.", body=BODY
+        )
+        entry = grogu_skills.propose(
+            "audit-licences",
+            description="Audit every new dependency licence.",
+            body=LICENSE_BODY,
+            liked=[1],
+        )
+        self.assertEqual(entry["related_to"], [1])
+
+
+class DecideGateTests(unittest.TestCase):
+    """Who the harness believes is typing, when nobody says.
+
+    Role is trust-on-assert, so the only case worth enforcing is the one that
+    actually happens: an agent that already declared itself and then ran a
+    command without the variable. That has to survive `cd` into a subdirectory
+    -- and it has to stop mattering once the agent is long gone, or the user is
+    locked out of his own checkout by a shell that no longer exists.
+    """
+
+    def setUp(self) -> None:
+        self.home = tempfile.TemporaryDirectory()
+        self.repo = tempfile.TemporaryDirectory()
+        for command in (["git", "init", "-q", "."],
+                        ["git", "commit", "-q", "--allow-empty", "-m", "init"]):
+            subprocess.run(
+                command,
+                cwd=self.repo.name,
+                check=True,
+                env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+            )
+        self.nested = Path(self.repo.name) / "src" / "deep"
+        self.nested.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self.home.cleanup()
+        self.repo.cleanup()
+
+    def bind(self, role: str, when: str, where: Path) -> None:
+        state = Path(self.repo.name) / ".grogu" / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "session-roles.json").write_text(
+            json.dumps({str(where.resolve()): {"role": role, "at": when}}),
+            encoding="utf8",
+        )
+
+    def run_cli(self, *arguments, cwd=None, role=""):
+        environment = {**os.environ, "GROGU_HOME": self.home.name}
+        environment.pop("GROGU_ROLE", None)
+        if role:
+            environment["GROGU_ROLE"] = role
+        return subprocess.run(
+            [sys.executable, str(ROOT / "src" / "grogu_cli.py"), "skill", *arguments],
+            cwd=str(cwd or self.repo.name),
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+
+    def propose(self) -> None:
+        result = self.run_cli(
+            "propose",
+            "narrow-first",
+            "--description",
+            "Prove a change with the narrowest test before running the suite.",
+            "--body",
+            BODY,
+            role="engineer",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def now(self, hours_ago: float) -> str:
+        moment = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours_ago)
+        return moment.isoformat()
+
+    def test_an_engineer_cannot_escape_the_gate_by_changing_directory(self) -> None:
+        self.propose()
+        self.bind("engineer", self.now(0.1), Path(self.repo.name))
+        result = self.run_cli("accept", "1", cwd=self.nested)
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("an engineer declared itself", result.stderr)
+
+    def test_a_binding_from_last_week_does_not_lock_the_user_out(self) -> None:
+        self.propose()
+        self.bind("engineer", self.now(72), Path(self.repo.name))
+        result = self.run_cli("accept", "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_supervisor_may_say_so_with_the_flag_the_refusal_names(self) -> None:
+        self.propose()
+        self.bind("engineer", self.now(0.1), Path(self.repo.name))
+        refused = self.run_cli("accept", "1")
+        self.assertIn("--role supervisor", refused.stderr)
+        result = self.run_cli("accept", "1", "--role", "supervisor")
+        self.assertEqual(result.returncode, 0, result.stderr)

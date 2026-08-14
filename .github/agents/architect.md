@@ -211,3 +211,11 @@ after you, which is the same authority as your own contract, so the user or the
 supervisor decides. If your lesson matches one already installed, or one that
 was proposed and turned down, you are told so and told why, which is usually
 the more useful answer.
+
+If you are told your lesson is already known or was already declined, read the
+thing you are pointed at before you argue with it. If you have read it and this
+really is a different lesson, say so with `--not-the-same <skill-or-number>`
+and propose it again -- that judgement is recorded on the proposal, so the
+person reviewing it sees you made it. The refusal is a word count and word
+counts are sometimes wrong; the flag exists so a wrong one does not end with
+the lesson unwritten.

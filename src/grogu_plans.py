@@ -4275,12 +4275,42 @@ class PlanStore:
         }
         self._write_json(path, payload)
 
-    def session_binding(self) -> dict:
+    def session_bindings(self) -> dict:
         path = self.state_dir / "session-roles.json"
         if not path.exists():
             return {}
         payload = self._read_json(path)
-        return payload.get(str(Path.cwd().resolve()), {})
+        return payload if isinstance(payload, dict) else {}
+
+    def session_binding(self) -> dict:
+        return self.session_bindings().get(str(Path.cwd().resolve()), {})
+
+    def binding_covering(self, root: Optional[Path] = None) -> dict:
+        """The role bound anywhere at or above here, or anywhere inside `root`.
+
+        `session_binding` is keyed to the exact directory it was made in, which
+        is right for steering -- steering is delivered to the shell that asked.
+        It is wrong for a refusal: an engineer that ran `cd src` or passed
+        `--repo` at a checkout it had already declared itself in looked to the
+        harness like an anonymous shell, which is the user, which is allowed to
+        decide skills. So the question a refusal asks is the broader one: is
+        there a declared role whose working directory is part of this tree?
+        """
+        bindings = self.session_bindings()
+        here = Path.cwd().resolve()
+        candidates = [here] + list(here.parents)
+        for parent in candidates:
+            entry = bindings.get(str(parent))
+            if isinstance(entry, dict) and entry.get("role"):
+                return entry
+        if root is not None:
+            base = str(Path(root).expanduser().resolve())
+            for path, entry in sorted(bindings.items()):
+                if not isinstance(entry, dict) or not entry.get("role"):
+                    continue
+                if path == base or path.startswith(base + os.sep):
+                    return entry
+        return {}
 
     def brief(self, role: str, *, plan_id: str = "", base_dir: Optional[Path] = None) -> dict:
         """Assemble a role's prompt: shared contract + repository overlay.

@@ -55,6 +55,12 @@ HOLLOW_SKILL_CHARS = 160
 # lesson phrased differently by two agents lands in one place.
 SKILL_SIMILARITY = 0.34
 
+# Linking is not a claim, it is a note to whoever decides, so it is worth being
+# wrong about more often: two agents writing one lesson in genuinely different
+# words came out unlinked at 0.34, and an unlinked pair gives the reviewer no
+# repetition signal at all -- which is the whole reason proposals are pooled.
+SKILL_RELATED = 0.2
+
 NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 _STOPWORDS = frozenset(
@@ -120,6 +126,42 @@ def _read() -> dict:
         )
     if not isinstance(payload, dict):
         raise SkillError(f"the skill store at {path} is not an object")
+    entries = payload.get("entries", [])
+    # Parsing as JSON is not the same as being usable, and the gap between the
+    # two was doing real damage: two entries sharing a seq made the second one
+    # unreachable through every command that takes a number, while it still
+    # appeared in the listing as something waiting for a decision. Refusing is
+    # the only safe answer, because the alternative is renumbering somebody
+    # else's records to make our own display work.
+    if not isinstance(entries, list):
+        raise SkillError(
+            f"the skill store at {path} has an 'entries' that is not a list"
+        )
+    seen = set()
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise SkillError(f"entry {index} in {path} is not an object")
+        seq = entry.get("seq")
+        if not isinstance(seq, int):
+            raise SkillError(
+                f"entry {index} in {path} has no usable seq, so it cannot be "
+                "shown, accepted or declined; nothing will be written until it "
+                "is fixed or removed"
+            )
+        if seq in seen:
+            raise SkillError(
+                f"the skill store at {path} has two entries numbered #{seq}. "
+                "Every command that takes a number would reach only the first, "
+                "and the second would sit in the listing looking like it was "
+                "waiting for you. Fix the file; nothing will be written until "
+                "it is unambiguous."
+            )
+        seen.add(seq)
+        for field in ("name", "description", "body"):
+            if not isinstance(entry.get(field, ""), str):
+                raise SkillError(
+                    f"entry #{seq} in {path} has a {field} that is not text"
+                )
     return payload
 
 
@@ -157,6 +199,17 @@ RELATED = "related"
 DIFFERENT = "different"
 
 
+def _closeness(subject: tuple, entry: dict) -> float:
+    name, description, body = subject
+    return max(
+        _similarity(
+            _tokens(f"{name} {description}"),
+            _tokens(f"{entry.get('name','')} {entry.get('description','')}"),
+        ),
+        _similarity(_tokens(body), _tokens(entry.get("body", ""))),
+    )
+
+
 def _match(subject: tuple, entry: dict) -> str:
     """How alike two lessons are, on the two signals worth reading.
 
@@ -184,7 +237,7 @@ def _match(subject: tuple, entry: dict) -> str:
     procedure = _similarity(_tokens(body), _tokens(entry.get("body", "")))
     if headline >= SKILL_SIMILARITY and procedure >= SKILL_SIMILARITY:
         return SAME
-    if max(headline, procedure) >= SKILL_SIMILARITY:
+    if max(headline, procedure) >= SKILL_RELATED:
         return RELATED
     return DIFFERENT
 
@@ -279,6 +332,8 @@ def propose(
     repository_path: str = "",
     actor: str = "",
     installed: Optional[list] = None,
+    overrode: Optional[list] = None,
+    liked: Optional[list] = None,
 ) -> dict:
     """Record a skill an agent thinks the next agent should have.
 
@@ -286,13 +341,33 @@ def propose(
     checkout, so they are redacted on the way out for the same reason harness
     friction is: the most useful skill quotes the command that actually worked,
     and that command is where a token from a private repository escapes.
+
+    `overrode` carries the agent's assertion that it read a named skill or a
+    named decline and this is not that lesson. Both refusals below are
+    judgements made by counting shared words, so both are sometimes wrong, and
+    a wrong one here ends with the lesson never written at all. The assertion
+    is recorded rather than trusted quietly: whoever reviews the proposal sees
+    what was overridden and can disagree.
     """
     name = (name or "").strip().lower()
+    overrode = list(overrode or [])
+    liked = list(liked or [])
+    # Measured before redaction, not after. The scan reads every byte, so
+    # checking the length afterwards meant an oversized paste was rejected only
+    # once the expensive part had already run -- which is the hang the cap was
+    # added to prevent, arriving a few seconds later with a message.
+    if len(body or "") > MAX_SKILL_CHARS:
+        raise SkillError(
+            f"this body is {len(body)} characters, over the {MAX_SKILL_CHARS} a "
+            "skill can be. A skill is the procedure, not the material: link or "
+            "cite the long thing and write the steps."
+        )
     description = grogu_privacy.redact((description or "").strip())
     body = grogu_privacy.redact(body or "")
     why = grogu_privacy.redact((why or "").strip())
     _validate(name, description, body)
 
+    overrode_names = {str(item) for item in overrode}
     existing = {skill["name"] for skill in (installed or [])}
     amends = name in existing
     if not amends:
@@ -300,6 +375,8 @@ def propose(
         # under another name should be sent to read it, not add a second copy
         # for the next agent to have to choose between.
         for skill in installed or []:
+            if skill.get("name") in overrode_names:
+                continue
             # Strict: headline *and* procedure. Sending an agent away to read
             # an unrelated skill is worse than letting a near-duplicate through
             # -- the duplicate gets caught by whoever reviews the proposal, and
@@ -309,7 +386,9 @@ def propose(
                     f"this is {skill['name']}, already installed: "
                     f"{skill.get('description','')}\nRead {skill.get('path','it')}. "
                     f"If it is wrong or incomplete, propose it as an amendment: "
-                    f"`grogu skill propose {skill['name']} ...`."
+                    f"`grogu skill propose {skill['name']} ...`.\n"
+                    f"If you have read it and this is a different lesson, say "
+                    f"so: add `--not-the-same {skill['name']}`."
                 )
 
     with skills_lock():
@@ -319,7 +398,9 @@ def propose(
         for entry in entries:
             if entry.get("status") != DECLINED:
                 continue
-            if entry.get("name") == name or _match(subject, entry) == SAME:
+            if entry["seq"] in overrode or str(entry["seq"]) in overrode_names:
+                continue
+            if _match(subject, entry) == SAME:
                 # The decline note exists for exactly this moment. A fresh
                 # context has no memory of being told no, so without this the
                 # same rejected lesson comes back every time an agent hits the
@@ -340,8 +421,8 @@ def propose(
                     f"`grogu skill contest {entry['seq']} --note \"...\"`. "
                     "That puts it back in front of whoever declined it, with "
                     "your argument attached -- it does not install anything. "
-                    "If this is genuinely a different lesson, say what makes "
-                    "it different in the description and propose it again."
+                    "If you have read that reason and this is a different "
+                    f"lesson, say so: add `--not-the-same {entry['seq']}`."
                 )
         # Nothing here merges. A near-match used to be folded into the older
         # proposal, which meant every false positive silently destroyed a
@@ -355,6 +436,22 @@ def propose(
             for other in entries
             if other.get("status") == PENDING and _match(subject, other) != DIFFERENT
         ]
+        # Whatever the threshold, paraphrase defeats word counting: two agents
+        # wrote the same rollback-rehearsal lesson in different vocabulary and
+        # scored 0.16. Rather than tune a number until it is wrong in the other
+        # direction, the nearest existing proposals are simply handed to the
+        # one party that can actually judge -- the agent proposing, which has
+        # the lesson in mind -- and it can link them itself with `--like`.
+        neighbours = sorted(
+            (
+                (_closeness(subject, other), other)
+                for other in entries
+                if other.get("status") == PENDING and other["seq"] not in related
+            ),
+            key=lambda pair: -pair[0],
+        )
+        nearby = [other["seq"] for score, other in neighbours[:3] if score > 0]
+        related += [seq for seq in liked if seq not in related]
         entry = {
             "seq": len(entries) + 1,
             "name": name,
@@ -370,6 +467,8 @@ def propose(
             "status": PENDING,
             "echoes": [],
             "related_to": related,
+            "overrode": overrode,
+            "nearby": nearby,
         }
         for other in entries:
             if other.get("seq") in related:

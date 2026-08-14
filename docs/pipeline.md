@@ -610,6 +610,22 @@ call it, and unrelated lessons routinely share a summary. Only both agreeing
 counts as the same lesson, and that verdict is used exclusively to *refuse*,
 never to discard.
 
+Linking is deliberately looser than refusing, because a link is a note to the
+reviewer and a refusal is a lesson lost. Even so, word counting cannot see a
+paraphrase: two agents wrote the same rollback-rehearsal procedure in different
+vocabulary and scored 0.16, which no threshold recovers without linking
+everything to everything. So the harness stops guessing at that point and hands
+the question to the one party that can answer it — the agent proposing, which
+has the lesson in mind — by naming the nearest existing proposals on every
+`skill propose` and offering `--like <n>` to link one itself.
+
+Both refusals name a way past themselves. `--not-the-same <skill-or-number>`
+records that the agent read the thing it was pointed at and judged this to be a
+different lesson; the override is stored on the proposal, so whoever reviews it
+sees what was overridden and can disagree. Without an escape hatch, every false
+refusal is a lesson that is never written at all, which is the worse of the two
+failures — a false acceptance is caught by the person who reads the proposal.
+
 **An already-answered lesson comes back with the answer.** A proposal matching
 an installed skill sends the agent to read that skill instead. A proposal
 matching one that was declined is refused *with the reason it was declined for*
@@ -630,7 +646,18 @@ Like every other role boundary here, who may accept is trust-on-assert: an
 agent that simply never sets `GROGU_ROLE` is the user as far as any of this can
 tell. What is closable is the case that happens in practice — an agent that has
 already said who it is and then drops the variable on one command — and the
-session binding remembers that, which is enough to refuse.
+session binding remembers that, which is enough to refuse. The binding is read
+across the whole tree rather than at one exact path, because `cd src` was
+otherwise enough to look like an anonymous shell; and it stops counting after
+twelve hours, because a binding is never cleared — the shell that made it just
+stops existing — and refusing forever on an agent that finished last week locks
+the user out of his own checkout with a message about somebody who is not there.
+
+Nothing here survives deleting `.grogu/state/skills.json`. There is no journal
+and no tombstone: pending proposals, decline reasons and echo counts all go
+with it, and the only record left is whatever was already accepted and
+committed under `.github/skills`. That is a real limitation and not a guarded
+one.
 
 `grogu skill suggest` answers the other half: recurring harness friction that
 nobody has turned into either a fix or a procedure. It reads the friction
