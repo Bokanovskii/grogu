@@ -137,7 +137,13 @@ free prose either: "clean, modern, Apple-like" cannot be built, so the engineer
 decides, which is the failure the role exists to prevent.
 
 `grogu design template` prints the required skeleton, and `grogu plan write <id>
-design` refuses a spec that skips a required section or leans on adjectives.
+design` refuses a spec that skips a required section, leans on adjectives, or
+hands back the skeleton with its instructions still in it. That last check was
+added after an architect piped `grogu design template` straight into `plan
+write` and it was accepted: the skeleton has every required heading and uses no
+adjectives, so the one artifact guaranteed to pass every structural check was
+the empty one — a single pipe between an unwritten spec and a plan the user
+would be asked to approve.
 That refusal is the point. Consistent completeness — every state, including the
 empty and error ones nobody enjoys writing — is most of what weaker design
 output gets wrong, and it is the part a machine can check.

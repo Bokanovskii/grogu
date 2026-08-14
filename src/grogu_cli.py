@@ -1555,6 +1555,10 @@ def plan_shape(args: argparse.Namespace) -> int:
         store.add_stage(plan_id, args.add, role=role)
         print(f"{plan_id}: added a {args.add} stage")
         return 0
+    if getattr(args, "reset", ""):
+        store.reset_stage(plan_id, args.reset, role=role)
+        print(f"{plan_id}: reset the {args.reset} stage to unwritten")
+        return 0
     if args.decline:
         store.decline_stage(plan_id, args.decline, args.why or "", role=role)
         print(f"{plan_id}: recorded that no {args.decline} stage is warranted")
@@ -1886,7 +1890,11 @@ def plan_commission(args: argparse.Namespace) -> int:
     store = plan_store(args)
     plan_id = store.resolve(args.id)
     store.commission(
-        plan_id, args.for_role, args.brief, by=getattr(args, "role", "") or ""
+        plan_id,
+        args.for_role,
+        args.brief,
+        by=getattr(args, "role", "") or "",
+        replace=args.replace,
     )
     print(
         f"{plan_id}: commissioned the {args.for_role}; it arrives in "
@@ -2949,6 +2957,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="hold work until the user approves the plan",
     )
     plan_shape_parser.add_argument("--why", help="reason, required with --decline")
+    plan_shape_parser.add_argument(
+        "--reset",
+        choices=grogu_plans.STAGES,
+        help="throw away a stage body and mark it unwritten again",
+    )
     plan_shape_parser.set_defaults(handler=plan_shape)
 
     plan_write_parser = plan_subparsers.add_parser(
@@ -3189,6 +3202,9 @@ def build_parser() -> argparse.ArgumentParser:
     plan_commission_parser.add_argument("id")
     plan_commission_parser.add_argument("for_role", metavar="ROLE", choices=grogu_plans.ROLES)
     plan_commission_parser.add_argument("--brief", required=True)
+    plan_commission_parser.add_argument(
+        "--replace", action="store_true", help="overwrite an existing commission"
+    )
     plan_commission_parser.set_defaults(handler=plan_commission)
 
     plan_steering_parser = plan_subparsers.add_parser(

@@ -13,8 +13,24 @@ import grogu_plans  # noqa: E402
 
 
 def valid_design_spec() -> str:
-    spec = grogu_plans.design_template("Test plan")
-    return spec + "\n- the table renders with a 16px row gap\n"
+    """A spec with a decision under every heading.
+
+    This used to be the template plus one line, which is exactly the artifact
+    the validator now refuses: the skeleton satisfies every structural check by
+    construction, so a fixture built from it proved nothing.
+    """
+    sections = [
+        line[3:].strip()
+        for line in grogu_plans.design_template("Test plan").splitlines()
+        if line.startswith("## ")
+    ]
+    body = ["# Test plan — design spec", ""]
+    for section in sections:
+        body.append(f"## {section}")
+        body.append(f"Decided for {section.lower()}: the table renders with a")
+        body.append("16px row gap and the id column is 12 characters wide.")
+        body.append("")
+    return "\n".join(body)
 
 
 class PlanStoreTests(unittest.TestCase):
@@ -2284,3 +2300,59 @@ class SteeringRetractionTests(unittest.TestCase):
     def test_retracting_a_note_that_never_existed_is_an_error(self):
         with self.assertRaises(grogu_plans.PlanError):
             self.store.retract_steering(9, plan_id=self.plan)
+
+
+class StageResetTests(unittest.TestCase):
+    """There was no way back from a bad stage write."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("reset", design=True)["id"]
+
+    def test_a_written_stage_can_be_returned_to_unwritten(self):
+        self.store.write_stage(self.plan, "design", valid_design_spec(), role="designer")
+        self.assertTrue(self.store.summary(self.plan)["stage_written"]["design"])
+        self.store.reset_stage(self.plan, "design", role="architect")
+        self.assertFalse(self.store.summary(self.plan)["stage_written"]["design"])
+
+    def test_only_the_architect_resets(self):
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.reset_stage(self.plan, "design", role="designer")
+
+
+class TemplateSpecTests(unittest.TestCase):
+    """The one artifact guaranteed to pass used to be the empty one."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("stub", design=True)["id"]
+
+    def test_the_template_written_back_unchanged_is_refused(self):
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.write_stage(
+                self.plan, "design", grogu_plans.design_template("stub"), role="designer"
+            )
+        self.assertIn("template's own instructions", str(caught.exception))
+
+    def test_a_spec_with_decisions_under_every_heading_is_accepted(self):
+        self.store.write_stage(self.plan, "design", valid_design_spec(), role="designer")
+
+    def test_the_designer_can_close_its_stage_before_the_user_approves(self):
+        self.store.require_review(self.plan, role="architect")
+        self.store.write_stage(self.plan, "design", valid_design_spec(), role="designer")
+        manifest = self.store.set_stage_state(
+            self.plan, "design", "complete", role="designer"
+        )
+        self.assertEqual(manifest["stage_state"]["design"], "complete")
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.set_stage_state(
+                self.plan, "implementation", "complete", role="engineer"
+            )

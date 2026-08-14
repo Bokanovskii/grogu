@@ -1060,6 +1060,44 @@ def missing_design_sections(body: str) -> list:
     ]
 
 
+def _sections(body: str) -> dict:
+    """Section heading -> its lines, for comparing a spec against the skeleton."""
+    sections: dict = {}
+    current = ""
+    for line in body.splitlines():
+        if line.startswith("## "):
+            current = line[3:].strip()
+            sections[current] = []
+        elif current:
+            sections[current].append(line.rstrip())
+    return sections
+
+
+def unfilled_design_sections(body: str) -> list:
+    """Sections still holding the template's instructions instead of a decision.
+
+    `grogu design template | grogu plan write <id> design` was accepted: the
+    skeleton has every required heading and uses no adjectives, so the one
+    artifact guaranteed to pass the validator was the empty one. Since a plan
+    can be approved once its design stage is *written*, that was a single pipe
+    between an unwritten spec and a user-approved plan.
+    """
+    skeleton = _sections(design_template())
+    submitted = _sections(body)
+    unfilled = []
+    for heading, template_lines in skeleton.items():
+        lines = submitted.get(heading)
+        if lines is None:
+            continue
+        template_text = {line.strip() for line in template_lines if line.strip()}
+        written = {line.strip() for line in lines if line.strip()}
+        if not written:
+            unfilled.append(heading)
+        elif template_text and written <= template_text:
+            unfilled.append(heading)
+    return unfilled
+
+
 def vague_design_terms(body: str) -> set:
     """Adjectives used as if they were specifications.
 
@@ -1373,6 +1411,38 @@ class PlanStore:
                 )
             return self._save(manifest, "stage_added", stage=stage)
 
+    def reset_stage(self, plan_id: str, stage: str, *, role: str = "") -> dict:
+        """Un-write a stage, because there was no way back from a bad write.
+
+        An architect probing the design validator wrote the template stub into
+        a plan, could not withdraw it, and repaired the state by hand-editing
+        manifest.json. An agent editing harness internals to undo a supported
+        command is worse than any bug it was chasing.
+        """
+        role = role or current_role() or ARCHITECT
+        if role != ARCHITECT:
+            raise PlanError(f"role {role!r} may not reset a stage; that is the architect's")
+        if stage not in STAGES:
+            raise PlanError(f"unknown stage {stage!r}")
+        with self.locked():
+            manifest = self.load(plan_id)
+            if stage not in manifest.get("stages", []):
+                raise PlanError(f"plan {plan_id} has no {stage} stage")
+            if manifest.get("status") == COMPLETE:
+                raise PlanError(f"plan {plan_id} is finalized; supersede it instead")
+            for path in (self.plan_dir(plan_id) / f"{stage}.md",
+                         self.plan_dir(plan_id) / f"{stage}.sealed"):
+                if path.exists():
+                    path.unlink()
+            body = f"# {manifest.get('title', plan_id)} — {stage} plan\n\n_Not written yet._\n"
+            target = self.stage_path(plan_id, stage)
+            target.write_text(
+                seal(body) if stage in SEALED_STAGES else body, encoding="utf8"
+            )
+            manifest.setdefault("stage_written", {})[stage] = False
+            manifest.setdefault("stage_state", {})[stage] = PENDING
+            return self._save(manifest, "stage_reset", stage=stage)
+
     def decline_stage(self, plan_id: str, stage: str, why: str, *, role: str = "") -> dict:
         """Record that a stage was considered and judged unnecessary.
 
@@ -1432,7 +1502,9 @@ class PlanStore:
                 ]
             return manifest
 
-    def commission(self, plan_id: str, role: str, brief: str, *, by: str = "") -> dict:
+    def commission(
+        self, plan_id: str, role: str, brief: str, *, by: str = "", replace: bool = False
+    ) -> dict:
         """Let the architect say what it wants from a role, in its own voice.
 
         An architect could open a design stage and then had no way to tell the
@@ -1456,10 +1528,19 @@ class PlanStore:
             raise PlanError("a commission needs a brief saying what the work is")
         with self.locked():
             manifest = self.load(plan_id)
+            existing = (manifest.get("commissions") or {}).get(role)
+            if existing and not replace:
+                raise PlanError(
+                    f"the {role} is already commissioned on {plan_id}; pass "
+                    "--replace to overwrite it (the current brief starts: "
+                    + existing["brief"][:60].replace("\n", " ")
+                    + "...)"
+                )
             manifest.setdefault("commissions", {})[role] = {
                 "brief": brief.strip(),
                 "at": now(),
-                "by": actor(),
+                "by": by,
+                "replaced": existing.get("brief") if existing else "",
             }
             return self._save(manifest, "commissioned", stage=role)
 
@@ -1493,6 +1574,16 @@ class PlanStore:
                         + ". Run `grogu design template` for the skeleton. A spec "
                         "that skips states, tokens or acceptance criteria hands "
                         "those decisions to the engineer by omission."
+                    )
+                unfilled = unfilled_design_sections(body)
+                if unfilled:
+                    raise PlanError(
+                        "these design sections still hold the template's own "
+                        "instructions: "
+                        + ", ".join(unfilled)
+                        + ". The skeleton passes every other check by "
+                        "construction, so writing it back unchanged is how an "
+                        "unwritten spec reaches the user for approval."
                     )
                 vague = vague_design_terms(body)
                 if vague:
@@ -1722,6 +1813,12 @@ class PlanStore:
                 manifest.get("review_required")
                 and not manifest.get("approved_at")
                 and not as_user
+                # The design spec is part of what the user is being asked to
+                # review, so it has to be finishable before approval. Holding
+                # it dead-ended the designer: it could write the spec and then
+                # not close its own stage, and the refusal pointed it at a
+                # user-only command it had itself just unblocked.
+                and stage != DESIGN
             ):
                 # `plan gate` said this correctly and an engineer walked
                 # straight past it, because nothing made it ask. A hold the
@@ -2967,6 +3064,11 @@ class PlanStore:
             # always there is a line nobody reads.
             present = {key.split("@", 1)[0] for key in agent_keys}
             for note in notes:
+                if note.get("retracted"):
+                    # Retracting stopped delivery but left the text quoted in
+                    # `plan status` with a counter that could never reach zero,
+                    # which is the opposite of taking a note back.
+                    continue
                 target = note.get("role", "all")
                 roles = [role for role in (ROLES if target == "all" else (target,))]
                 seq = note.get("seq", 0)
@@ -3005,6 +3107,7 @@ class PlanStore:
         plan_acked = manifest.get("steering_acked", {})
 
         def unread(notes: list, role: str, acked: int) -> int:
+            notes = [note for note in notes if not note.get("retracted")]
             return sum(
                 1
                 for note in notes
