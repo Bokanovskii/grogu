@@ -2617,3 +2617,39 @@ class VerifiedIsCheckedTests(unittest.TestCase):
         self.assertFalse(
             self.store.gate(self.plan, grogu_plans.GATE_IMPLEMENT)["allowed"]
         )
+
+
+class RewriteReopensWorkTests(unittest.TestCase):
+    """A rewritten plan left workstreams complete against text that was gone."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("status line")["id"]
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "the plan", role="architect"
+        )
+        self.store.add_workstream(self.plan, name="driver", paths=["src/driver.py"])
+        self.store.add_workstream(self.plan, name="render", paths=["src/render.py"])
+
+    def test_rewriting_the_plan_reopens_the_workstreams(self):
+        for name in ("driver", "render"):
+            self.store.set_stage_state(
+                self.plan,
+                grogu_plans.IMPLEMENTATION,
+                grogu_plans.COMPLETE,
+                role="engineer",
+                workstream=name,
+            )
+        self.store.write_stage(
+            self.plan,
+            grogu_plans.IMPLEMENTATION,
+            "the plan, corrected",
+            role="architect",
+            replace=True,
+        )
+        states = self.store.load(self.plan)["workstream_state"]
+        self.assertEqual(set(states.values()), {grogu_plans.PENDING})

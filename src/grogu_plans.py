@@ -1713,6 +1713,17 @@ class PlanStore:
                 manifest.setdefault("reopened", []).append(
                     {"stage": stage, "at": now(), "why": "the plan was rewritten"}
                 )
+                # The workstreams have to come back with it. An architect that
+                # accepted an amendment and rewrote the plan found both
+                # workstreams still recorded complete against text that no
+                # longer existed, and `workstream --replace` refused to touch
+                # them precisely because they were complete -- a state only the
+                # rewrite could have created and nothing could leave.
+                if stage == IMPLEMENTATION:
+                    done = manifest.setdefault("workstream_state", {})
+                    for name in list(done):
+                        if done[name] == COMPLETE:
+                            done[name] = PENDING
                 notes = manifest.setdefault("steering", [])
                 notes.append(
                     {
@@ -1724,6 +1735,10 @@ class PlanStore:
                             f"the {stage} plan changed after you completed that "
                             "stage; re-read it and complete it again"
                         ),
+                        # Not the user's words. Attributing the harness's own
+                        # bookkeeping to the user is the same mistake that put
+                        # an architect's brief in the user's mouth.
+                        "automatic": True,
                         "requires_replan": False,
                     }
                 )

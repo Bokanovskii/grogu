@@ -2163,6 +2163,15 @@ def plan_brief(args: argparse.Namespace) -> int:
     # instantiated from. --full exists for inspecting a brief from outside.
     if args.full and brief["base"]:
         print(brief["base"].rstrip())
+    elif brief["base"]:
+        # Not printing it is deliberate -- it is already the agent's system
+        # prompt, and reprinting costs a hundred lines of context. But saying
+        # nothing at all reads as "there is no contract", which an architect
+        # reported as the brief's biggest gap.
+        print(
+            f"contract: {ROOT / '.github' / 'agents' / (args.role + '.md')} "
+            f"({len(brief['base'])} bytes, `--full` to print it here)"
+        )
     if brief["overlay"]:
         print(f"\n## Repository specifics ({brief['overlay_path']})\n")
         print(brief["overlay"].rstrip())
@@ -2187,7 +2196,13 @@ def plan_brief(args: argparse.Namespace) -> int:
             binding = " [requires replan]" if note.get("requires_replan") else ""
             # Attributing an architect's note to the user misleads exactly the
             # role that is supposed to weigh whose opinion it is.
-            source = "the user" if note.get("from") in ("", None, "user") else f"the {note['from']}"
+            source = (
+                "the harness"
+                if note.get("automatic")
+                else "the user"
+                if note.get("from") in ("", None, "user")
+                else f"the {note['from']}"
+            )
             print(f"- ({source}) {note['text']}{binding}")
     attached = brief.get("attachments") or []
     if attached:
