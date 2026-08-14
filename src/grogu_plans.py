@@ -79,6 +79,15 @@ ROLE_READABLE_STAGES = {
 # a design spec *is* the requirement, so withholding it just makes the work
 # impossible. What stays sealed is how the design will be judged, which the
 # architect folds into the testing plan.
+# Who does the work a stage describes, as opposed to who writes it. The
+# architect writes the testing plan; the tester is the one it is addressed to.
+STAGE_OWNERS = {
+    DESIGN: DESIGNER,
+    IMPLEMENTATION: ENGINEER,
+    TESTING: TESTER,
+    EVALUATION: TESTER,
+}
+
 STAGE_WRITERS = {
     DESIGN: frozenset({DESIGNER}),
     IMPLEMENTATION: frozenset({ARCHITECT}),
@@ -1432,8 +1441,33 @@ class PlanStore:
                     )
             path = self.stage_path(plan_id, stage)
             sealed = path.suffix == ".sealed"
+            previous = path.read_text(encoding="utf8") if path.exists() else ""
             path.write_text(seal(body) if sealed else body, encoding="utf8")
             manifest.setdefault("stage_written", {})[stage] = True
+            changed = previous != (seal(body) if sealed else body)
+            if changed and manifest.get("stage_state", {}).get(stage) == COMPLETE:
+                # A completed stage is a claim that the work matches the plan.
+                # Rewriting the plan under it leaves that claim attached to
+                # text nobody can read any more, and the only person who knows
+                # it is stale is the one who just made it so.
+                manifest["stage_state"][stage] = PENDING
+                manifest.setdefault("reopened", []).append(
+                    {"stage": stage, "at": now(), "why": "the plan was rewritten"}
+                )
+                notes = manifest.setdefault("steering", [])
+                notes.append(
+                    {
+                        "seq": len(notes) + 1,
+                        "at": now(),
+                        "actor": actor(),
+                        "role": STAGE_OWNERS.get(stage, ENGINEER),
+                        "text": (
+                            f"the {stage} plan changed after you completed that "
+                            "stage; re-read it and complete it again"
+                        ),
+                        "requires_replan": False,
+                    }
+                )
             for amendment in manifest.get("amendments", []):
                 if (
                     amendment.get("status") == ACCEPTED
@@ -1804,7 +1838,11 @@ class PlanStore:
             selected = [
                 note
                 for note in notes
-                if role == "all" or note.get("role") in ("all", role)
+                # The architect owns the plan, so a correction aimed at the
+                # engineer is still the architect's problem: it is how a plan
+                # goes stale. Steering the plan's owner cannot see is the one
+                # kind that silently invalidates everything downstream of it.
+                if role in ("all", ARCHITECT) or note.get("role") in ("all", role)
             ]
             if unread:
                 selected = [note for note in selected if note.get("seq", 0) > acked]

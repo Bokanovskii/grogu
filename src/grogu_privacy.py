@@ -110,7 +110,7 @@ _PLACEHOLDER_WORDS = frozenset(
     """your my our the some example examples sample samples dummy fake mock
     placeholder redacted changeme change replace insert fill enter here goes
     todo fixme none null nil undefined empty test testing xxx xxxx yyyy zzzz
-    abc123 secret password token key value string""".split()
+    abc123 secret password token key value string me please""".split()
 )
 
 _PLACEHOLDER_SHAPES = re.compile(
@@ -123,11 +123,22 @@ _PLACEHOLDER_SHAPES = re.compile(
 
 
 def _is_placeholder(value: str) -> bool:
+    """A placeholder is *made of* placeholder words, not merely near one.
+
+    Matching on any single word was too eager in the direction that costs
+    something: `xoxb-secret-1234` contains "secret" and `my-real-key-9f3a`  grogu-allow-secret
+    contains "my", and both were waved through in silence.  grogu-allow-secret A real secret with
+    one English token in it is not rare, and the whole value of this guard is
+    that it fires on the credential you did not mean to commit.
+    """
     value = value.strip().strip("\"'`")
     if _PLACEHOLDER_SHAPES.match(value):
         return True
-    words = {word for word in re.split(r"[^A-Za-z0-9]+", value.lower()) if word}
-    return bool(words & _PLACEHOLDER_WORDS)
+    words = [word for word in re.split(r"[^A-Za-z0-9]+", value.lower()) if word]
+    if not words:
+        return False
+    hits = sum(1 for word in words if word in _PLACEHOLDER_WORDS)
+    return hits * 2 > len(words)
 
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 # Deliberately North-America-shaped and anchored on separators: a bare run of

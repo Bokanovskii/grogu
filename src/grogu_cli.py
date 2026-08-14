@@ -1347,10 +1347,28 @@ def guard_scan(args: argparse.Namespace) -> int:
     if not targets:
         text = sys.stdin.read()
         findings = grogu_privacy.scan(text, path="<stdin>", personal=not args.secrets_only)
+    expanded = []
     for target in targets:
         path = Path(target).expanduser()
+        if path.is_dir():
+            # "Scan this" almost always means a tree. Refusing a directory
+            # pushed every caller into hand-rolling `find`, and a guard you
+            # have to build a pipeline around is a guard that gets skipped.
+            expanded.extend(
+                sorted(
+                    child
+                    for child in path.rglob("*")
+                    if child.is_file() and ".git" not in child.parts
+                )
+            )
+            continue
+        if not path.exists():
+            print(f"grogu: no such file or directory: {target}", file=sys.stderr)
+            return 2
+        expanded.append(path)
+    for path in expanded:
         if not path.is_file():
-            print(f"grogu: not a file: {target}", file=sys.stderr)
+            print(f"grogu: not a file: {path}", file=sys.stderr)
             return 2
         if grogu_privacy.dangerous_path(str(path)):
             findings.append(
@@ -1371,7 +1389,31 @@ def guard_scan(args: argparse.Namespace) -> int:
 def guard_staged(args: argparse.Namespace) -> int:
     repo = Path(args.repo).expanduser() if args.repo else Path.cwd()
     findings = grogu_privacy.scan_staged(repo, personal=args.personal)
-    return _guard_verdict(findings, destination=args.destination, quiet=args.quiet)
+    destination = args.destination or _destination_for(repo)
+    return _guard_verdict(findings, destination=destination, quiet=args.quiet)
+
+
+def _destination_for(repo: Path) -> str:
+    """A commit in a repository with a remote is on its way somewhere.
+
+    Personal data used to be non-blocking on the reasoning that a working
+    repository is private. Grogu's own repository is public, and the guard had
+    no way to know that -- so the one thing it let through was a machine
+    hostname, into a public commit, which is exactly the accident it exists to
+    stop. Having a remote is the cheap, offline, honest version of the
+    question "is this going to leave the machine".
+    """
+    try:
+        remotes = subprocess.run(
+            ["git", "remote"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.split()
+    except OSError:
+        remotes = []
+    return grogu_privacy.PUBLISHED if remotes else grogu_privacy.REPOSITORY
 
 
 def _guard_verdict(findings: list, *, destination: str, quiet: bool) -> int:
@@ -1636,6 +1678,12 @@ def plan_amendments(args: argparse.Namespace) -> int:
     if args.json:
         print_json(amendments)
         return 0
+    if not amendments:
+        # Silence here reads as a bad plan id, which is the one thing it is
+        # not: `resolve` already refused those.
+        scope = "" if args.all else " open"
+        print(f"{manifest['id']} has no{scope} amendments")
+        return 0
     for amendment in amendments:
         print(f"{amendment['id']}  {amendment['status']:<9} {amendment['raised_by']}: {amendment['claim']}")
         if amendment.get("evidence"):
@@ -1834,14 +1882,18 @@ def _relay_hint(note: dict, plan_id: str) -> None:
         f"  relay this into any running {role} agent with write_agent now, then "
         f"`grogu plan steering{target}"
         + (f" --plan {plan_id}" if plan_id else "")
-        + " --ack --agent <id>` for each,"
+        + " --ack --agent <GROGU_AGENT>` for each,"
     )
-    print("  so it is not handed to them a second time by the banner.")
+    print(
+        "  where <GROGU_AGENT> is the value you set in that agent's environment "
+        "when you spawned it, so it is not handed the note a second time."
+    )
 
 
 def plan_steering(args: argparse.Namespace) -> int:
     store = plan_store(args)
-    plan_id = store.resolve(args.id) if args.id else ""
+    reference = args.id or getattr(args, "plan", "") or ""
+    plan_id = store.resolve(reference) if reference else ""
     role = getattr(args, "role", "") or "all"
     if args.ack:
         acked = store.ack_steering(
@@ -2183,13 +2235,19 @@ def build_parser() -> argparse.ArgumentParser:
             "search or fetch arguments, agent transcripts, or history already "
             "committed, and it only recognises credentials with a familiar "
             "shape. Read what Grogu is about to publish; this is defence in "
-            "depth beneath that, not a replacement for it."
+            "depth beneath that, not a replacement for it. Exit codes: 0 "
+            "nothing blocking, 4 something blocking was found, 2 the arguments "
+            "were wrong."
         ),
     )
     guard_subparsers = guard.add_subparsers(dest="guard_command", required=True)
 
-    guard_scan_parser = guard_subparsers.add_parser("scan")
-    guard_scan_parser.add_argument("paths", nargs="*")
+    guard_scan_parser = guard_subparsers.add_parser(
+        "scan", help="scan files, directories, or stdin"
+    )
+    guard_scan_parser.add_argument(
+        "paths", nargs="*", help="files or directories; stdin when omitted"
+    )
     guard_scan_parser.add_argument(
         "--destination",
         choices=(grogu_privacy.LOCAL, grogu_privacy.REPOSITORY, grogu_privacy.PUBLISHED),
@@ -2205,9 +2263,22 @@ def build_parser() -> argparse.ArgumentParser:
     guard_staged_parser.add_argument(
         "--destination",
         choices=(grogu_privacy.LOCAL, grogu_privacy.REPOSITORY, grogu_privacy.PUBLISHED),
-        default=grogu_privacy.REPOSITORY,
+        default=None,
+        help=(
+            "default: published when the repository has a remote, since the "
+            "commit is on its way off the machine"
+        ),
     )
-    guard_staged_parser.add_argument("--personal", action="store_true")
+    guard_staged_parser.add_argument(
+        "--no-personal",
+        dest="personal",
+        action="store_false",
+        help=(
+            "only look for credentials. Personal data is checked by default: "
+            "a commit is the most common way it leaves the machine"
+        ),
+    )
+    guard_staged_parser.set_defaults(personal=True)
     guard_staged_parser.add_argument("--quiet", action="store_true")
     guard_staged_parser.set_defaults(handler=guard_staged)
 
@@ -2925,8 +2996,14 @@ def build_parser() -> argparse.ArgumentParser:
     plan_steer_parser.set_defaults(handler=plan_steer)
 
     plan_steering_parser = plan_subparsers.add_parser(
-        "steering", help="steering visible to a role", parents=[plan_common, role_common]
+        "steering", help="steering visible to a role", parents=[plan_common]
     )
+    plan_steering_parser.add_argument(
+        "--role",
+        choices=list(grogu_plans.ROLES) + ["all"],
+        help="role making the call (default: $GROGU_ROLE)",
+    )
+    plan_steering_parser.add_argument("plan", nargs="?", default="", help="plan id")
     plan_steering_parser.add_argument("--plan", dest="id")
     plan_steering_parser.add_argument(
         "--unread", action="store_true", help="only notes this role has not acked"

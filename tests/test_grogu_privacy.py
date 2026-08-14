@@ -14,11 +14,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 import grogu_privacy  # noqa: E402
+import grogu_tasks  # noqa: E402
 
 
 class DetectionTests(unittest.TestCase):
@@ -311,3 +313,27 @@ class JsonNoticeTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             grogu_cli.print_json([1, 2, 3])
         self.assertEqual(grogu_cli._PENDING_NOTICE, "steering: something")
+
+
+class ActorAndDestinationTests(unittest.TestCase):
+    """The guard let a machine hostname into a public commit. Twice."""
+
+    def test_the_recorded_actor_carries_no_hostname(self):
+        environment = dict(os.environ)
+        environment.pop("GROGU_ACTOR", None)
+        environment["USER"] = "charlie"
+        with mock.patch.dict(os.environ, environment, clear=True):
+            self.assertEqual(grogu_tasks.actor(), "charlie")
+
+    def test_a_secret_with_one_english_word_in_it_is_still_a_secret(self):
+        # A token was waved through because it contained "secret".
+        for value in ("xoxb-secret-9f3ad21b7c", "my-real-key-9f3a2b1c8d"):  # grogu-allow-secret
+            self.assertTrue(
+                grogu_privacy._looks_like_a_real_secret(value), value
+            )
+
+    def test_obvious_placeholders_are_still_ignored(self):
+        for value in ("your-api-key-here", "CHANGEME_token", "replace-me-please"):
+            self.assertFalse(
+                grogu_privacy._looks_like_a_real_secret(value), value
+            )
