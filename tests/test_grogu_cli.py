@@ -1651,6 +1651,51 @@ class SeaglassFlatteningTests(unittest.TestCase):
         rows = grogu_imessage._flatten_seaglass_result(payload)
         self.assertEqual([r["id"] for r in rows], [1, 2, 3])
 
+    def test_context_never_outranks_another_sessions_hit(self):
+        """Reading order, not just budget order.
+
+        Grouping the output by session put session 1's context -- usually
+        a message the user sent themselves, matching nothing -- above
+        session 2's actual match, so "the last thing Adrian sent" answered
+        with Adrian followed by the user's own chatter. The budget was
+        already spent hits-first, which is why a set-comparison test
+        passed while the order a caller actually reads was wrong.
+        """
+        payload = self.payload([
+            self.session(hits=[1], context=[10]),
+            self.session(hits=[2]),
+        ])
+        rows = grogu_imessage._flatten_seaglass_result(payload, limit=20)
+        self.assertEqual(
+            [(r["id"], r["kind"]) for r in rows],
+            [(1, "hit"), (2, "hit"), (10, "context")],
+        )
+
+    def test_matches_rank_first_even_without_a_limit(self):
+        """`match_score` ordering must not depend on `limit` being set.
+
+        Ranking lived inside the budget-sharing path, so a caller that
+        passed no limit got the session in the order it was sent -- the
+        matching message buried among its neighbours, which is the exact
+        failure the scoring exists to prevent.
+        """
+        session = {
+            "messages": [
+                {"message_id": 1, "ts": 1.0, "text": "chatter", "sender": "a", "match_score": 0},
+                {"message_id": 2, "ts": 2.0, "text": "the match", "sender": "b", "match_score": 3},
+                {"message_id": 3, "ts": 3.0, "text": "more chatter", "sender": "c", "match_score": 0},
+            ],
+            "context_messages": [],
+        }
+        rows = grogu_imessage._flatten_seaglass_result(self.payload([session]))
+        self.assertEqual([r["id"] for r in rows], [2, 1, 3])
+        self.assertEqual(
+            [r["id"] for r in grogu_imessage._flatten_seaglass_result(
+                self.payload([session]), limit=3)],
+            [2, 1, 3],
+            "ordering must not change with or without a limit",
+        )
+
 
 class CodemodeMcpExecTests(unittest.TestCase):
     """Exercises `grogu codemode exec` calling MCP tools end to end via the

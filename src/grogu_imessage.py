@@ -135,8 +135,6 @@ def _flatten_seaglass_result(payload: dict, limit: Optional[int] = None) -> List
         return []
     if payload.get("ordering") == "recent":
         return _newest_first(ranked, limit)
-    if limit is None:
-        return [row for rows in ranked for row in rows]
     return _share_budget(ranked, limit)
 
 
@@ -165,7 +163,7 @@ def _newest_first(ranked: List[List[dict]], limit: Optional[int]) -> List[dict]:
     return chosen + context[: max(0, limit - len(chosen))]
 
 
-def _share_budget(ranked: List[List[dict]], limit: int) -> List[dict]:
+def _share_budget(ranked: List[List[dict]], limit: Optional[int]) -> List[dict]:
     """Spread `limit` rows across ranked sessions: breadth first, then depth.
 
     Every session contributes one row before any session contributes a
@@ -185,8 +183,8 @@ def _share_budget(ranked: List[List[dict]], limit: int) -> List[dict]:
     never displaces a match. Session grouping is preserved in the output,
     so a caller reading top to bottom sees each conversation together.
     """
-    chosen: List[List[dict]] = [[] for _ in ranked]
-    budget = max(0, limit)
+    chosen = {"hit": [[] for _ in ranked], "context": [[] for _ in ranked]}
+    budget = None if limit is None else max(0, limit)
     for kind in ("hit", "context"):
         # A session's `messages` are the whole matched stretch of
         # conversation, and only some of them actually matched --
@@ -203,21 +201,31 @@ def _share_budget(ranked: List[List[dict]], limit: int) -> List[dict]:
             for rows in ranked
         ]
         cursors = [0] * len(ranked)
+        target = chosen[kind]
         # Breadth: one row each, in rank order.
         for index, queue in enumerate(queues):
             if budget == 0:
                 break
             if queue:
-                chosen[index].append(queue[0])
+                target[index].append(queue[0])
                 cursors[index] = 1
-                budget -= 1
+                if budget is not None:
+                    budget -= 1
         # Depth: the surplus follows the ranking.
         for index, queue in enumerate(queues):
-            while budget > 0 and cursors[index] < len(queue):
-                chosen[index].append(queue[cursors[index]])
+            while (budget is None or budget > 0) and cursors[index] < len(queue):
+                target[index].append(queue[cursors[index]])
                 cursors[index] += 1
-                budget -= 1
-    return [row for rows in chosen for row in rows]
+                if budget is not None:
+                    budget -= 1
+    # Every session's hits before any session's context. Grouping the
+    # output by session instead let session 1's *context* -- often a
+    # message the user sent themselves, matching nothing -- outrank
+    # session 2's actual match, which is the whole defect this function
+    # exists to prevent.
+    return [row for rows in chosen["hit"] for row in rows] + [
+        row for rows in chosen["context"] for row in rows
+    ]
 
 
 SEAGLASS_SESSIONS = 8
