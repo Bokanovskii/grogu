@@ -542,6 +542,78 @@ class PlanStoreTests(unittest.TestCase):
                 plan_id, name="api", paths=["src/api/**"], review="vibes"
             )
 
+    def test_harness_friction_pools_across_repositories(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        os.environ["GROGU_HOME"] = home.name
+        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        second = tempfile.TemporaryDirectory()
+        self.addCleanup(second.cleanup)
+        other = grogu_plans.PlanStore(Path(second.name))
+
+        self.store.note_friction(
+            "no command to diff two plan stages",
+            role=grogu_plans.ENGINEER,
+            target=grogu_plans.TARGET_HARNESS,
+        )
+        other.note_friction(
+            "plan status needs --json",
+            role=grogu_plans.TESTER,
+            target=grogu_plans.TARGET_HARNESS,
+        )
+        pooled = grogu_plans.harness_friction()
+        self.assertEqual(len(pooled), 2)
+        self.assertEqual(
+            {entry["repository"] for entry in pooled},
+            {self.root.name, Path(second.name).name},
+        )
+        # and it stays out of the repository's own report
+        self.assertEqual(self.store.friction()["notes"], [])
+        self.assertEqual(len(self.store.friction()["harness"]), 2)
+
+    def test_harness_friction_resolves(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        os.environ["GROGU_HOME"] = home.name
+        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        self.store.note_friction(
+            "a gap", role=grogu_plans.ENGINEER, target=grogu_plans.TARGET_HARNESS
+        )
+        self.assertTrue(
+            grogu_plans.resolve_harness_friction(1, resolution="added the command")
+        )
+        self.assertEqual(grogu_plans.harness_friction(), [])
+        self.assertFalse(grogu_plans.resolve_harness_friction(1, resolution="again"))
+
+    def test_unknown_friction_target_refused(self):
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.note_friction("a gap", target="everywhere")
+
+    def test_user_session_is_reminded_of_harness_friction_once_a_day(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        os.environ["GROGU_HOME"] = home.name
+        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        for index in range(grogu_plans.HARNESS_FRICTION_THRESHOLD):
+            self.store.note_friction(
+                f"gap {index}",
+                role=grogu_plans.ENGINEER,
+                target=grogu_plans.TARGET_HARNESS,
+            )
+        banner = grogu_plans.pending_banner(self.root)
+        self.assertIn("about Grogu itself", banner)
+        self.assertEqual(grogu_plans.pending_banner(self.root), "")
+
+    def test_below_the_threshold_nobody_is_nagged(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        os.environ["GROGU_HOME"] = home.name
+        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        self.store.note_friction(
+            "one gap", role=grogu_plans.ENGINEER, target=grogu_plans.TARGET_HARNESS
+        )
+        self.assertEqual(grogu_plans.pending_banner(self.root), "")
+
     def test_finalized_stages_stay_readable(self):
         plan_id = self.plan()
         self.complete_all(plan_id)

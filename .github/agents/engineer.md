@@ -118,5 +118,7 @@ them into one local integration branch for combined testing (see the
 
 If something in this pipeline wasted your time — an ambiguous plan section, a
 missing repository convention, a command that should exist — record it with
-`grogu plan friction --note "..."`. That is how the harness and the overlays get
+`grogu plan friction --note "..."`, or `--harness` when the problem is Grogu
+itself rather than this repository — that pool is read where Grogu gets fixed,
+and friction filed in the wrong place is friction nobody ever sees. That is how the harness and the overlays get
 better; complaining in a final message reaches nobody.

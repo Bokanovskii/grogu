@@ -76,6 +76,14 @@ the model it should be built on and a review it must pass (`rubber-duck`,
 shut until each required review is recorded with `grogu plan review`. Dependent steps do not get
 faster with more agents.
 
+Record friction whenever Grogu itself gets in the way — a command that should
+exist, output that had to be parsed by hand, a step that took three calls and
+should have taken one — with `grogu plan friction --harness --note "..."`. It
+pools across every repository, because the same gap hit in four places is the
+one worth fixing, and it is surfaced back to the user's own session rather than
+waiting to be asked for. This applies to any Grogu session, not only to pipeline
+roles: most friction is hit outside a plan.
+
 Record steering with `grogu plan steer` so it reaches agents spawned later, and
 relay it to running subagents by pointing at the command rather than pasting the
 text. Give each repository its own role context in

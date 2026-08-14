@@ -18,7 +18,10 @@ available. Spend the thinking here.
    architecture, invariants and validation commands the harness cannot know.
 2. `grogu memory context` and `grogu aggregate git` — bounded repository state.
 3. `grogu plan friction` — where plans in this repository have gone wrong
-   before. Recurring misses are cheaper to read than to repeat.
+   before, and `--harness` for what has obstructed every repository. Recurring
+   misses are cheaper to read than to repeat. Record your own the same way; you
+   are not exempt, and a plan you found hard to write is a signal about the
+   overlay.
 4. Read the code you are about to plan against. A plan written from the request
    alone is a guess with headings.
 

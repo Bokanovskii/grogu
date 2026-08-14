@@ -113,6 +113,12 @@ ROUTE_PLAN = "plan"
 ROUTE_DESIGN = "design"
 DEFECT_ROUTES = (ROUTE_IMPLEMENTATION, ROUTE_TEST, ROUTE_PLAN, ROUTE_DESIGN)
 
+HARNESS_FRICTION_THRESHOLD = 3
+
+TARGET_REPO = "repo"
+TARGET_HARNESS = "harness"
+FRICTION_TARGETS = (TARGET_REPO, TARGET_HARNESS)
+
 PASS = "pass"
 CHANGES = "changes"
 REVIEW_RUBBER_DUCK = "rubber-duck"
@@ -147,6 +153,47 @@ def max_rounds() -> int:
 def max_defect_rounds() -> int:
     raw = os.environ.get("GROGU_PLAN_MAX_DEFECT_ROUNDS", "")
     return int(raw) if raw.isdigit() and int(raw) > 0 else DEFAULT_MAX_DEFECT_ROUNDS
+
+
+def harness_friction_path() -> Path:
+    home = os.environ.get("GROGU_HOME", "").strip()
+    return (Path(home) if home else Path.home() / ".grogu") / "friction.json"
+
+
+def harness_friction(*, include_resolved: bool = False) -> list:
+    """Friction with Grogu itself, gathered from every repository."""
+    path = harness_friction_path()
+    if not path.exists():
+        return []
+    try:
+        entries = json.loads(path.read_text(encoding="utf8")).get("entries", [])
+    except (OSError, ValueError):
+        return []
+    if include_resolved:
+        return entries
+    return [entry for entry in entries if entry.get("status") == PENDING]
+
+
+def resolve_harness_friction(seq: int, *, resolution: str) -> bool:
+    path = harness_friction_path()
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf8"))
+    except (OSError, ValueError):
+        return False
+    for entry in payload.get("entries", []):
+        if entry.get("seq") == seq and entry.get("status") == PENDING:
+            entry["status"] = "resolved"
+            entry["resolution"] = resolution.strip()
+            entry["resolved_at"] = now()
+            break
+    else:
+        return False
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf8")
+    os.replace(temporary, path)
+    return True
 
 
 def head_commit(root: Optional[Path] = None) -> str:
@@ -480,7 +527,7 @@ def pending_banner(root: Optional[Path] = None) -> str:
             bound = store.session_binding()
             role, plan_id = bound.get("role", ""), plan_id or bound.get("plan", "")
         if not role:
-            return ""
+            return harness_friction_banner()
         pending = store.steering(role=role, plan_id=plan_id, unread=True)
     except (PlanError, OSError):
         return ""  # steering must never be the reason a command fails
@@ -505,6 +552,39 @@ def pending_banner(root: Optional[Path] = None) -> str:
             "  This steering blocks the stage gates until the architect revises the plan."
         )
     lines.append("───────────────────────────────────────────────────────")
+    return "\n".join(lines)
+
+
+def harness_friction_banner() -> str:
+    """Remind the user's own session of unreviewed friction with Grogu itself.
+
+    Friction that only surfaces when somebody remembers to ask for it is
+    friction nobody acts on. The user's session is where the harness actually
+    gets fixed, so the reminder belongs there — rate-limited to once a day,
+    because a nag on every command is itself friction.
+    """
+    entries = harness_friction(include_resolved=False)
+    if len(entries) < HARNESS_FRICTION_THRESHOLD:
+        return ""
+    stamp_path = harness_friction_path().with_name(".friction-reminded")
+    today = now()[:10]
+    try:
+        if stamp_path.exists() and stamp_path.read_text(encoding="utf8").strip() == today:
+            return ""
+        stamp_path.parent.mkdir(parents=True, exist_ok=True)
+        stamp_path.write_text(today, encoding="utf8")
+    except OSError:
+        return ""
+    repositories = sorted({entry.get("repository", "?") for entry in entries})
+    lines = [
+        "",
+        f"── {len(entries)} unreviewed friction note(s) about Grogu itself ──",
+    ]
+    for entry in entries[-5:]:
+        lines.append(f"  #{entry['seq']} [{entry.get('repository', '?')}] {entry['note']}")
+    lines.append(f"  from: {', '.join(repositories)}")
+    lines.append("  `grogu plan friction --harness` for all of them.")
+    lines.append("──────────────────────────────────────────────────────")
     return "\n".join(lines)
 
 
@@ -1982,11 +2062,34 @@ class PlanStore:
             "clean": not findings,
         }
 
-    def note_friction(self, note: str, *, plan_id: str = "", role: str = "") -> dict:
-        """Record friction an agent hit, for review rather than for nobody."""
+    def note_friction(
+        self,
+        note: str,
+        *,
+        plan_id: str = "",
+        role: str = "",
+        target: str = TARGET_REPO,
+    ) -> dict:
+        """Record friction an agent hit, for review rather than for nobody.
+
+        Friction with the *harness* is written to the user-scoped store rather
+        than this repository's, because it would otherwise land in the one
+        place its reader never looks: an engineer in some other repository
+        hitting a missing grogu command writes the complaint into that
+        repository, while the harness is fixed here. Cross-repository is also
+        the only scope at which the useful signal exists — the same gap hit in
+        four repositories is the one worth fixing.
+        """
         if not note.strip():
             raise PlanError("friction needs a note")
+        if target not in FRICTION_TARGETS:
+            raise PlanError(
+                f"unknown friction target {target!r}; expected one of "
+                + ", ".join(FRICTION_TARGETS)
+            )
         role = role or current_role() or "unknown"
+        if target == TARGET_HARNESS:
+            return self._note_harness_friction(note, plan_id=plan_id, role=role)
         with self.locked():
             payload = self._read_json(self.friction_path)
             payload.setdefault("schema_version", SCHEMA_VERSION)
@@ -2004,6 +2107,33 @@ class PlanStore:
             self._write_json(self.friction_path, payload)
             return entry
 
+    def _note_harness_friction(self, note: str, *, plan_id: str, role: str) -> dict:
+        path = harness_friction_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {}
+        if path.exists():
+            try:
+                payload = json.loads(path.read_text(encoding="utf8"))
+            except (OSError, ValueError):
+                payload = {}
+        entries = payload.setdefault("entries", [])
+        entry = {
+            "seq": len(entries) + 1,
+            "at": now(),
+            "actor": actor(),
+            "role": role,
+            "plan": plan_id,
+            "repository": self.root.name,
+            "repository_path": str(self.root),
+            "note": note.strip(),
+            "status": PENDING,
+        }
+        entries.append(entry)
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf8")
+        os.replace(temporary, path)
+        return entry
+
     def friction(self, *, include_resolved: bool = False) -> dict:
         """Recorded friction plus retro findings, aggregated across plans.
 
@@ -2013,6 +2143,7 @@ class PlanStore:
         """
         payload = self._read_json(self.friction_path)
         entries = payload.get("entries", [])
+        harness = harness_friction(include_resolved=include_resolved)
         if not include_resolved:
             entries = [entry for entry in entries if entry.get("status") == PENDING]
 
@@ -2036,6 +2167,7 @@ class PlanStore:
             bucket["examples"] = examples.get(bucket["signal"], [])[:5]
         return {
             "notes": entries,
+            "harness": harness,
             "signals": sorted(
                 totals.values(), key=lambda bucket: (-bucket["plans"], -bucket["count"])
             ),

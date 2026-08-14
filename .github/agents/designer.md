@@ -119,3 +119,18 @@ grogu plan amend <id> --role designer --claim "..." --evidence "..."
 When the tester routes a design defect to you, the built result did not match
 the intent. Decide whether the spec was ambiguous (your fix) or the
 implementation diverged (the engineer's), and say which.
+
+## Friction
+
+If something here wasted your time — a missing scope, a spec section that never
+earns its place, a principle store that could not express what the user wanted —
+record it:
+
+```sh
+grogu plan friction --note "..."              # this repository's design context
+grogu plan friction --harness --note "..."    # Grogu itself got in the way
+```
+
+Use `--harness` when the problem is the tooling rather than this repository,
+because that pool is read where Grogu is actually fixed. Complaining in a final
+message reaches nobody.

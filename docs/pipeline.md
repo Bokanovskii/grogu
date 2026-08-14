@@ -291,6 +291,25 @@ Each signal points at what should change:
 That last one is the most valuable: every time the user has to steer, something
 they considered obvious was missing from the overlay.
 
+Friction comes in two kinds and they belong in different places. A gap in this
+repository's conventions is this repository's problem and stays in
+`.grogu/plans/friction.json`. A gap in *Grogu* — a command that should exist,
+output that had to be parsed by hand, three calls where one would do — goes to
+`$GROGU_HOME/friction.json` with `--harness`, pooled across every repository.
+
+That split matters more than it looks. An engineer in some unrelated repository
+who hits a missing grogu command would otherwise write the complaint into that
+repository, while the harness is fixed here — filed in the one place its reader
+never looks. Pooling is also the only scope at which the signal exists: the same
+gap hit once is an anecdote, hit in four repositories it is the next change.
+
+Nobody has to remember to read it. Once three notes are pending, the user's own
+session is told, on whatever `grogu` command it next runs, at most once a day —
+and never on the friction report itself, which would spend the day's one prompt
+on the command that least needed it. Every role records friction, including the
+architect, and so does an ordinary Grogu session outside any plan, which is
+where most of it is actually hit.
+
 `grogu plan friction` aggregates across plans and marks signals that have
 repeated. One bad plan is noise; the same finding three times is a change to
 make. Agents also record friction directly with `grogu plan friction --note`,

@@ -1623,15 +1623,24 @@ def plan_retro(args: argparse.Namespace) -> int:
 
 def plan_friction(args: argparse.Namespace) -> int:
     store = plan_store(args)
+    target = grogu_plans.TARGET_HARNESS if args.harness else grogu_plans.TARGET_REPO
     if args.note:
         entry = store.note_friction(
             args.note,
             plan_id=store.resolve(args.id) if args.id else "",
             role=getattr(args, "role", "") or "",
+            target=target,
         )
-        print(f"recorded friction #{entry['seq']} from the {entry['role']}")
+        where = "about Grogu itself" if args.harness else "about this repository"
+        print(f"recorded friction #{entry['seq']} {where} from the {entry['role']}")
         return 0
     if args.resolve:
+        if args.harness:
+            done = grogu_plans.resolve_harness_friction(
+                args.resolve, resolution=args.resolution or "addressed"
+            )
+            print("resolved" if done else "no such pending harness friction")
+            return 0 if done else 2
         entry = store.resolve_friction(args.resolve, note=args.resolution or "addressed")
         print(f"friction #{entry['seq']} resolved")
         return 0
@@ -1639,6 +1648,17 @@ def plan_friction(args: argparse.Namespace) -> int:
     if args.json:
         print_json(report)
         return 0
+    if args.harness:
+        for entry in report["harness"]:
+            print(f"#{entry['seq']}  [{entry.get('repository', '?')}] {entry['note']}")
+        if not report["harness"]:
+            print("no unreviewed friction with the harness")
+        return 0
+    if report["harness"]:
+        print(
+            f"({len(report['harness'])} note(s) about the harness itself; "
+            "`--harness` to see them)"
+        )
     for entry in report["notes"]:
         plan = f" ({entry['plan']})" if entry.get("plan") else ""
         print(f"#{entry['seq']}  {entry['role']}{plan}: {entry['note']}")
@@ -2491,6 +2511,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan_friction_parser.add_argument("--resolve", type=int, metavar="SEQ")
     plan_friction_parser.add_argument("--resolution")
     plan_friction_parser.add_argument("--all", action="store_true")
+    plan_friction_parser.add_argument(
+        "--harness",
+        action="store_true",
+        help="friction with Grogu itself, pooled across every repository",
+    )
     plan_friction_parser.add_argument("--json", action="store_true")
     plan_friction_parser.set_defaults(handler=plan_friction)
 
@@ -2814,8 +2839,19 @@ def main(arguments: list[str]) -> int:
     finally:
         # Steering rides out on whatever the agent already ran, so nobody has to
         # remember to poll for it.
-        banner = grogu_plans.pending_banner(
-            Path(parsed.repo).expanduser() if getattr(parsed, "repo", None) else None
+        # Not on the friction report itself: it already shows these notes, and
+        # spending the once-a-day reminder on the one command that did not need
+        # it wastes the only prompt the user gets.
+        reviewing_friction = (
+            getattr(parsed, "command", "") == "plan"
+            and getattr(parsed, "plan_command", "") == "friction"
+        )
+        banner = (
+            ""
+            if reviewing_friction
+            else grogu_plans.pending_banner(
+                Path(parsed.repo).expanduser() if getattr(parsed, "repo", None) else None
+            )
         )
         if banner:
             print(banner, file=sys.stderr)
