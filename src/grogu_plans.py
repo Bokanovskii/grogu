@@ -890,6 +890,12 @@ def pending_banner(root: Optional[Path] = None, plan_hint: str = "") -> str:
             role, plan_id = bound.get("role", ""), plan_id or bound.get("plan", "")
         if not role:
             return harness_friction_banner(root)
+        if plan_id:
+            # Every command an agent runs is proof it exists. Without this the
+            # only agents the plan knew about were the ones that had already
+            # read something, so "which of my two engineers has not seen this
+            # correction" was unanswerable until one of them answered it.
+            store.note_agent_presence(plan_id, role)
         pending = store.steering(role=role, plan_id=plan_id, unread=True)
     except (PlanError, OSError):
         return ""  # steering must never be the reason a command fails
@@ -2806,6 +2812,20 @@ class PlanStore:
             "steering_undelivered": self._steering_undelivered(manifest),
         }
 
+    def note_agent_presence(self, plan_id: str, role: str) -> None:
+        """Record that an agent of this role is alive on this plan."""
+        key = self._ack_key(role)
+        try:
+            with self.locked():
+                manifest = self.load(plan_id)
+                seen = manifest.setdefault("agents_seen", {})
+                if seen.get(key) == now()[:16]:
+                    return
+                seen[key] = now()[:16]
+                self._write_json(self.manifest_path(plan_id), manifest)
+        except (PlanError, OSError):
+            return  # presence is a convenience; it must never fail a command
+
     def _steering_undelivered(self, manifest: dict) -> list:
         """Notes no agent of the target role has read yet.
 
@@ -2822,6 +2842,8 @@ class PlanStore:
             ("plan", manifest.get("steering", []), manifest.get("steering_acked", {})),
         ):
             agent_keys = {key: int(seq or 0) for key, seq in acked.items() if "@" in key}
+            for key in manifest.get("agents_seen", {}):
+                agent_keys.setdefault(key, 0)
             # Only roles that have actually shown up can be behind on
             # anything. Reporting a note as unread by a designer who was
             # never spawned would make the line noise, and a line that is
@@ -2831,15 +2853,11 @@ class PlanStore:
                 target = note.get("role", "all")
                 roles = [role for role in (ROLES if target == "all" else (target,))]
                 seq = note.get("seq", 0)
-                unread = [
-                    role
-                    for role in roles
-                    if role in present
-                    and not any(
-                        key.split("@", 1)[0] == role and value >= seq
-                        for key, value in agent_keys.items()
-                    )
-                ]
+                unread = sorted(
+                    key
+                    for key, value in agent_keys.items()
+                    if key.split("@", 1)[0] in roles and value < seq
+                )
                 if not present:
                     # Nothing has run yet, so we know nothing about who is
                     # behind beyond who the note was aimed at.

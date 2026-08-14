@@ -1881,7 +1881,7 @@ class SteeringDeliveryVisibilityTests(unittest.TestCase):
         unread = {
             tuple(note["unread_by"]) for note in self.store.summary(plan)["steering_undelivered"]
         }
-        self.assertEqual(unread, {("engineer", "tester")})
+        self.assertEqual(unread, {("engineer@engineer-one", "tester@tester-one")})
 
 
 class PlanRevisionTests(unittest.TestCase):
@@ -2053,3 +2053,29 @@ class ParallelCompletionTests(unittest.TestCase):
             self.store.add_workstream(
                 plan, name="parse", paths=["src/other.py"], replace=True
             )
+
+
+class AgentPresenceTests(unittest.TestCase):
+    """Which of my two engineers has not seen the correction."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+
+    def test_an_agent_that_has_never_acked_is_still_known_to_be_behind(self):
+        plan = self.store.create("presence")["id"]
+        os.environ["GROGU_AGENT"] = "engineer-two"
+        self.addCleanup(os.environ.pop, "GROGU_AGENT", None)
+        self.store.note_agent_presence(plan, "engineer")
+        os.environ["GROGU_AGENT"] = "engineer-one"
+        self.store.note_agent_presence(plan, "engineer")
+        self.store.steer("strip thousands separators", role="engineer", plan_id=plan)
+        self.store.ack_steering(role="engineer", plan_id=plan, agent="engineer-one")
+        undelivered = self.store.summary(plan)["steering_undelivered"]
+        self.assertEqual(
+            [note["unread_by"] for note in undelivered], [["engineer@engineer-two"]]
+        )

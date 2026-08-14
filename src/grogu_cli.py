@@ -1526,7 +1526,11 @@ def plan_status(args: argparse.Namespace) -> int:
         print("  the user asked for this plan; it needs `grogu plan approve` before work starts")
     for stream in summary["workstreams"]:
         depends = f" after {', '.join(stream['depends_on'])}" if stream["depends_on"] else ""
-        print(f"  workstream {stream['name']}: {', '.join(stream['paths'])}{depends}")
+        state = stream.get("state", grogu_plans.PENDING)
+        print(
+            f"  workstream {stream['name']} [{state}]: "
+            f"{', '.join(stream['paths'])}{depends}"
+        )
     for amendment in summary["open_amendments"]:
         print(f"  amendment {amendment['id']} from {amendment['raised_by']}: {amendment['claim']}")
     for defect in summary["open_defects"]:
@@ -1539,7 +1543,7 @@ def plan_status(args: argparse.Namespace) -> int:
         if len(text) > 90:
             text = text[:87] + "..."
         who = ", ".join(note.get("unread_by") or [note["role"]])
-        print(f"  steering #{note['seq']} has not reached the {who}: {text}")
+        print(f"  steering #{note['seq']} has not reached {who}: {text}")
     return 0
 
 
@@ -1938,7 +1942,19 @@ def plan_steering(args: argparse.Namespace) -> int:
             shown += 1
     if unread_only:
         if not shown:
-            print(f"no unread steering for the {role}")
+            # An engineer that was relayed a note and then polled saw the same
+            # blank answer it would get if the note had never been recorded,
+            # and could not tell the two apart. The count is the cheapest
+            # possible way to say "it is here, you have had it".
+            history = store.steering(role=role, plan_id=plan_id, unread=False)
+            seen = len(history.get("repository", [])) + len(history.get("plan", []))
+            if seen:
+                print(
+                    f"no unread steering for the {role} "
+                    f"({seen} already read; `--all` replays them)"
+                )
+            else:
+                print(f"no steering for the {role} on this plan")
         else:
             print(f"({shown} shown once and marked read; `--all` replays the history)")
         store.ack_steering(role=role, plan_id=plan_id)

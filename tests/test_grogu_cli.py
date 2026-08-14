@@ -1471,4 +1471,4 @@ class PlanSteeringReadTests(unittest.TestCase):
         plan = self._plan()
         self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
         status = self.run_cli("plan", "status", plan)
-        self.assertIn("has not reached the engineer", status.stdout)
+        self.assertIn("has not reached engineer", status.stdout)
