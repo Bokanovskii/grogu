@@ -248,7 +248,10 @@ Each repository supplies its own role context in
 `.grogu/roles/{architect,designer,engineer,tester}.md`, which `grogu plan brief` merges
 with the shared contract. `grogu plan steer` records role-scoped steering that
 reaches agents spawned later and rides out on the output of any `grogu` command a
-running agent happens to run. `grogu plan friction --harness` pools complaints about Grogu itself across every
+running agent happens to run. `grogu watch` is the other direction: a live board
+of which agents are running, what each last did, and what is blocking — assembled
+from the commands agents already run, so no model spends a token producing it.
+`grogu plan friction --harness` pools complaints about Grogu itself across every
 repository and reminds the user's session once three are pending, because
 friction filed where its reader never looks is friction nobody fixes. Those
 complaints are clustered rather than counted, and a cluster that is repeated

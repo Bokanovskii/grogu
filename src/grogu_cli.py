@@ -13,6 +13,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -31,6 +32,7 @@ import grogu_personal_memory
 import grogu_plans
 import grogu_telemetry
 import grogu_tasks
+import grogu_watch
 import grogu_worktrees
 
 VERSION = "0.1.0"
@@ -1178,6 +1180,94 @@ def task_inbox(args: argparse.Namespace) -> int:
     return 0
 
 
+def _record_activity(parsed: argparse.Namespace) -> None:
+    """Log that a grogu command ran, so `grogu watch` can show who is working.
+
+    Subcommand name only. The arguments are exactly where the private text
+    lives, and this file is never read by anyone until something has gone wrong.
+    """
+    try:
+        command = getattr(parsed, "command", "") or ""
+        sub = ""
+        for attribute in ("plan_command", "design_command", "task_command"):
+            sub = getattr(parsed, attribute, "") or ""
+            if sub:
+                break
+        # `--role` usually names the caller, but on `plan steer` it names the
+        # *target* — reading it there would report the user's own steering as
+        # the steered agent doing work, which is a board that lies.
+        claimed_role = "" if sub == "steer" else (getattr(parsed, "role", "") or "")
+        role = grogu_plans.current_role() or claimed_role
+        plan = os.environ.get("GROGU_PLAN", "").strip()
+        # A plan named on the command line identifies the agent just as well as
+        # the environment variable, and subagents pass it far more often.
+        for attribute in ("plan", "id"):
+            candidate = getattr(parsed, attribute, "") or ""
+            if isinstance(candidate, str) and candidate.startswith("p-"):
+                plan = plan or candidate
+                break
+        cwd = str(Path.cwd())
+        if not role:
+            try:
+                bound = grogu_plans.PlanStore(
+                    Path(parsed.repo).expanduser() if getattr(parsed, "repo", None) else None
+                ).session_binding()
+                role, plan = bound.get("role", ""), plan or bound.get("plan", "")
+            except (grogu_plans.PlanError, OSError):
+                pass
+        grogu_watch.record(
+            command=f"{command} {sub}".strip(),
+            role=role,
+            plan=plan,
+            repository=Path(cwd).name,
+            cwd=cwd,
+            exit_code=0,
+        )
+    except Exception:
+        return  # watching must never be the reason a command fails
+
+
+def _plan_summaries(args: argparse.Namespace) -> dict:
+    summaries: dict = {}
+    try:
+        store = grogu_plans.PlanStore(
+            Path(args.repo).expanduser() if getattr(args, "repo", None) else None
+        )
+        for plan in store.list_plans():
+            if plan.get("status") == grogu_plans.SUPERSEDED:
+                continue
+            summaries[plan["id"]] = store.summary(plan["id"])
+    except (grogu_plans.PlanError, OSError):
+        return {}
+    return summaries
+
+
+def watch(args: argparse.Namespace) -> int:
+    state = grogu_watch.board(
+        window_minutes=args.window, plan_summaries=_plan_summaries(args)
+    )
+    if args.json:
+        print_json(state)
+        return 0
+    if not args.follow:
+        print(grogu_watch.render(state, window_minutes=args.window))
+        return 0
+    try:
+        while True:
+            # Recomputed every pass: a board that shows the plan state from when
+            # you started watching is worse than no board.
+            state = grogu_watch.board(
+                window_minutes=args.window, plan_summaries=_plan_summaries(args)
+            )
+            sys.stdout.write("\033[2J\033[H")
+            sys.stdout.write(grogu_watch.render(state, window_minutes=args.window))
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        return 0
+
+
 def plan_store(args: argparse.Namespace) -> grogu_plans.PlanStore:
     return grogu_plans.PlanStore(Path(args.repo).expanduser() if args.repo else None)
 
@@ -1828,6 +1918,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparser = subparsers.add_parser("doctor")
     subparser.set_defaults(handler=doctor)
+
+    watch_parser = subparsers.add_parser(
+        "watch", help="see which agents are running and what is blocking them"
+    )
+    watch_parser.add_argument("--repo")
+    watch_parser.add_argument(
+        "--window", type=int, default=grogu_watch.DEFAULT_WINDOW_MINUTES,
+        help="how many minutes of activity to consider (default 120)",
+    )
+    watch_parser.add_argument(
+        "-f", "--follow", action="store_true", help="redraw until interrupted"
+    )
+    watch_parser.add_argument("--interval", type=float, default=5.0)
+    watch_parser.add_argument("--json", action="store_true")
+    watch_parser.set_defaults(handler=watch)
 
     trace = subparsers.add_parser("trace")
     trace_subparsers = trace.add_subparsers(dest="trace_command", required=True)
@@ -2846,6 +2951,7 @@ GROGU_COMMANDS = frozenset(
         "design",
         "session",
         "worktree",
+        "watch",
     }
 )
 
@@ -2885,6 +2991,7 @@ def main(arguments: list[str]) -> int:
         # Not on the friction report itself: it already shows these notes, and
         # spending the once-a-day reminder on the one command that did not need
         # it wastes the only prompt the user gets.
+        _record_activity(parsed)
         reviewing_friction = (
             getattr(parsed, "command", "") == "plan"
             and getattr(parsed, "plan_command", "") == "friction"

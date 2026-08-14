@@ -29,78 +29,35 @@ designer, engineer or tester — `grogu plan triage` returns `software: false` f
 them and the answer is simply the answer. The word "plan" in "plan a trip" is
 not a planning cycle.
 
-Substantial work *on this repository* is planned before it is built. Run `grogu plan triage
-"<request>"` first: it is deterministic and free, and it exists so that
+Substantial work on a repository is planned before it is built. Run `grogu plan
+triage "<request>"` first: it is deterministic and free, and it exists so that
 questions, steering, retrieval and obvious one-line changes are answered
-directly instead of burning a planning cycle. When it returns `plan`, route
-through the architect, designer, engineer and tester roles rather than
-implementing
-straight away (invoke the `grogu-pipeline` skill for the stage, gate and loop
-steps, and see `docs/pipeline.md` for the design).
-
-Every plan produces at least an implementation plan and a testing plan, plus an
-evaluation plan when a green test suite would not tell you the change was worth
-making, and a design stage when the change has a user-visible surface. The
-design spec is deliberately *not* sealed from the engineer: a test is a proxy
-for correctness, so showing it corrupts the signal, but a design spec is the
-requirement itself. After implementation the designer looks at the interface
-running and records `grogu plan design-review`; the test gate stays shut until
-that pass exists, and a pass requires evidence. The testing and evaluation plans are sealed from the engineer: an
-implementation written against its own tests only proves the tests were
-satisfiable. Never decode a sealed stage to route around that.
+directly instead of burning a planning cycle. When it returns `plan`, invoke the
+`grogu-pipeline` skill and follow it — the roles, the sealed stages, the review
+and design gates, the loops and the finish steps are all specified there. Do not
+reconstruct that process from memory; the skill is the source of truth and
+`docs/pipeline.md` is the reasoning behind it.
 
 Treat `grogu plan gate` as binding. It is a state check rather than advice, and
 when the user asked for a plan directly it refuses work until they approve it —
-autopilot does not waive user review.
-
-The architect researches anything external before choosing it — current
-versions, maintenance status, limits, pricing — rather than relying on model
-recall, and cites the source and date in the plan. Stale architecture advice is
-indistinguishable from current advice until it costs a rewrite.
-
-The architect owns the plan and is the only role that may change it. It must
-verify an amendment against the code itself before resolving it; taking another
-agent's word for it is how a wrong plan becomes an agreed plan. When the
-engineer and tester stop converging, the escalation goes to the architect, not
-to the user; only disagreements about intent reach the user.
-
-Route every test failure to whoever owns it — implementation defects to the
-engineer, a broken harness to the tester, an unverifiable plan to the architect,
-an interface that does not match its spec to the designer.
-Misrouted failures waste more time than the failures themselves.
-
-Parallelise only along workstreams the architect declared with disjoint file
-sets and a clean `grogu plan workstreams --check`. A workstream may also carry
-the model it should be built on and a review it must pass (`rubber-duck`,
-`code-review`, `security-review`); both are assignments, and the test gate stays
-shut until each required review is recorded with `grogu plan review`. Dependent steps do not get
-faster with more agents.
+autopilot does not waive user review. The testing and evaluation plans are
+sealed from the engineer, because an implementation written against its own
+tests only proves the tests were satisfiable; never decode a sealed stage to
+route around that.
 
 Record friction whenever Grogu itself gets in the way — a command that should
 exist, output that had to be parsed by hand, a step that took three calls and
-should have taken one — with `grogu plan friction --harness --note "..."`. It
-pools across every repository, because the same gap hit in four places is the
-one worth fixing, and it is surfaced back to the user's own session rather than
-waiting to be asked for. This applies to any Grogu session, not only to pipeline
-roles: most friction is hit outside a plan.
-
-When a session in *this* repository is told a friction cluster is ripe — the
-same complaint from two repositories, three hits, or thirty days open — treat it
-as available work and propose it, rather than noting it and moving on. This is
-the only repository where that work can be done. Claim it with `grogu plan
-friction --claim <id> --reference <pr>` when the PR goes up so it is not proposed
-twice, and `--harness --resolve <seq>` when it ships.
+should have taken one — with `grogu plan friction --harness --note "..."`, from
+any session, inside a plan or not. It pools across every repository and is
+surfaced back to the user unprompted. When it reports a cluster as ripe, the fix
+belongs in the Grogu checkout, and a session there should propose that work
+rather than noting it and moving on.
 
 Record steering with `grogu plan steer` so it reaches agents spawned later, and
 relay it to running subagents by pointing at the command rather than pasting the
 text. Give each repository its own role context in
 `.grogu/roles/{architect,designer,engineer,tester}.md` instead of putting
 repository-specific knowledge in the harness.
-
-After work lands, run `grogu plan finalize` so the pull request carries the plans
-it implements, then `grogu plan retro` and `grogu plan friction`. Accepted
-amendments, escalations and user steering are planning misses: fix the role
-overlay or the harness, not just the plan in front of you.
 
 Record and query the cross-project relationship catalog with `grogu project
 {init, list, relate, graph}`, not by hand-tracking which repositories depend
@@ -110,16 +67,12 @@ Run `grogu doctor` when the environment seems misconfigured (missing Copilot
 binary, missing or unreadable `.github/AGENTS.md`, trace/catalog database
 paths) before assuming a code change is required.
 
-At the start of every launch, Grogu fast-forwards the primary checkout's
-clean `main` to `origin/main` (never switching branches or discarding
-work), then checks for stale self-modification worktrees (branch merged
-into `main`, remote branch deleted, or pull request merged per `gh`) and
-removes any with no uncommitted changes; `grogu doctor` reports whether
-`main` is behind `origin/main` and any stale worktrees still standing. Use
-`grogu worktree list` / `grogu worktree prune [--dry-run]` to inspect or
-clean them up by hand, `GROGU_SYNC_MAIN=0` to disable the automatic main
-sync, and `GROGU_PRUNE_WORKTREES=0` to disable the automatic worktree
-check.
+Each launch fast-forwards the primary checkout's clean `main` to `origin/main`
+(never switching branches or discarding work) and removes stale self-modification
+worktrees with no uncommitted changes. `grogu doctor` reports what is behind or
+still standing; `grogu worktree list` / `grogu worktree prune [--dry-run]`
+inspect or clean by hand, and `GROGU_SYNC_MAIN=0` / `GROGU_PRUNE_WORKTREES=0`
+disable each.
 
 For coding work, explore narrowly: inspect Git state and project instructions, locate the relevant implementation and tests, trace the smallest useful call chain, edit minimally, and run targeted validation. Do not claim success without evidence.
 

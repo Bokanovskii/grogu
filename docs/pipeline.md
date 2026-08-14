@@ -242,6 +242,32 @@ sequence-numbered notes, and delivery has three paths:
 Ack watermarks are per role rather than per agent, which is why the brief ships
 the complete set and only mid-flight polling uses the delta.
 
+### Seeing what to steer
+
+Steering the pipeline while blind to it is guessing, so `grogu watch` shows the
+board: every agent active in the window, its role and plan, the last `grogu`
+command it ran and how long ago, how many of its calls failed, and — per plan —
+the stage states, open defects, open amendments, escalations, and the notes each
+role has not read yet. `-f` redraws it; `--json` is for scripting.
+
+The feed underneath it is passive by design. No agent is asked to report status,
+and no model spends a token producing it: every `grogu` invocation already passes
+through a single exit path, so that path records that it happened. An agent that
+has gone quiet is visible precisely because the record is a side effect of work
+rather than a description of it — a stuck agent stops emitting, and a lying agent
+cannot say otherwise.
+
+Two deliberate limits. Only the *subcommand name* is stored, never arguments:
+`grogu plan steer "…"` and `grogu plan friction --note "…"` carry exactly the
+text that should not accumulate in a file nobody remembers exists. And the log
+lives in `GROGU_HOME`, not in a repository, so agents spread across worktrees
+appear on one board and nothing about it is ever committed.
+
+Agent identity is `(working directory, role, plan)`. When `GROGU_ROLE` is unset
+the role comes from the session binding recorded for that directory, so a user
+session sharing a directory with a bound agent inherits its label. Give each
+agent its own worktree and the board stays honest.
+
 ## The architect assigns, it does not just describe
 
 A workstream carries more than a file set. It carries the model it should be
