@@ -146,7 +146,19 @@ FRICTION_STALE_DAYS = 30
 
 TARGET_REPO = "repo"
 TARGET_HARNESS = "harness"
-FRICTION_TARGETS = (TARGET_REPO, TARGET_HARNESS)
+# A note that quotes a grogu command, or names the harness or one of its
+# roles' commands, is about the harness no matter which bucket the caller
+# aimed at.
+_HARNESS_NOTE_PATTERN = re.compile(
+    r"(?:^|[\s`'\"(])grogu[\s`'\"),.:]|\bgrogu\b.*\b(?:command|flag|CLI|--\w)"
+    r"|\bthe harness\b",
+    re.IGNORECASE,
+)
+# "repo-only" is "repo, and I mean it" -- it opts out of the content-based
+# reroute below for the rare note that quotes a grogu command while being
+# genuinely about this project.
+TARGET_REPO_ONLY = "repo-only"
+FRICTION_TARGETS = (TARGET_REPO, TARGET_HARNESS, TARGET_REPO_ONLY)
 
 PASS = "pass"
 CHANGES = "changes"
@@ -3031,17 +3043,126 @@ class PlanStore:
                 plain.write_text(body, encoding="utf8")
                 sealed_path.unlink()
                 emitted.append(str(plain.relative_to(self.root)))
+            record = self._plan_record(manifest)
+            leaks = grogu_privacy.blocking(
+                grogu_privacy.scan(record, path="record"),
+                destination=grogu_privacy.PUBLISHED,
+            )
+            if leaks:
+                raise PlanError(
+                    f"refusing to finalize {plan_id}: the plan record contains "
+                    "data that must not be published.\n"
+                    + grogu_privacy.report(leaks)
+                )
+            record_path = self.plan_dir(plan_id) / "record.md"
+            record_path.write_text(record, encoding="utf8")
             manifest["status"] = COMPLETE
             manifest["finalized_at"] = now()
             manifest["sealed"] = False
             manifest["finalized_incomplete"] = blockers if force else []
             self._save(manifest, "finalized", note=note, forced=bool(blockers and force))
+            # Everything readable in the plan directory ships, not only the
+            # stages this call happened to unseal: implementation.md was
+            # never sealed and is the one a reviewer reads first.
+            shippable = sorted(
+                str(path.relative_to(self.root))
+                for path in self.plan_dir(plan_id).glob("*.md")
+            )
+            staged = self._stage_for_review(shippable)
             return {
                 "plan": plan_id,
                 "emitted": emitted,
+                "staged": staged,
                 "status": COMPLETE,
                 "shipped_incomplete": blockers if force else [],
             }
+
+    def _stage_for_review(self, paths: list) -> list:
+        """Put the plans in the index, because "remember to stage them" lost.
+
+        Finalize used to unseal the plans and print a sentence asking someone
+        to `git add` them. The tester that ran it reported the plan directory
+        still sitting untracked afterwards. The whole point of finalizing is
+        that the pull request carries the plan it implements, so the command
+        that finalizes does the staging.
+
+        Only the Markdown is staged; manifest.json stays local because it
+        carries session ids, actor strings and the full text of every
+        amendment, which is working state rather than an account.
+        """
+        if not paths:
+            return []
+        try:
+            inside = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+            )
+            if inside.returncode != 0:
+                return []
+            added = subprocess.run(
+                ["git", "add", "--", *paths],
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+            )
+            return list(paths) if added.returncode == 0 else []
+        except OSError:
+            return []
+
+    def _plan_record(self, manifest: dict) -> str:
+        """The one-page account a reviewer wants and manifest.json is not."""
+        plan_id = manifest["id"]
+        lines = [
+            f"# {manifest.get('title', plan_id)}",
+            "",
+            f"Plan `{plan_id}`. This is the account of how the plan changed while",
+            "it was being carried out; the stage files next to it are the plan.",
+            "",
+        ]
+        declined = manifest.get("declined_stages", {})
+        if declined:
+            lines.append("## Stages judged unnecessary")
+            lines.append("")
+            for stage, decision in sorted(declined.items()):
+                lines.append(f"- **{stage}** — {decision.get('why', '')}")
+            lines.append("")
+        accepted = [
+            amendment
+            for amendment in manifest.get("amendments", [])
+            if amendment.get("status") == ACCEPTED
+        ]
+        if accepted:
+            lines.append("## Plan changes accepted mid-flight")
+            lines.append("")
+            for amendment in accepted:
+                lines.append(
+                    f"- **{amendment['id']}** (raised by the "
+                    f"{amendment.get('raised_by') or amendment.get('role') or 'engineer'}): "
+                    f"{amendment.get('claim', '')}"
+                )
+                if amendment.get("reason"):
+                    lines.append(f"  - resolved: {amendment['reason']}")
+            lines.append("")
+        defects = manifest.get("defects", [])
+        if defects:
+            lines.append("## Defects found by the tester")
+            lines.append("")
+            for defect in defects:
+                lines.append(
+                    f"- **{defect['id']}** ({defect.get('status', '?')}, "
+                    f"routed to {defect.get('owner', '?')}): {defect.get('report', '')}"
+                )
+            lines.append("")
+        steering = manifest.get("steering", [])
+        if steering:
+            lines.append("## Corrections from the user")
+            lines.append("")
+            for note in steering:
+                lines.append(f"- {note.get('text', '')}")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
 
     def stage_path(self, plan_id: str, stage: str) -> Path:
         if stage not in STAGES:
@@ -3176,6 +3297,17 @@ class PlanStore:
             "clean": not findings,
         }
 
+    def names_the_harness(self, note: str) -> bool:
+        """Is this complaint about grogu, whatever flag the caller passed?
+
+        Nineteen friction notes were filed across five dogfood repositories
+        and fifteen of them named a failing `grogu` command while omitting
+        `--harness`, so they landed in a per-repository file the harness
+        maintainer never reads. Asking agents to remember a flag did not
+        work; the note says what it is about.
+        """
+        return bool(_HARNESS_NOTE_PATTERN.search(note))
+
     def note_friction(
         self,
         note: str,
@@ -3202,6 +3334,10 @@ class PlanStore:
                 + ", ".join(FRICTION_TARGETS)
             )
         role = role or current_role() or "unknown"
+        if target == TARGET_REPO_ONLY:
+            target = TARGET_REPO
+        elif target == TARGET_REPO and self.names_the_harness(note):
+            target = TARGET_HARNESS
         if target == TARGET_HARNESS:
             # This note leaves the repository it was written in: it is pooled
             # across every repository and later proposed as work in the Grogu

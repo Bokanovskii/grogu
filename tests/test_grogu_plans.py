@@ -549,7 +549,7 @@ class PlanStoreTests(unittest.TestCase):
         plan_id = self.plan(evaluation=True)
         self.complete_all(plan_id)
         result = self.store.finalize(plan_id, as_user=True)
-        self.assertEqual(len(result["emitted"]), 2)
+        self.assertEqual(len(result["emitted"]), 2)  # sealed stages only
         for stage in (grogu_plans.TESTING, grogu_plans.EVALUATION):
             path = self.store.plan_dir(plan_id) / f"{stage}.md"
             self.assertIn(f"{stage} body", path.read_text())
@@ -2133,3 +2133,95 @@ class ReviewHoldEnforcementTests(unittest.TestCase):
             self.plan, "implementation", "complete", role="engineer"
         )
         self.assertEqual(manifest["stage_state"]["implementation"], "complete")
+
+
+class FrictionRoutingTests(unittest.TestCase):
+    """Fifteen of nineteen notes were filed into the wrong bucket."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.home = Path(self.temporary.name) / "home"
+        self.home.mkdir()
+        self.previous = os.environ.get("GROGU_HOME")
+        os.environ["GROGU_HOME"] = str(self.home)
+        self.store = grogu_plans.PlanStore(Path(self.temporary.name) / "repo")
+        self.addCleanup(self.temporary.cleanup)
+        self.addCleanup(self._restore)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+
+    def _restore(self):
+        if self.previous is None:
+            os.environ.pop("GROGU_HOME", None)
+        else:
+            os.environ["GROGU_HOME"] = self.previous
+
+    def test_a_note_naming_a_grogu_command_is_pooled_without_the_flag(self):
+        self.store.note_friction(
+            "grogu plan status does not honour $GROGU_PLAN", role="architect"
+        )
+        pooled = grogu_plans.harness_friction()
+        self.assertEqual(len(pooled), 1)
+        self.assertEqual(self.store.friction()["notes"], [])
+
+    def test_a_note_about_the_project_stays_in_the_project(self):
+        self.store.note_friction(
+            "the vendor CSV has ragged rows and no header", role="engineer"
+        )
+        self.assertEqual(grogu_plans.harness_friction(), [])
+        self.assertEqual(len(self.store.friction()["notes"]), 1)
+
+    def test_the_caller_can_still_insist_it_is_local(self):
+        self.store.note_friction(
+            "grogu plan new is fine, our wrapper script is not",
+            role="engineer",
+            target=grogu_plans.TARGET_REPO_ONLY,
+        )
+        self.assertEqual(grogu_plans.harness_friction(), [])
+        self.assertEqual(len(self.store.friction()["notes"]), 1)
+
+
+class FinalizeArtifactTests(unittest.TestCase):
+    """The plans have to reach the pull request, not just the disk."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("ship it")["id"]
+        self.store.write_stage(self.plan, "implementation", "build it", role="architect")
+        self.store.write_stage(self.plan, "testing", "check it", role="architect")
+        self.store.set_stage_state(self.plan, "implementation", "complete", role="engineer")
+        self.store.set_stage_state(self.plan, "testing", "complete", role="tester")
+
+    def _staged(self):
+        listing = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+        )
+        return set(listing.stdout.split())
+
+    def test_finalizing_stages_the_plans_it_unsealed(self):
+        result = self.store.finalize(self.plan, role="architect")
+        staged = self._staged()
+        self.assertTrue(result["staged"])
+        self.assertIn(f".grogu/plans/{self.plan}/testing.md", staged)
+        self.assertIn(f".grogu/plans/{self.plan}/implementation.md", staged)
+
+    def test_the_working_manifest_is_not_shipped(self):
+        self.store.finalize(self.plan, role="architect")
+        self.assertNotIn(f".grogu/plans/{self.plan}/manifest.json", self._staged())
+
+    def test_the_record_carries_what_the_stage_files_do_not(self):
+        self.store.decline_stage(self.plan, "evaluation", "no taste call here", role="architect")
+        self.store.steer("use decimal", plan_id=self.plan, role="engineer")
+        self.store.finalize(self.plan, role="architect")
+        record = (self.root / ".grogu" / "plans" / self.plan / "record.md").read_text()
+        self.assertIn("no taste call here", record)
+        self.assertIn("use decimal", record)

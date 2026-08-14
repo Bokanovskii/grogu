@@ -1636,9 +1636,20 @@ def plan_finalize(args: argparse.Namespace) -> int:
     for blocker in result.get("shipped_incomplete", []):
         print(f"grogu: shipped incomplete: {blocker}", file=sys.stderr)
     print(f"finalized {result['plan']}")
+    staged = list(result.get("staged") or [])
     for path in result["emitted"]:
         print(f"  unsealed {path}")
-    print("  stage the plan directory so the pull request carries the plans it implements")
+    for path in staged:
+        print(f"  staged {path}")
+    if staged:
+        print(
+            "  the plans are in the index; commit them with the diff they justify"
+        )
+    else:
+        print(
+            "  not a git repository: copy the plan directory into the pull "
+            "request by hand"
+        )
     return 0
 
 
@@ -2065,15 +2076,28 @@ def plan_retro(args: argparse.Namespace) -> int:
 def plan_friction(args: argparse.Namespace) -> int:
     store = plan_store(args)
     target = grogu_plans.TARGET_HARNESS if args.harness else grogu_plans.TARGET_REPO
+    if getattr(args, "repo_only", False):
+        target = grogu_plans.TARGET_REPO_ONLY
     if args.note:
+        rerouted = (
+            target == grogu_plans.TARGET_REPO
+            and not getattr(args, "repo_only", False)
+            and store.names_the_harness(args.note)
+        )
         entry = store.note_friction(
             args.note,
             plan_id=store.resolve(args.id) if args.id else "",
             role=getattr(args, "role", "") or "",
             target=target,
         )
-        where = "about Grogu itself" if args.harness else "about this repository"
+        harness = args.harness or rerouted
+        where = "about Grogu itself" if harness else "about this repository"
         print(f"recorded friction #{entry['seq']} {where} from the {entry['role']}")
+        if rerouted:
+            print(
+                "  (it named a grogu command, so it was pooled across "
+                "repositories; `--repo-only` to keep it here)"
+            )
         return 0
     if args.resolve:
         if args.harness:
@@ -3145,6 +3169,12 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[plan_common, role_common],
     )
     plan_friction_parser.add_argument("--note", help="record friction you just hit")
+    plan_friction_parser.add_argument(
+        "--repo-only",
+        dest="repo_only",
+        action="store_true",
+        help="keep the note in this repository even if it names a grogu command",
+    )
     plan_friction_parser.add_argument("--plan", dest="id")
     plan_friction_parser.add_argument("--resolve", type=int, metavar="SEQ")
     plan_friction_parser.add_argument("--resolution")
