@@ -127,8 +127,8 @@ grogu plan steer "<text>" [--plan <id>] [--role engineer] [--requires-replan]
 
 Notes are stored, role-scoped and sequence-numbered. Agents spawned later
 receive the full standing set in `grogu plan brief`; agents already running have
-unread notes appended to the output of any `grogu` command they run, so nobody
-has to remember to poll. `--requires-replan` closes the gates until the
+unread notes appended to the output of any `grogu` command they run — as a
+`grogu_notice` field under `--json` — so nobody has to remember to poll. `--requires-replan` closes the gates until the
 architect folds the note in.
 
 Relay to a running subagent with `write_agent` by pointing at the command, never
@@ -147,15 +147,21 @@ check. Dependent steps do not become faster by being given more agents.
 ## Finishing and improving
 
 ```sh
-grogu plan stage <id> testing complete
+grogu plan stage <id> testing complete   # needs GROGU_ROLE or --role
 grogu guard staged            # nothing private rides out on the commit
 grogu plan finalize <id>      # unseal every stage so the PR carries the plans
 grogu plan retro <id>         # what this plan cost, and what to change
 grogu plan friction           # signals recurring across plans
 ```
 
-`finalize` scans the plans it is about to publish and refuses to unseal one
-carrying a credential or personal data; fix the plan rather than forcing it.
+Completing a sealed stage and finalizing both require a declared role, because
+a check that only applies to callers who identify themselves is optional to the
+one role it exists to stop. `finalize` also scans the plans it is about to
+publish and refuses to unseal one carrying a credential or personal data; fix
+the plan rather than forcing it.
+
+A defect filed after the tests passed reopens the testing stage: the pass
+described a build the fix is about to replace, so the tester runs again.
 
 Accepted amendments, escalations and user steering are all planning misses.
 Fix the repository's role overlays in
