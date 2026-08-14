@@ -131,6 +131,16 @@ Declare a workstream only when its file set is disjoint from the others. The
 check is mechanical and it is what authorises fan-out; do not describe parallel
 work in prose and hope the engineer infers it.
 
+**The `--path` globs are the only statement of ownership.** If your plan also
+lists the file layout in prose, the two will disagree, because you are writing
+the same fact twice from memory. That has already happened: a plan assigned
+four directories to a workstream in its layout section and passed two of them
+to `--path`, and an engineer that trusted `plan workstreams --json` -- which is
+what an orchestrator reads -- believed the other two were unowned. The harness
+cannot catch this, because it cannot tell a path in your prose from a URL or a
+rate. So either pass every path you assign, or write the layout section by
+listing the workstreams and their globs rather than restating them.
+
 You also decide *how* each piece is built, because you are the only role that
 can see the whole shape of the work:
 

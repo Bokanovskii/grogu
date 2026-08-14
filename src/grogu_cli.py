@@ -2417,16 +2417,26 @@ def plan_steering(args: argparse.Namespace) -> int:
             if seen:
                 print(
                     f"no unread steering for the {role} "
-                    f"({seen} already read; `--all` replays them)"
+                    f"({seen} already read; `--all` replays them, "
+                    "`--audit <n>` says who read note n without consuming it)"
                 )
             else:
                 print(f"no steering for the {role} on this plan")
         elif caller_is_agent:
-            print(f"({shown} shown once and marked read; `--all` replays the history)")
+            # An agent told in conversation that it had already been acked for
+            # a note could not check that claim: nothing named a note number
+            # and said who had read it. It acted on faith, then polled again to
+            # see whether the note resurfaced, which is a round trip spent on
+            # distrust. `--audit` answers it directly, and was undiscoverable.
+            print(
+                f"({shown} shown once and marked read; `--all` replays the "
+                "history, `--audit <n>` says who has read note n)"
+            )
         else:
             print(
                 f"({shown} unread by the {role}; you are looking, not "
-                "consuming, so it is still waiting for them)"
+                "consuming, so it is still waiting for them. "
+                "`--audit <n>` names who has read note n.)"
             )
         if caller_is_agent:
             store.ack_steering(role=role, plan_id=plan_id)
@@ -4001,6 +4011,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan_amendments_parser = plan_subparsers.add_parser("amendments", parents=[plan_common])
     _plan_id_argument(plan_amendments_parser)
+    # Read commands accept `--role` uniformly except this one, which rejected
+    # it. An engineer checking whether its amendment had been answered had to
+    # work out that this one command wanted the role dropped -- and the role is
+    # what every other command in the same sequence had just required.
+    plan_amendments_parser.add_argument("--role", default="")
     plan_amendments_parser.add_argument("--all", action="store_true")
     plan_amendments_parser.add_argument("--json", action="store_true")
     plan_amendments_parser.set_defaults(handler=plan_amendments)
