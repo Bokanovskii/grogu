@@ -188,6 +188,14 @@ spec, never the spec.
 Design preference belongs to a person, not a repository. It lives in
 `$GROGU_HOME/design/` and applies everywhere.
 
+Taste arrives two ways, and `grogu design status` names which. The user can
+**adopt** a named set — `grogu design seed --apple` — which is a real answer to
+"what does good look like", applied in full, with nothing further owed. Or they
+can **state** a principle in their own words, which is stronger because it is
+about their product. Status used to call an adopted set "seeded defaults" and
+report "nothing learned from you", which told a user who had deliberately
+chosen Apple's set that they still owed an action they could not find.
+
 `grogu design remember` records something the user actually said, and refuses
 to run for any role: it asserts the user's own taste, so only the user may
 assert it.

@@ -109,16 +109,17 @@ class ProvenanceTests(unittest.TestCase):
         self.store = grogu_design.DesignStore(Path(self.temporary.name))
         self.addCleanup(self.temporary.cleanup)
 
-    def test_seeded_principles_are_not_counted_as_learned(self):
+    def test_adopted_principles_are_reported_as_adopted_not_as_missing(self):
         self.store.seed_apple()
         status = self.store.status()
-        self.assertEqual(status["learned"], 0)
-        self.assertEqual(status["seeded"], status["principles"])
+        self.assertEqual(status["stated"], 0)
+        self.assertEqual(status["adopted"], status["principles"])
+        self.assertEqual(status["sets"], ["Apple's Human Interface Guidelines"])
 
     def test_something_the_user_said_counts_as_learned(self):
         self.store.seed_apple()
         self.store.remember("no green on the success path", scope="cli")
-        self.assertEqual(self.store.status()["learned"], 1)
+        self.assertEqual(self.store.status()["stated"], 1)
 
 
 class AgentsMayNotAssertTasteTests(unittest.TestCase):
@@ -146,4 +147,4 @@ class AgentsMayNotAssertTasteTests(unittest.TestCase):
 
     def test_the_user_may_record_their_own_taste(self):
         self.store.remember("no green on the success path", scope="cli")
-        self.assertEqual(self.store.status()["learned"], 1)
+        self.assertEqual(self.store.status()["stated"], 1)

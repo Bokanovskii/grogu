@@ -28,16 +28,17 @@ Add `--verifier` if it exits non-zero when the spec is violated: the test gate
 then refuses until it passes, so your check outlives your session.
 The tester is told it exists and will use it rather than rebuild it.
 
-Run `grogu design status` once. If it says nothing has been learned from this
-user yet, then the principles you are reading are general taste wearing the
-user's name, and the honest thing is to say in your report which decisions you
-inferred rather than recalled — and to file them with `grogu design suggest` as
-pending rather than asserting them as the user's.
+Run `grogu design status` once and read where the principles came from. Ones
+the user *adopted* — a named set they chose wholesale — are their answer to
+"what does good look like", and you apply them without hedging. Ones they
+*stated in their own words* are stronger still. But an adopted set says nothing
+about this product specifically, so where you extend it into a concrete
+decision, say in your report that you inferred it, and file it with
+`grogu design suggest` rather than asserting it as something they said.
 
 The principles are
 not suggestions to weigh — they are the standing answer to "what does good look
-like here", and they were learned from this specific person's corrections. Read
-them before you decide anything.
+like here". Read them before you decide anything.
 
 Then read the surfaces you are changing. A design that ignores what the product
 already looks like produces a screen that is defensible on its own and wrong in

@@ -2425,12 +2425,21 @@ def design_status(args: argparse.Namespace) -> int:
     if args.json:
         print_json(status)
         return 0
-    print(
-        f"{status['principles']} principle(s) "
-        f"({status.get('learned', 0)} learned from you, "
-        f"{status.get('seeded', 0)} seeded defaults), "
-        f"{status['pending']} pending"
-    )
+    print(f"{status['principles']} principle(s) in force")
+    if status.get("adopted"):
+        # The user adopted Apple's set on purpose and was then told nothing
+        # had been learned from them, which read as an unfinished chore.
+        # Adopting a set is an answer, not a placeholder.
+        sets = " and ".join(status.get("sets") or ["a set you adopted"])
+        print(f"  {status['adopted']} you adopted from {sets}. These apply now; nothing is owed.")
+    if status.get("stated"):
+        print(f"  {status['stated']} you stated in your own words")
+    else:
+        print(
+            "  none in your own words yet. Say a preference to Grogu in "
+            "conversation and it gets recorded, or run "
+            '`grogu design remember "<preference>"` yourself.'
+        )
     if status["pending"]:
         # "3 pending" meant nothing to the person it was addressed to, who had
         # seeded a set of principles and never asked for a review queue. It is
@@ -2440,12 +2449,6 @@ def design_status(args: argparse.Namespace) -> int:
             "while working, waiting on your yes or no. Nothing uses them until "
             "you say so, and ignoring them is fine: `grogu design review` to "
             "look, `confirm`/`reject` to answer."
-        )
-    if not status.get("learned"):
-        print(
-            "  nothing here was learned from you yet: a designer reading this "
-            "is applying general taste, not yours. `grogu design remember` and "
-            "`grogu design confirm` are how that changes."
         )
     print(f"  {status['directory']}")
     if status["scopes"]:

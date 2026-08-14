@@ -69,6 +69,8 @@ def _read_json(path: Path) -> dict:
 # Written by Grogu, not copied from anyone's published guidelines: these are
 # plain-language statements of the patterns the user asked for, phrased as
 # decisions a designer can actually apply.
+SET_NAMES = {"user:apple-patterns": "Apple's Human Interface Guidelines"}
+
 APPLE_PRINCIPLES = [
     {
         "statement": "Defer to the content. Chrome, borders and decoration recede; the thing the user came for is the most prominent element on screen.",
@@ -208,21 +210,27 @@ class DesignStore:
 
     def status(self) -> dict:
         principles = self._principles()["principles"]
-        # The first designer to run said the most useful thing anyone has
-        # said about this store: all thirteen principles were seeds, nothing
-        # had ever been learned from this user, and it was therefore
-        # inventing taste while sounding like it was recalling it. A store
-        # that cannot tell you that invites exactly that mistake.
-        seeded = [
-            item
-            for item in principles
-            if str(item.get("source", "")).startswith("user:apple-patterns")
-        ]
+        # Two ways a principle becomes the user's, and they are not the same
+        # thing. `adopted` means they chose a named set wholesale -- a real
+        # act, their answer to "what does good look like", but not their
+        # words. `stated` means they said this one themselves. The store used
+        # to call the first "seeded defaults" and report "nothing learned from
+        # you", which read to the user who had deliberately adopted Apple's
+        # set as an unfinished chore they could not find the command for.
+        adopted, stated, sets = [], [], set()
+        for item in principles:
+            source = str(item.get("source", ""))
+            if source.startswith("user:"):
+                adopted.append(item)
+                sets.add(SET_NAMES.get(source, source.split(":", 1)[1]))
+            else:
+                stated.append(item)
         return {
             "directory": str(self.directory),
             "principles": len(principles),
-            "seeded": len(seeded),
-            "learned": len(principles) - len(seeded),
+            "adopted": len(adopted),
+            "stated": len(stated),
+            "sets": sorted(sets),
             "pending": len(self._pending()["candidates"]),
             "scopes": sorted({item["scope"] for item in principles}),
         }

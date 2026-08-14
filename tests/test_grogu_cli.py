@@ -1618,3 +1618,24 @@ class PlanIdFromEnvironmentTests(unittest.TestCase):
             ["plan", "brief", "--role", "engineer"], {"GROGU_PLAN": self.plan}
         )
         self.assertIn(self.plan, result.stdout)
+
+
+class AdoptedTasteIsNotReportedAsMissingTests(unittest.TestCase):
+    """The user adopted Apple's set and was told nothing was learned."""
+
+    def test_status_credits_the_set_the_user_chose(self):
+        with tempfile.TemporaryDirectory() as home:
+            environment = dict(os.environ, GROGU_HOME=home)
+            environment.pop("GROGU_ROLE", None)
+            subprocess.run(
+                [sys.executable, str(CLI), "design", "seed", "--apple"],
+                env=environment, capture_output=True, text=True, check=True,
+            )
+            result = subprocess.run(
+                [sys.executable, str(CLI), "design", "status"],
+                env=environment, capture_output=True, text=True, check=True,
+            )
+        self.assertIn("you adopted from Apple's Human Interface Guidelines", result.stdout)
+        self.assertIn("nothing is owed", result.stdout)
+        self.assertNotIn("seeded defaults", result.stdout)
+        self.assertNotIn("learned from you", result.stdout)
