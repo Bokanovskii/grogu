@@ -8,6 +8,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+
+import _sandbox  # noqa: E402,F401  (redirects GROGU_HOME and HOME away from the real one)
 
 import grogu_design  # noqa: E402
 

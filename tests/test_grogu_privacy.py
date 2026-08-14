@@ -18,6 +18,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "tests"))
+
+import _sandbox  # noqa: E402,F401  (redirects GROGU_HOME and HOME away from the real one)
 
 import grogu_privacy  # noqa: E402
 import grogu_tasks  # noqa: E402
@@ -227,7 +230,7 @@ class PipelineEgressTests(unittest.TestCase):
         home = tempfile.TemporaryDirectory()
         self.addCleanup(home.cleanup)
         os.environ["GROGU_HOME"] = home.name
-        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        self.addCleanup(os.environ.__setitem__, "GROGU_HOME", os.environ["GROGU_HOME"])
         self.store.note_friction(
             "grogu auth failed with ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789",  # grogu-allow-secret
             role="engineer",

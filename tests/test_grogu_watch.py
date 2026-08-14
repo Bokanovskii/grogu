@@ -10,6 +10,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+
+import _sandbox  # noqa: E402,F401  (redirects GROGU_HOME and HOME away from the real one)
 
 import grogu_watch  # noqa: E402
 
@@ -19,7 +22,7 @@ class WatchTests(unittest.TestCase):
         self.home = tempfile.TemporaryDirectory()
         self.addCleanup(self.home.cleanup)
         os.environ["GROGU_HOME"] = self.home.name
-        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        self.addCleanup(os.environ.__setitem__, "GROGU_HOME", os.environ["GROGU_HOME"])
 
     def test_an_agent_is_one_row_however_many_commands_it_runs(self):
         for command in ("plan brief", "plan gate", "plan show"):
@@ -165,3 +168,31 @@ class WaitingOnYouTests(unittest.TestCase):
         }
         asks = grogu_watch.waiting_on_you(state)
         self.assertIn("engineer@two", asks[0])
+
+
+class TheSuiteDoesNotWriteToTheRealHomeTests(unittest.TestCase):
+    """A quarter of the user's activity feed was this suite's own noise."""
+
+    def test_the_environment_points_somewhere_disposable(self):
+        # A test is free to point GROGU_HOME at its own temporary directory.
+        # What must never happen is either variable pointing at the real one.
+        for variable in ("GROGU_HOME", "HOME"):
+            value = os.environ.get(variable, "")
+            self.assertTrue(value, f"{variable} must be set for the suite")
+            self.assertNotEqual(Path(value), Path(_sandbox.REAL_HOME))
+            self.assertFalse(
+                Path(value).is_relative_to(Path(_sandbox.REAL_HOME))
+                if hasattr(Path, "is_relative_to")
+                else str(value).startswith(_sandbox.REAL_HOME + "/"),
+                f"{variable} is inside the real home: {value}",
+            )
+
+    def test_the_fallback_is_covered_not_just_the_override(self):
+        """Several tests unset GROGU_HOME on purpose; Path.home() must be safe."""
+        previous = os.environ.pop("GROGU_HOME", None)
+        try:
+            self.assertIn("grogu-tests-home-", str(grogu_watch.activity_path()))
+            self.assertNotIn(_sandbox.REAL_HOME + "/.grogu", str(grogu_watch.activity_path()))
+        finally:
+            if previous is not None:
+                os.environ["GROGU_HOME"] = previous

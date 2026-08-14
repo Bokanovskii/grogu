@@ -9,6 +9,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+
+import _sandbox  # noqa: E402,F401  (redirects GROGU_HOME and HOME away from the real one)
 
 import grogu_design  # noqa: E402
 import grogu_plans  # noqa: E402
@@ -744,7 +747,7 @@ class PlanStoreTests(unittest.TestCase):
         home = tempfile.TemporaryDirectory()
         self.addCleanup(home.cleanup)
         os.environ["GROGU_HOME"] = home.name
-        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        self.addCleanup(os.environ.__setitem__, "GROGU_HOME", os.environ["GROGU_HOME"])
         second = tempfile.TemporaryDirectory()
         self.addCleanup(second.cleanup)
         other = grogu_plans.PlanStore(Path(second.name))
@@ -773,7 +776,7 @@ class PlanStoreTests(unittest.TestCase):
         home = tempfile.TemporaryDirectory()
         self.addCleanup(home.cleanup)
         os.environ["GROGU_HOME"] = home.name
-        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        self.addCleanup(os.environ.__setitem__, "GROGU_HOME", os.environ["GROGU_HOME"])
         self.store.note_friction(
             "a gap", role=grogu_plans.ENGINEER, target=grogu_plans.TARGET_HARNESS
         )
@@ -791,7 +794,7 @@ class PlanStoreTests(unittest.TestCase):
         home = tempfile.TemporaryDirectory()
         self.addCleanup(home.cleanup)
         os.environ["GROGU_HOME"] = home.name
-        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        self.addCleanup(os.environ.__setitem__, "GROGU_HOME", os.environ["GROGU_HOME"])
         for index in range(grogu_plans.HARNESS_FRICTION_THRESHOLD):
             self.store.note_friction(
                 f"gap {index}",
@@ -806,7 +809,7 @@ class PlanStoreTests(unittest.TestCase):
         home = tempfile.TemporaryDirectory()
         self.addCleanup(home.cleanup)
         os.environ["GROGU_HOME"] = home.name
-        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        self.addCleanup(os.environ.__setitem__, "GROGU_HOME", os.environ["GROGU_HOME"])
         return home
 
     def test_the_same_complaint_worded_differently_forms_one_cluster(self):
@@ -890,7 +893,7 @@ class PlanStoreTests(unittest.TestCase):
         home = tempfile.TemporaryDirectory()
         self.addCleanup(home.cleanup)
         os.environ["GROGU_HOME"] = home.name
-        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        self.addCleanup(os.environ.__setitem__, "GROGU_HOME", os.environ["GROGU_HOME"])
         self.store.note_friction(
             "one gap", role=grogu_plans.ENGINEER, target=grogu_plans.TARGET_HARNESS
         )
@@ -1340,7 +1343,7 @@ class HarnessFrictionConcurrencyTests(unittest.TestCase):
         for process in processes:
             self.assertEqual(process.wait(), 0)
         os.environ["GROGU_HOME"] = home.name
-        self.addCleanup(os.environ.pop, "GROGU_HOME", None)
+        self.addCleanup(os.environ.__setitem__, "GROGU_HOME", os.environ["GROGU_HOME"])
         self.assertEqual(len(grogu_plans.harness_friction()), 16)
 
 
