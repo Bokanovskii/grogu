@@ -35,6 +35,11 @@ not waive that.
 Add `--design` when the change has a user-visible surface; `grogu plan triage`
 flags this as `design: true`.
 
+The shape of a plan is not fixed at creation. An architect spawned onto an
+existing plan changes it with `grogu plan shape <id> --add eval|design`,
+`--decline eval|design --why '...'`, or `--require-review`. Only the architect
+may; the other roles are refused.
+
 Research anything external before committing to it — `web_search` for current
 state, `web_fetch` for the vendor's own docs, the GitHub tools for whether a
 project is still alive — and cite the source and date in the plan. Model
@@ -181,6 +186,7 @@ grogu guard staged            # nothing private rides out on the commit
 grogu plan finalize <id>      # unseal every stage so the PR carries the plans
 grogu plan retro <id>         # what this plan cost, and what to change
 grogu plan friction           # signals recurring across plans
+grogu plan friction --note '<what got in the way>'   # record one
 ```
 
 Completing a sealed stage and finalizing both require a declared role, because

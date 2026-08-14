@@ -1737,3 +1737,101 @@ class ReAuditRegressionTests(unittest.TestCase):
             )
         with self.assertRaises(grogu_plans.PlanError):
             self.store.finalize(plan_id, force=True, as_user=True)
+
+
+class PlanShapeTests(unittest.TestCase):
+    """The architect is spawned onto a plan they did not create.
+
+    Everything about the shape of a plan used to be fixed at creation, by
+    whoever typed `plan new` -- which is exactly the moment nobody has read
+    the request carefully yet.
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN"):
+            os.environ.pop(variable, None)
+
+    def _plan(self):
+        return self.store.create("shape")["id"]
+
+    def test_architect_adds_an_evaluation_stage_after_creation(self):
+        plan = self._plan()
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.write_stage(plan, grogu_plans.EVALUATION, "body", role="architect")
+        self.store.add_stage(plan, grogu_plans.EVALUATION, role="architect")
+        self.store.write_stage(plan, grogu_plans.EVALUATION, "body", role="architect")
+        summary = self.store.summary(plan)
+        self.assertIn(grogu_plans.EVALUATION, summary["stages"])
+        self.assertEqual(
+            summary["stages"],
+            [grogu_plans.IMPLEMENTATION, grogu_plans.TESTING, grogu_plans.EVALUATION],
+        )
+
+    def test_only_the_architect_may_reshape_a_plan(self):
+        plan = self._plan()
+        for role in ("engineer", "tester", "designer"):
+            with self.assertRaises(grogu_plans.PlanError):
+                self.store.add_stage(plan, grogu_plans.EVALUATION, role=role)
+            with self.assertRaises(grogu_plans.PlanError):
+                self.store.require_review(plan, role=role)
+
+    def test_required_stages_are_not_optional(self):
+        plan = self._plan()
+        for stage in (grogu_plans.IMPLEMENTATION, grogu_plans.TESTING):
+            with self.assertRaises(grogu_plans.PlanError):
+                self.store.add_stage(plan, stage, role="architect")
+            with self.assertRaises(grogu_plans.PlanError):
+                self.store.decline_stage(plan, stage, "no", role="architect")
+
+    def test_declining_a_stage_records_why_and_needs_a_reason(self):
+        plan = self._plan()
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.decline_stage(plan, grogu_plans.EVALUATION, "  ", role="architect")
+        self.store.decline_stage(
+            plan, grogu_plans.EVALUATION, "every assertion is exact", role="architect"
+        )
+        declined = self.store.summary(plan)["declined_stages"]
+        self.assertEqual(declined[grogu_plans.EVALUATION]["why"], "every assertion is exact")
+
+    def test_declining_a_stage_the_plan_has_is_refused(self):
+        plan = self.store.create("shape", evaluation=True)["id"]
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.decline_stage(plan, grogu_plans.EVALUATION, "changed my mind", role="architect")
+
+    def test_review_can_be_required_after_creation_and_closes_the_gate(self):
+        plan = self._plan()
+        self.store.write_stage(plan, grogu_plans.IMPLEMENTATION, "body", role="architect")
+        self.store.write_stage(plan, grogu_plans.TESTING, "body", role="architect")
+        self.assertTrue(self.store.gate(plan, "implement")["allowed"])
+        self.store.require_review(plan, role="architect")
+        verdict = self.store.gate(plan, "implement")
+        self.assertFalse(verdict["allowed"])
+        self.store.approve(plan)
+        self.assertTrue(self.store.gate(plan, "implement")["allowed"])
+
+    def test_review_cannot_be_demanded_after_approval(self):
+        plan = self._plan()
+        self.store.write_stage(plan, grogu_plans.IMPLEMENTATION, "body", role="architect")
+        self.store.write_stage(plan, grogu_plans.TESTING, "body", role="architect")
+        self.store.approve(plan)
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.require_review(plan, role="architect")
+
+    def test_an_empty_reference_resolves_to_the_ambient_plan(self):
+        plan = self._plan()
+        self.store.create("another")
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.resolve("")
+        os.environ["GROGU_PLAN"] = plan
+        self.addCleanup(os.environ.pop, "GROGU_PLAN", None)
+        self.assertEqual(self.store.resolve(""), plan)
+
+    def test_status_distinguishes_written_from_unwritten_stages(self):
+        plan = self._plan()
+        self.assertFalse(self.store.summary(plan)["stage_written"][grogu_plans.TESTING])
+        self.store.write_stage(plan, grogu_plans.TESTING, "body", role="architect")
+        self.assertTrue(self.store.summary(plan)["stage_written"][grogu_plans.TESTING])

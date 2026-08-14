@@ -82,11 +82,19 @@ Every plan has at least two stages, written separately:
   Write it as if you do not trust the implementation, because you do not.
 * **Evaluation** — only when the change affects end-to-end behavior, user-facing
   quality, or anything non-deterministic. Testing asks "does it do what it
-  claims"; evaluation asks "is the result actually good". Create it with
-  `grogu plan new --eval` when the answer to the second question is not implied
-  by the first.
+  claims"; evaluation asks "is the result actually good". Add it with
+  `grogu plan shape <id> --add evaluation` when the answer to the second
+  question is not implied by the first, and when it is not, say so with
+  `grogu plan shape <id> --decline evaluation --why '...'` — a missing stage
+  otherwise reads the same whether you ruled it out or never considered it.
 
 Write each with `grogu plan write <id> <stage> --role architect --file -`.
+
+You are usually spawned onto a plan someone else created, so its shape is not
+yours until you set it. `grogu plan shape` is how you add the design or
+evaluation stage, and `grogu plan shape <id> --require-review` is how you hold
+work until the user has read the plan. If the user asked you for a plan
+directly, require review — do not assume whoever ran `plan new` knew that.
 
 The testing and evaluation plans are sealed from the engineer on purpose. An
 implementation written against its own tests only proves the tests were

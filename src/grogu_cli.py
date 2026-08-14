@@ -500,6 +500,12 @@ def memory_context(args: argparse.Namespace) -> int:
         result["related_repositories"] = related_repository_context(
             result["repository"]["repository_id"], args.limit
         )
+    if not result.get("nodes") and not result.get("edges"):
+        result["note"] = (
+            "nothing recorded for this repository yet; an empty graph and an "
+            "unindexed one look the same, so write to it with `grogu memory "
+            "remember` before reading anything into this"
+        )
     print_json(result)
     return 0
 
@@ -1465,8 +1471,12 @@ def plan_status(args: argparse.Namespace) -> int:
         return 0
     print(f"{summary['id']}  {summary['status']}  {summary['title']}")
     print(f"  stages: " + ", ".join(
-        f"{stage}={summary['stage_state'].get(stage, '?')}" for stage in summary["stages"]
+        f"{stage}={summary['stage_state'].get(stage, '?')}"
+        + ("" if summary.get("stage_written", {}).get(stage, True) else " (unwritten)")
+        for stage in summary["stages"]
     ))
+    for stage, decision in sorted(summary.get("declined_stages", {}).items()):
+        print(f"  no {stage} stage, by decision: {decision.get('why', '')}")
     print(f"  amendment rounds: {summary['rounds']}   engineer/tester rounds: {summary['defect_rounds']}")
     if summary.get("escalated"):
         print("  escalated to the architect: the engineer/tester loop stopped converging")
@@ -1482,6 +1492,23 @@ def plan_status(args: argparse.Namespace) -> int:
     pending = {role: count for role, count in summary["steering_pending"].items() if count}
     for role, count in sorted(pending.items()):
         print(f"  {count} unread steering note(s) for the {role}")
+    return 0
+
+
+def plan_shape(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id)
+    role = getattr(args, "role", "") or ""
+    if args.add:
+        store.add_stage(plan_id, args.add, role=role)
+        print(f"{plan_id}: added a {args.add} stage")
+        return 0
+    if args.decline:
+        store.decline_stage(plan_id, args.decline, args.why or "", role=role)
+        print(f"{plan_id}: recorded that no {args.decline} stage is warranted")
+        return 0
+    store.require_review(plan_id, role=role)
+    print(f"{plan_id}: held for user review; work is blocked until `grogu plan approve`")
     return 0
 
 
@@ -2641,9 +2668,34 @@ def build_parser() -> argparse.ArgumentParser:
     plan_status_parser = plan_subparsers.add_parser(
         "status", help="bounded plan summary with no plan prose", parents=[plan_common]
     )
-    plan_status_parser.add_argument("id")
+    plan_status_parser.add_argument("id", nargs="?", default="")
     plan_status_parser.add_argument("--json", action="store_true")
     plan_status_parser.set_defaults(handler=plan_status)
+
+    plan_shape_parser = plan_subparsers.add_parser(
+        "shape",
+        help="add, decline or hold stages of an existing plan (architect only)",
+        parents=[plan_common, role_common],
+    )
+    plan_shape_parser.add_argument("id", nargs="?", default="")
+    plan_shape_group = plan_shape_parser.add_mutually_exclusive_group(required=True)
+    plan_shape_group.add_argument(
+        "--add",
+        choices=[grogu_plans.DESIGN, grogu_plans.EVALUATION],
+        help="add an optional stage this plan turns out to need",
+    )
+    plan_shape_group.add_argument(
+        "--decline",
+        choices=[grogu_plans.DESIGN, grogu_plans.EVALUATION],
+        help="record that this stage was considered and is not warranted",
+    )
+    plan_shape_group.add_argument(
+        "--require-review",
+        action="store_true",
+        help="hold work until the user approves the plan",
+    )
+    plan_shape_parser.add_argument("--why", help="reason, required with --decline")
+    plan_shape_parser.set_defaults(handler=plan_shape)
 
     plan_write_parser = plan_subparsers.add_parser(
         "write", help="write a plan stage (architect only)",

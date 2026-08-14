@@ -1177,6 +1177,15 @@ class PlanStore:
                 return candidate
 
     def resolve(self, reference: str) -> str:
+        reference = (reference or "").strip()
+        if not reference:
+            # An empty reference would prefix-match every plan, so the
+            # ambient plan is the only sane reading of "the plan".
+            reference = os.environ.get("GROGU_PLAN", "").strip()
+        if not reference:
+            raise PlanError(
+                "no plan given and $GROGU_PLAN is not set; pass a plan id"
+            )
         if self.manifest_path(reference).exists():
             return reference
         matches = [
@@ -1283,6 +1292,86 @@ class PlanStore:
         self._write_json(self.manifest_path(manifest["id"]), manifest)
         return manifest
 
+    # -- stage shape -------------------------------------------------------
+
+    def add_stage(self, plan_id: str, stage: str, *, role: str = "") -> dict:
+        """Add a design or evaluation stage the architect judges warranted.
+
+        Stages used to be fixed at creation, which meant the architect --
+        the only role that reads the whole request -- could not add the one
+        stage they alone are qualified to call for.
+        """
+        role = role or current_role() or ARCHITECT
+        if role != ARCHITECT:
+            raise PlanError(f"role {role!r} may not change the shape of a plan")
+        if stage not in (DESIGN, EVALUATION):
+            raise PlanError(
+                f"{stage} is not optional; every plan has implementation and testing"
+            )
+        with self.locked():
+            manifest = self.load(plan_id)
+            if manifest.get("status") in (COMPLETE, SUPERSEDED):
+                raise PlanError(f"plan {plan_id} is {manifest['status']}")
+            if stage in manifest.get("stages", []):
+                raise PlanError(f"plan {plan_id} already has a {stage} stage")
+            stages = [item for item in STAGES if item in manifest["stages"] or item == stage]
+            manifest["stages"] = stages
+            manifest.setdefault("stage_state", {})[stage] = PENDING
+            manifest.setdefault("stage_written", {})[stage] = False
+            manifest.get("declined_stages", {}).pop(stage, None)
+            path = self.stage_path(plan_id, stage)
+            if not path.exists():
+                body = f"# {manifest.get('title', plan_id)} — {stage} plan\n\n_Not written yet._\n"
+                path.write_text(
+                    seal(body) if stage in SEALED_STAGES else body, encoding="utf8"
+                )
+            return self._save(manifest, "stage_added", stage=stage)
+
+    def decline_stage(self, plan_id: str, stage: str, why: str, *, role: str = "") -> dict:
+        """Record that a stage was considered and judged unnecessary.
+
+        Without this, a missing evaluation stage reads identically whether
+        the architect ruled it out or never thought about it.
+        """
+        role = role or current_role() or ARCHITECT
+        if role != ARCHITECT:
+            raise PlanError(f"role {role!r} may not change the shape of a plan")
+        if stage not in (DESIGN, EVALUATION):
+            raise PlanError(f"{stage} is not optional and cannot be declined")
+        if not why.strip():
+            raise PlanError("declining a stage needs a reason the next reader can weigh")
+        with self.locked():
+            manifest = self.load(plan_id)
+            if stage in manifest.get("stages", []):
+                raise PlanError(
+                    f"plan {plan_id} already has a {stage} stage; supersede the plan instead"
+                )
+            manifest.setdefault("declined_stages", {})[stage] = {
+                "why": why.strip(),
+                "at": now(),
+                "by": actor(),
+            }
+            return self._save(manifest, "stage_declined", stage=stage)
+
+    def require_review(self, plan_id: str, *, role: str = "") -> dict:
+        """Hold work until the user approves.
+
+        The architect is usually spawned onto a plan someone else created,
+        so the flag at creation time is not enough: the role that discovers
+        the request wants review needs to be able to say so.
+        """
+        role = role or current_role() or ARCHITECT
+        if role != ARCHITECT:
+            raise PlanError(f"role {role!r} may not put a plan up for review")
+        with self.locked():
+            manifest = self.load(plan_id)
+            if manifest.get("approved_at"):
+                raise PlanError(f"plan {plan_id} was already approved")
+            if manifest.get("review_required"):
+                return manifest
+            manifest["review_required"] = True
+            return self._save(manifest, "review_required")
+
     # -- stage bodies ------------------------------------------------------
 
     def write_stage(self, plan_id: str, stage: str, body: str, *, role: str = "") -> dict:
@@ -1299,8 +1388,8 @@ class PlanStore:
             manifest = self.load(plan_id)
             if stage not in manifest.get("stages", []):
                 raise PlanError(
-                    f"plan {plan_id} has no {stage} stage; create it with "
-                    "`grogu plan new --design/--eval` when one is warranted"
+                    f"plan {plan_id} has no {stage} stage; add one with "
+                    f"`grogu plan shape {plan_id} --add {stage}` when it is warranted"
                 )
             if not body.strip():
                 raise PlanError("refusing to write an empty plan stage")
@@ -2557,6 +2646,8 @@ class PlanStore:
             "review_required": manifest.get("review_required", False),
             "stages": manifest.get("stages", []),
             "stage_state": manifest.get("stage_state", {}),
+            "stage_written": manifest.get("stage_written", {}),
+            "declined_stages": manifest.get("declined_stages", {}),
             "rounds": f"{manifest.get('rounds', 0)}/{manifest.get('max_rounds', DEFAULT_MAX_ROUNDS)}",
             "defect_rounds": f"{manifest.get('defect_rounds', 0)}/{manifest.get('max_defect_rounds', DEFAULT_MAX_DEFECT_ROUNDS)}",
             "escalated": manifest.get("escalated", False),
