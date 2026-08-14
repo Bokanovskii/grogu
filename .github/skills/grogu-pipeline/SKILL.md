@@ -192,7 +192,7 @@ check. Dependent steps do not become faster by being given more agents.
 ```sh
 grogu plan stage <id> testing complete   # needs GROGU_ROLE or --role
 grogu guard staged            # nothing private rides out on the commit
-grogu plan finalize <id>      # unseal every stage so the PR carries the plans
+grogu plan finalize <id>      # unseal, write record.md, and stage them for the PR
 grogu plan retro <id>         # what this plan cost, and what to change
 grogu plan friction           # signals recurring across plans
 grogu plan friction --note '<what got in the way>'   # record one

@@ -185,8 +185,12 @@ infrastructure grow instead of being written to fit whatever the code already
 does.
 
 Once the work lands, the reason to seal is gone. `grogu plan finalize` unseals
-every stage into plain Markdown so the pull request carries the plans it
-implements.
+every stage into plain Markdown, writes `record.md` — one page saying which
+optional stages were declined and why, which amendments were accepted and on
+what evidence, what the tester found, what the user corrected mid-flight — and
+stages all of it, so the pull request carries the plans it implements without
+anyone remembering to `git add`. `manifest.json` is not staged: it is working
+state, carrying session ids and the raw text of every exchange.
 
 ## Testing is not evaluation
 
@@ -404,7 +408,14 @@ Friction comes in two kinds and they belong in different places. A gap in this
 repository's conventions is this repository's problem and stays in
 `.grogu/plans/friction.json`. A gap in *Grogu* — a command that should exist,
 output that had to be parsed by hand, three calls where one would do — goes to
-`$GROGU_HOME/friction.json` with `--harness`, pooled across every repository.
+`$GROGU_HOME/friction.json`, pooled across every repository.
+
+You do not have to pick correctly. Nineteen notes were filed during one
+dogfooding session and fifteen of them named a failing `grogu` command while
+omitting `--harness` — filed, by agents who had read this page, into the bucket
+nobody reads. A note that quotes a grogu command is now pooled whatever flag it
+arrived with, and `--repo-only` overrides that for the rare note that mentions
+one while genuinely being about the project.
 
 That split matters more than it looks. An engineer in some unrelated repository
 who hits a missing grogu command would otherwise write the complaint into that
