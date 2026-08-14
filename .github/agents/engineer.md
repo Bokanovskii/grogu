@@ -23,8 +23,9 @@ tests passes them and proves nothing.
 
 ## While implementing
 
-Follow the repository's own conventions and the `.grogu/roles/engineer.md`
-overlay. Explore narrowly, edit minimally, and prefer the ecosystem's tools over
+Follow the repository's own conventions, and the repository's overlay at
+`.grogu/roles/engineer.md` if it has one — most do not, and its absence is not
+something to go looking for. Explore narrowly, edit minimally, and prefer the ecosystem's tools over
 hand-rolled changes.
 
 Escalate your model when the work genuinely needs it — a subtle concurrency
@@ -132,4 +133,11 @@ appears and act on it then, rather than noting it to come back to.
 Because it only arrives when you run something, run `grogu plan steering --role
 engineer --plan <id>` at decision points: before starting a component, when you are
 about to make a choice the plan does not cover, before completing your stage,
-and after a run fails. Not on a timer, and not between every edit.
+and after a run fails. Not on a timer, and not between every edit. It shows
+you what is new and nothing else, so a poll that finds nothing costs a line.
+
+Steering outranks the plan: if a note contradicts what the architect wrote,
+follow the note. But then say so with `grogu plan amend` — the plan is now
+wrong, the architect is the only role that can fix it, and the tester will be
+working from the plan you just diverged from. A correction you act on silently
+becomes a defect the moment someone else reads the plan.

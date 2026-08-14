@@ -1413,3 +1413,62 @@ class CodemodeMcpExecTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlanSteeringReadTests(unittest.TestCase):
+    """Polling for steering must not cost the history every time."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+
+    def run_cli(self, *arguments, role=""):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = str(self.repo / "home")
+        environment.pop("GROGU_AGENT", None)
+        if role:
+            environment["GROGU_ROLE"] = role
+        else:
+            environment.pop("GROGU_ROLE", None)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def _plan(self):
+        result = self.run_cli("plan", "new", "steering read")
+        return result.stdout.strip()
+
+    def test_a_role_scoped_read_shows_each_note_once(self):
+        plan = self._plan()
+        self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
+        first = self.run_cli("plan", "steering", "--plan", plan, "--role", "engineer")
+        self.assertIn("use zero for HUF", first.stdout)
+        second = self.run_cli("plan", "steering", "--plan", plan, "--role", "engineer")
+        self.assertNotIn("use zero for HUF", second.stdout)
+        self.assertIn("no unread steering", second.stdout)
+        replay = self.run_cli("plan", "steering", "--plan", plan, "--role", "engineer", "--all")
+        self.assertIn("use zero for HUF", replay.stdout)
+
+    def test_acking_for_another_agent_does_not_ack_for_this_one(self):
+        plan = self._plan()
+        self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
+        proxy = self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer",
+            "--ack", "--agent", "s1-engineer",
+        )
+        self.assertIn("s1-engineer", proxy.stdout)
+        status = self.run_cli("plan", "status", plan, "--json")
+        payload = json.loads(status.stdout)
+        self.assertEqual(payload["steering_undelivered"], [])
+
+    def test_status_says_when_a_note_has_reached_nobody(self):
+        plan = self._plan()
+        self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
+        status = self.run_cli("plan", "status", plan)
+        self.assertIn("has not reached the engineer", status.stdout)

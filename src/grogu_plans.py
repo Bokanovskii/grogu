@@ -2675,7 +2675,58 @@ class PlanStore:
                 if item.get("status") == PENDING
             ],
             "steering_pending": self._steering_pending(manifest),
+            "steering_undelivered": self._steering_undelivered(manifest),
         }
+
+    def _steering_undelivered(self, manifest: dict) -> list:
+        """Notes no agent of the target role has read yet.
+
+        `steering_pending` answers "do I have unread notes", which is the
+        question an agent has. The user has the opposite question -- "did it
+        reach them" -- and reading the per-caller count to answer it says yes
+        as soon as the user's own shell has looked at the note, which is the
+        most misleading possible answer.
+        """
+        repository = self._repo_steering()
+        undelivered = []
+        for source, notes, acked in (
+            ("repository", repository["notes"], repository["acked"]),
+            ("plan", manifest.get("steering", []), manifest.get("steering_acked", {})),
+        ):
+            agent_keys = {key: int(seq or 0) for key, seq in acked.items() if "@" in key}
+            # Only roles that have actually shown up can be behind on
+            # anything. Reporting a note as unread by a designer who was
+            # never spawned would make the line noise, and a line that is
+            # always there is a line nobody reads.
+            present = {key.split("@", 1)[0] for key in agent_keys}
+            for note in notes:
+                target = note.get("role", "all")
+                roles = [role for role in (ROLES if target == "all" else (target,))]
+                seq = note.get("seq", 0)
+                unread = [
+                    role
+                    for role in roles
+                    if role in present
+                    and not any(
+                        key.split("@", 1)[0] == role and value >= seq
+                        for key, value in agent_keys.items()
+                    )
+                ]
+                if not present:
+                    # Nothing has run yet, so we know nothing about who is
+                    # behind beyond who the note was aimed at.
+                    unread = [target]
+                if unread:
+                    undelivered.append(
+                        {
+                            "source": source,
+                            "seq": seq,
+                            "role": target,
+                            "unread_by": sorted(unread),
+                            "text": note.get("text", ""),
+                        }
+                    )
+        return undelivered
 
     def _steering_pending(self, manifest: dict) -> dict:
         """Unread steering per role, from two file reads rather than twenty.

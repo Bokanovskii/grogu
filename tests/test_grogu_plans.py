@@ -1835,3 +1835,50 @@ class PlanShapeTests(unittest.TestCase):
         self.assertFalse(self.store.summary(plan)["stage_written"][grogu_plans.TESTING])
         self.store.write_stage(plan, grogu_plans.TESTING, "body", role="architect")
         self.assertTrue(self.store.summary(plan)["stage_written"][grogu_plans.TESTING])
+
+
+class SteeringDeliveryVisibilityTests(unittest.TestCase):
+    """"Did it reach them" is not the same question as "have I read it"."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.addCleanup(self.temporary.cleanup)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+
+    def _plan(self):
+        return self.store.create("delivery")["id"]
+
+    def test_the_users_own_read_does_not_count_as_delivery(self):
+        plan = self._plan()
+        self.store.steer("use minor units of zero for HUF", role="engineer", plan_id=plan)
+        # The user looks at the note themselves, from their own shell.
+        self.store.steering(role="engineer", plan_id=plan)
+        undelivered = self.store.summary(plan)["steering_undelivered"]
+        self.assertEqual([note["seq"] for note in undelivered], [1])
+
+    def test_an_agent_reading_it_clears_the_undelivered_line(self):
+        plan = self._plan()
+        self.store.steer("use minor units of zero for HUF", role="engineer", plan_id=plan)
+        self.store.ack_steering(role="engineer", plan_id=plan, agent="s1-engineer")
+        self.assertEqual(self.store.summary(plan)["steering_undelivered"], [])
+
+    def test_one_engineer_reading_does_not_mark_it_delivered_for_the_role(self):
+        plan = self._plan()
+        self.store.steer("stop using floats", role="all", plan_id=plan)
+        self.store.ack_steering(role="engineer", plan_id=plan, agent="engineer-one")
+        # The engineer has it; no other role has ever run here, so there is
+        # nobody else we can honestly say is behind.
+        self.assertEqual(self.store.summary(plan)["steering_undelivered"], [])
+        # A second engineer has its own key and still gets the note.
+        os.environ["GROGU_AGENT"] = "engineer-two"
+        self.addCleanup(os.environ.pop, "GROGU_AGENT", None)
+        self.assertEqual(self.store.summary(plan)["steering_pending"]["engineer"], 1)
+        self.store.ack_steering(role="tester", plan_id=plan, agent="tester-one")
+        self.store.steer("and another", role="all", plan_id=plan)
+        unread = {
+            tuple(note["unread_by"]) for note in self.store.summary(plan)["steering_undelivered"]
+        }
+        self.assertEqual(unread, {("engineer", "tester")})

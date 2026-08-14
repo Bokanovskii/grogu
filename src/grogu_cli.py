@@ -1492,6 +1492,12 @@ def plan_status(args: argparse.Namespace) -> int:
     pending = {role: count for role, count in summary["steering_pending"].items() if count}
     for role, count in sorted(pending.items()):
         print(f"  {count} unread steering note(s) for the {role}")
+    for note in summary.get("steering_undelivered", []):
+        text = note["text"]
+        if len(text) > 90:
+            text = text[:87] + "..."
+        who = ", ".join(note.get("unread_by") or [note["role"]])
+        print(f"  steering #{note['seq']} has not reached the {who}: {text}")
     return 0
 
 
@@ -1838,17 +1844,34 @@ def plan_steering(args: argparse.Namespace) -> int:
     plan_id = store.resolve(args.id) if args.id else ""
     role = getattr(args, "role", "") or "all"
     if args.ack:
-        acked = store.ack_steering(role=_plan_role(args), plan_id=plan_id)
-        print(f"acked steering for {acked['role']} (repo {acked['repository_seq']}, plan {acked['plan_seq']})")
+        acked = store.ack_steering(
+            role=_plan_role(args), plan_id=plan_id, agent=getattr(args, "agent", "") or ""
+        )
+        who = f" for {args.agent}" if getattr(args, "agent", "") else ""
+        print(f"acked steering for {acked['role']}{who} (repo {acked['repository_seq']}, plan {acked['plan_seq']})")
         return 0
-    result = store.steering(role=role, plan_id=plan_id, unread=args.unread)
+    # A declared role is an agent asking "is there anything new for me",
+    # and answering with the whole history every time is how a poll-at-
+    # decision-points instruction turns into a context leak.
+    unread_only = args.unread or (role != "all" and not args.all)
+    result = store.steering(role=role, plan_id=plan_id, unread=unread_only)
     if args.json:
         print_json(result)
+        if unread_only:
+            store.ack_steering(role=role, plan_id=plan_id)
         return 0
+    shown = 0
     for scope in ("repository", "plan"):
         for note in result.get(scope, []):
             binding = " [requires replan]" if note.get("requires_replan") else ""
             print(f"{scope} #{note['seq']}  {note['at']}  ->{note['role']}{binding}: {note['text']}")
+            shown += 1
+    if unread_only:
+        if not shown:
+            print(f"no unread steering for the {role}")
+        else:
+            print(f"({shown} shown once and marked read; `--all` replays the history)")
+        store.ack_steering(role=role, plan_id=plan_id)
     return 0
 
 
@@ -2907,6 +2930,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan_steering_parser.add_argument("--plan", dest="id")
     plan_steering_parser.add_argument(
         "--unread", action="store_true", help="only notes this role has not acked"
+    )
+    plan_steering_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="replay every note, including ones this role has already read",
     )
     plan_steering_parser.add_argument(
         "--ack", action="store_true", help="mark everything visible as seen"
