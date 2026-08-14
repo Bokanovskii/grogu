@@ -239,7 +239,9 @@ evidence the architect was called in to look at.
 That rule has a blind spot on its own, so there is a second trigger. An engineer
 who never fixes anything never produces a bounce, and failures would pile up on
 one route forever with the round count sitting at zero. Six unresolved defects
-on a single route escalates as a stall. Six is twice the round cap and no better
+escalates as a stall, counted across every route rather than per route, because
+five open implementation failures alongside five open test failures is a plan
+that has plainly stopped. Six is twice the round cap and no better
 justified than that; it is the point past which the next failure report is not
 telling anybody anything new. Both caps are guesses that should be revised once
 real plans have run through the loop.

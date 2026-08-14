@@ -292,6 +292,19 @@ class PlanStoreTests(unittest.TestCase):
         claim = self.store.summary(plan_id)["open_amendments"][0]["claim"]
         self.assertIn("stalled rather than bounced", claim)
 
+    def test_a_stall_split_across_routes_still_escalates(self):
+        """Counted per route the backstop was evadable: five open
+        implementation failures and five open test failures is a plan that has
+        plainly stopped, and neither route reaches the cap alone."""
+        plan_id = self.plan()
+        routes = (grogu_plans.ROUTE_IMPLEMENTATION, grogu_plans.ROUTE_TEST)
+        for index in range(grogu_plans.DEFAULT_MAX_PENDING_DEFECTS):
+            self.store.report_defect(
+                plan_id, report=f"still broken {index}",
+                route=routes[index % 2], raised_by="tester",
+            )
+        self.assertTrue(self.store.load(plan_id).get("escalated"))
+
     def test_a_stall_escalation_does_not_strand_the_defects_it_names(self):
         """Auto-close is suspended while escalated so the architect keeps the
         evidence. That must not mean the extra defects are stranded once the

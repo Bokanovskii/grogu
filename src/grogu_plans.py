@@ -1891,10 +1891,12 @@ class PlanStore:
                 # That is a stall rather than a loop, but it needs the same
                 # person — nothing else in the pipeline will notice a plan
                 # that has simply stopped moving.
+                # Counted across every route, not just this one. Per route it
+                # was still evadable: five open implementation failures and
+                # five open test failures is a plan that has plainly stopped,
+                # and neither route reaches the cap alone.
                 unresolved = [
-                    other
-                    for other in defects
-                    if other.get("route") == route and other.get("status") == PENDING
+                    other for other in defects if other.get("status") == PENDING
                 ]
                 stalled = len(unresolved) >= max_pending_defects()
                 escalate = (rounds >= cap or stalled) and not manifest.get("escalated")
@@ -1923,9 +1925,9 @@ class PlanStore:
                 plan_id,
                 claim=(
                     (
-                        f"{len(unresolved)} failures are open on the {route} route "
-                        f"with none resolved; the loop has stalled rather than "
-                        f"bounced. Latest: {report.strip()}"
+                        f"{len(unresolved)} failures are open with none "
+                        f"resolved; the loop has stalled rather than bounced. "
+                        f"Latest: {report.strip()}"
                     )
                     if defect.get("stalled")
                     else f"Engineer and tester have exchanged {defect['round']} rounds "
