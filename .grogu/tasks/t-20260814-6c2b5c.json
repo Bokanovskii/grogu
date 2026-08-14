@@ -10,14 +10,20 @@
   "assignee": null,
   "created_at": "2026-08-14T04:03:09+00:00",
   "created_by": "grogu",
-  "updated_at": "2026-08-14T04:03:09+00:00",
-  "revision": 1,
+  "updated_at": "2026-08-14T04:10:39+00:00",
+  "revision": 2,
   "log": [
     {
       "at": "2026-08-14T04:03:09+00:00",
       "by": "grogu",
       "event": "created",
       "text": "A real UI for watching and steering agents"
+    },
+    {
+      "at": "2026-08-14T04:10:39+00:00",
+      "by": "grogu",
+      "event": "note",
+      "text": "Considered A2A (Agent2Agent, v1.0 since Mar 2026, Linux Foundation, 150+ orgs) as the transport for steering and inter-agent comms. Decided against for now: A2A explicitly does not support interrupting a task in the 'working' state -- a client sends input only once the agent enters 'input-required'. That is the same wall write_agent hits, so it would not reduce steering latency at all, while adding HTTP endpoints on the machine that holds iMessage/Gmail/keys. Grogu's roles also do not communicate conversationally by design: defects, amendments and gates are a shared state machine with adjudication, which is deliberately stronger than exchanging messages.\n\nWorth borrowing without adopting the wire protocol: A2A makes 'input-required' a first-class task state. grogu watch shows 'waiting on you' only buried inside a per-plan block. The UI should hoist a single 'blocked on you' section to the top -- approvals, escalations and open amendments across all plans -- so supervision is one glance rather than a read.\n\nTriggers that would flip the A2A decision: wanting a non-Copilot agent in the pipeline (cloud coding agent, vendor agent), agents on another machine, or Grogu's roles being callable by another harness."
     }
   ]
 }
