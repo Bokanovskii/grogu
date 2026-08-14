@@ -656,3 +656,142 @@ class DecideGateTests(unittest.TestCase):
         self.assertIn("--role supervisor", refused.stderr)
         result = self.run_cli("accept", "1", "--role", "supervisor")
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class HandEditedStoreTests(unittest.TestCase):
+    """What happens when the store is not what `propose` would have written.
+
+    It is a plain JSON file in the user's home. It gets hand-edited, restored
+    from a backup, merged badly, or half-written. Every one of these was found
+    by a probe doing exactly that, and each ended either in a traceback in
+    front of the person reading the listing or in the harness corrupting a file
+    that was fine when it arrived.
+    """
+
+    def setUp(self) -> None:
+        self.home = tempfile.TemporaryDirectory()
+        os.environ["GROGU_HOME"] = self.home.name
+        self.path = Path(self.home.name) / "skills.json"
+
+    def tearDown(self) -> None:
+        self.home.cleanup()
+
+    def store(self, *entries) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({"entries": list(entries)}), encoding="utf8")
+
+    def entry(self, **overrides) -> dict:
+        base = {
+            "seq": 1,
+            "name": "narrow-first",
+            "description": "Narrowest test first.",
+            "body": BODY,
+            "status": grogu_skills.PENDING,
+        }
+        base.update(overrides)
+        return base
+
+    def test_a_gap_in_the_numbering_does_not_make_the_harness_reuse_one(self) -> None:
+        # This is the one that did real damage: a store whose only entry was #2
+        # got a second #2 written over the top of it, and the next read refused
+        # the file the harness had just corrupted.
+        self.store(self.entry(seq=2, name="existing-two"))
+        created = grogu_skills.propose(
+            "audit-licences",
+            description="Audit every new dependency licence.",
+            body=LICENSE_BODY,
+        )
+        self.assertEqual(created["seq"], 3)
+        self.assertEqual(len(grogu_skills.proposals()), 2)
+
+    def test_a_status_nobody_recognises_is_refused_not_hidden(self) -> None:
+        # It vanished from the queue instead: not listed, so never decided, and
+        # not an error either, so nobody knew to look.
+        self.store(self.entry(status="teleported"))
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.proposals()
+
+    def test_a_link_holding_something_that_is_not_a_number_is_refused(self) -> None:
+        self.store(self.entry(related_to=[{}]))
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.proposals()
+
+    def test_echoes_that_are_not_records_are_refused(self) -> None:
+        self.store(self.entry(echoes="oops"))
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.proposals()
+
+    def test_a_seq_that_is_not_a_counting_number_is_refused(self) -> None:
+        for bad in (True, 0, -5):
+            with self.subTest(seq=bad):
+                self.store(self.entry(seq=bad))
+                with self.assertRaises(grogu_skills.SkillError):
+                    grogu_skills.proposals()
+
+    def test_an_empty_body_cannot_be_installed_however_it_got_there(self) -> None:
+        # It installed as a skill file with nothing under the front matter: a
+        # standing instruction saying nothing, read by every agent after it.
+        self.store(self.entry(body="", description=""))
+        repo = tempfile.TemporaryDirectory()
+        self.addCleanup(repo.cleanup)
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.accept(1, root=Path(repo.name))
+
+
+class LinkAndOverrideTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.home = tempfile.TemporaryDirectory()
+        os.environ["GROGU_HOME"] = self.home.name
+
+    def tearDown(self) -> None:
+        self.home.cleanup()
+
+    def two(self) -> None:
+        grogu_skills.propose(
+            "narrow-first", description="Narrowest test first.", body=BODY
+        )
+        grogu_skills.propose(
+            "audit-licences",
+            description="Audit every new dependency licence.",
+            body=LICENSE_BODY,
+        )
+
+    def test_linking_amends_both_rather_than_filing_a_third(self) -> None:
+        self.two()
+        grogu_skills.link(2, 1)
+        entries = grogu_skills.proposals()
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["related_to"], [2])
+        self.assertEqual(entries[1]["related_to"], [1])
+
+    def test_linking_twice_does_not_say_it_twice(self) -> None:
+        self.two()
+        grogu_skills.link(2, 1)
+        grogu_skills.link(2, 1)
+        self.assertEqual(grogu_skills.proposals()[1]["related_to"], [1])
+
+    def test_a_proposal_cannot_be_the_same_lesson_as_itself(self) -> None:
+        self.two()
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.link(1, 1)
+
+    def test_linking_to_a_proposal_that_is_not_there_is_refused(self) -> None:
+        self.two()
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.link(1, 999)
+
+    def test_an_override_has_to_name_something_the_agent_was_shown(self) -> None:
+        # Unvalidated this was free text on an audit record, and a probe put a
+        # credential in it, in a store that is pooled and reviewed in public.
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.propose(
+                "narrow-first",
+                description="Narrowest test first.",
+                body=BODY,
+                overrode=["ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"],
+            )
+        self.assertEqual(grogu_skills.proposals(), [])
+
+    def test_a_skill_name_can_never_be_read_as_a_proposal_number(self) -> None:
+        with self.assertRaises(grogu_skills.SkillError):
+            grogu_skills.propose("1", description="A number.", body=BODY)

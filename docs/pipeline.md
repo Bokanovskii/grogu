@@ -617,12 +617,19 @@ vocabulary and scored 0.16, which no threshold recovers without linking
 everything to everything. So the harness stops guessing at that point and hands
 the question to the one party that can answer it — the agent proposing, which
 has the lesson in mind — by naming the nearest existing proposals on every
-`skill propose` and offering `--like <n>` to link one itself.
+`skill propose`. That list can only be produced *after* the proposal is filed,
+since the proposal is what it compares against, so the way to act on it is
+`grogu skill link <yours> <theirs>`, which amends both. Telling the agent to add
+a flag and propose again meant filing the same lesson twice.
 
 Both refusals name a way past themselves. `--not-the-same <skill-or-number>`
 records that the agent read the thing it was pointed at and judged this to be a
-different lesson; the override is stored on the proposal, so whoever reviews it
-sees what was overridden and can disagree. Without an escape hatch, every false
+different lesson; the override is shown by `skill proposals` and `skill show`,
+so whoever reviews it sees what was overridden and can disagree. The target has
+to resolve to an installed skill or a declined proposal -- an override naming
+something the agent was never shown is not a note that it read anything, and
+while the field took free text a probe put a credential-shaped string in it,
+which then sat unredacted in a store that is pooled and reviewed in public. Without an escape hatch, every false
 refusal is a lesson that is never written at all, which is the worse of the two
 failures — a false acceptance is caught by the person who reads the proposal.
 
@@ -653,7 +660,9 @@ twelve hours, because a binding is never cleared — the shell that made it just
 stops existing — and refusing forever on an agent that finished last week locks
 the user out of his own checkout with a message about somebody who is not there.
 
-Nothing here survives deleting `.grogu/state/skills.json`. There is no journal
+Nothing here survives deleting `$GROGU_HOME/skills.json` (`~/.grogu/skills.json`
+by default -- the store is pooled across repositories, so it is not inside any
+of them). There is no journal
 and no tombstone: pending proposals, decline reasons and echo counts all go
 with it, and the only record left is whatever was already accepted and
 committed under `.github/skills`. That is a real limitation and not a guarded

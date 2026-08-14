@@ -4298,19 +4298,25 @@ class PlanStore:
         """
         bindings = self.session_bindings()
         here = Path.cwd().resolve()
-        candidates = [here] + list(here.parents)
-        for parent in candidates:
-            entry = bindings.get(str(parent))
-            if isinstance(entry, dict) and entry.get("role"):
-                return entry
+        covering = [str(parent) for parent in [here] + list(here.parents)]
         if root is not None:
             base = str(Path(root).expanduser().resolve())
-            for path, entry in sorted(bindings.items()):
-                if not isinstance(entry, dict) or not entry.get("role"):
-                    continue
-                if path == base or path.startswith(base + os.sep):
-                    return entry
-        return {}
+            covering += [
+                path
+                for path in sorted(bindings)
+                if path == base or path.startswith(base + os.sep)
+            ]
+        found = [
+            bindings[path]
+            for path in dict.fromkeys(covering)
+            if isinstance(bindings.get(path), dict) and bindings[path].get("role")
+        ]
+        # The most recent one, not the nearest. Returning the nearest meant a
+        # tester that worked in `src` last week masked the engineer that
+        # declared itself at the root ten minutes ago: the caller saw one
+        # binding, judged it stale, and allowed what it should have refused.
+        # Whoever ran a command most recently is the one who is still here.
+        return max(found, key=lambda entry: str(entry.get("at") or ""), default={})
 
     def brief(self, role: str, *, plan_id: str = "", base_dir: Optional[Path] = None) -> dict:
         """Assemble a role's prompt: shared contract + repository overlay.

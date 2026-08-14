@@ -2742,7 +2742,8 @@ def _skill_decider(action: str, args: argparse.Namespace) -> Optional[str]:
     if not role:
         binding = {}
         try:
-            binding = grogu_plans.PlanStore().binding_covering(_skill_repo(args))
+            root = _skill_repo(args)
+            binding = grogu_plans.PlanStore(root).binding_covering(root)
         except (grogu_plans.PlanError, OSError):
             binding = {}
         bound = binding.get("role", "")
@@ -2835,12 +2836,20 @@ def skill_propose(args: argparse.Namespace) -> int:
             if other["seq"] in nearby:
                 print(f"    #{other['seq']} {other['name']}: {other['description']}")
         print(
-            "    if one of them is, link it: "
-            f"`grogu skill propose ... --like <n>` (or leave it; nothing is lost)"
+            f"    if one of them is, link it: `grogu skill link {entry['seq']} <n>` "
+            "(or leave it; nothing is lost)"
         )
     if entry.get("amends"):
         print("  this amends an installed skill; the change will show up in a diff")
     print("  waiting on the user or the supervisor: grogu skill proposals")
+    return 0
+
+
+def skill_link(args: argparse.Namespace) -> int:
+    entry = grogu_skills.link(args.seq, args.other)
+    listed = ", ".join(f"#{seq}" for seq in entry.get("related_to") or [])
+    print(f"#{entry['seq']} {entry['name']} is now linked to {listed}")
+    print("  both are kept; whoever decides reads them side by side")
     return 0
 
 
@@ -2875,6 +2884,15 @@ def skill_proposals(args: argparse.Namespace) -> int:
         print(f"    {entry.get('description','')}")
         if entry.get("why"):
             print(f"    why: {entry['why']}")
+        if entry.get("overrode"):
+            # Recorded but never shown is the same as not recorded. This is an
+            # agent saying it read something and disagreed, which is precisely
+            # the judgement the person deciding is here to check.
+            print(
+                "    the agent was told this was already known or already "
+                "declined, read " + ", ".join(entry["overrode"]) + ", and said "
+                "this is a different lesson"
+            )
         if entry.get("contested"):
             contested = entry["contested"]
             print(
@@ -2897,7 +2915,20 @@ def skill_show(args: argparse.Namespace) -> int:
             # Whoever decides this is deciding on behalf of every agent that
             # was folded into it, so they get to see what was folded in rather
             # than a count claiming agreement they cannot check.
+            if entry.get("overrode"):
+                print(
+                    "\nThe agent was told this was already known or already "
+                    "declined, read " + ", ".join(entry["overrode"]) + ", and "
+                    "judged this to be a different lesson. That judgement is "
+                    "recorded, not trusted."
+                )
+            everything = {
+                other["seq"]: other
+                for other in grogu_skills.proposals(include_decided=True)
+            }
             for seq in entry.get("related_to") or []:
+                if seq not in everything:
+                    print(f"\n--- #{seq}, linked from this one, is missing ---")
                 for other in grogu_skills.proposals(include_decided=True):
                     if other.get("seq") != seq:
                         continue
@@ -4296,6 +4327,13 @@ def build_parser() -> argparse.ArgumentParser:
     skill_proposals_parser.add_argument("--all", action="store_true")
     skill_proposals_parser.add_argument("--json", action="store_true")
     skill_proposals_parser.set_defaults(handler=skill_proposals)
+
+    skill_link_parser = skill_subparsers.add_parser(
+        "link", help="say two filed proposals are the same lesson"
+    )
+    skill_link_parser.add_argument("seq", type=int)
+    skill_link_parser.add_argument("other", type=int)
+    skill_link_parser.set_defaults(handler=skill_link)
 
     skill_show_parser = skill_subparsers.add_parser("show", help="the body of a proposal")
     skill_show_parser.add_argument("seq", type=int)

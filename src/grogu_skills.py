@@ -61,7 +61,12 @@ SKILL_SIMILARITY = 0.34
 # repetition signal at all -- which is the whole reason proposals are pooled.
 SKILL_RELATED = 0.2
 
-NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+# A skill name has to contain a letter. `--not-the-same 1` was otherwise two
+# questions at once -- the installed skill named "1" or declined proposal #1 --
+# and it skipped both, which is exactly the blanket override the flag was
+# written to avoid. Names and numbers now live in disjoint namespaces, and
+# nothing useful is lost: "1" was never a name a future agent could act on.
+NAME_PATTERN = re.compile(r"^[a-z0-9]*[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 
 _STOPWORDS = frozenset(
     """a an the and or but to of in on for with by is are was were be been it
@@ -157,11 +162,47 @@ def _read() -> dict:
                 "it is unambiguous."
             )
         seen.add(seq)
+        if isinstance(seq, bool) or seq < 1:
+            raise SkillError(
+                f"entry {index} in {path} has seq {seq!r}; proposal numbers "
+                "count up from 1"
+            )
         for field in ("name", "description", "body"):
             if not isinstance(entry.get(field, ""), str):
                 raise SkillError(
                     f"entry #{seq} in {path} has a {field} that is not text"
                 )
+        # Everything below is read by a command that indexes or iterates it.
+        # Validating only the fields the store writes first left the rest to
+        # fail as a traceback in front of whoever was reading the listing --
+        # a related_to holding an object, an echoes holding a string, a status
+        # nobody recognises silently vanishing from the queue.
+        status = entry.get("status", PENDING)
+        if status not in (PENDING, ACCEPTED, DECLINED):
+            raise SkillError(
+                f"entry #{seq} in {path} has status {status!r}, which is none "
+                f"of {PENDING}, {ACCEPTED} or {DECLINED}; it would drop out of "
+                "the queue without ever being decided"
+            )
+        for field in ("related_to", "nearby"):
+            value = entry.get(field, [])
+            if not isinstance(value, list) or any(
+                not isinstance(item, int) or isinstance(item, bool) for item in value
+            ):
+                raise SkillError(
+                    f"entry #{seq} in {path} has a {field} that is not a list "
+                    "of proposal numbers"
+                )
+        if not isinstance(entry.get("echoes", []), list) or any(
+            not isinstance(echo, dict) for echo in entry.get("echoes", [])
+        ):
+            raise SkillError(
+                f"entry #{seq} in {path} has echoes that are not records"
+            )
+        if not isinstance(entry.get("overrode", []), list):
+            raise SkillError(
+                f"entry #{seq} in {path} has an overrode that is not a list"
+            )
     return payload
 
 
@@ -290,6 +331,46 @@ def proposals(*, include_decided: bool = False) -> list:
     return [entry for entry in entries if entry.get("status") == PENDING]
 
 
+def _check_overrides(overrode: list, entries: list, installed: list) -> None:
+    """An override has to name something that exists.
+
+    Unvalidated it was free text on a record nobody could check -- an agent
+    could assert it had read a skill that was never written, and a probe put a
+    credential-shaped string in the field, which then sat unredacted in a store
+    that is pooled across repositories and reviewed in public. Requiring the
+    target to resolve makes the field an audit record rather than a comment,
+    and incidentally means nothing arbitrary can be written into it at all.
+    """
+    known = {skill.get("name", "") for skill in installed}
+    declined = {str(entry["seq"]) for entry in entries if entry.get("status") == DECLINED}
+    for target in overrode:
+        if target in known or target in declined:
+            continue
+        raise SkillError(
+            f"--not-the-same {target!r} names nothing you were shown. It takes "
+            "the name of the installed skill you were sent to read, or the "
+            "number of the declined proposal you were shown. Nothing was "
+            "recorded; it is meant to be a note that you read that one, and a "
+            "note about something that does not exist is not one."
+        )
+
+
+def _check_links(liked: list, entries: list) -> None:
+    by_seq = {entry["seq"]: entry for entry in entries}
+    for seq in liked:
+        entry = by_seq.get(seq)
+        if entry is None:
+            raise SkillError(
+                f"there is no proposal #{seq}. `grogu skill proposals` lists "
+                "the numbers."
+            )
+        if entry.get("status") != PENDING:
+            raise SkillError(
+                f"proposal #{seq} was already {entry.get('status')}; linking to "
+                "it would put your lesson next to a decision that has been made"
+            )
+
+
 def _validate(name: str, description: str, body: str) -> None:
     if not NAME_PATTERN.match(name):
         raise SkillError(
@@ -350,8 +431,8 @@ def propose(
     what was overridden and can disagree.
     """
     name = (name or "").strip().lower()
-    overrode = list(overrode or [])
-    liked = list(liked or [])
+    overrode = [str(item).strip() for item in (overrode or []) if str(item).strip()]
+    liked = list(dict.fromkeys(int(seq) for seq in (liked or [])))
     # Measured before redaction, not after. The scan reads every byte, so
     # checking the length afterwards meant an oversized paste was rejected only
     # once the expensive part had already run -- which is the hang the cap was
@@ -367,7 +448,6 @@ def propose(
     why = grogu_privacy.redact((why or "").strip())
     _validate(name, description, body)
 
-    overrode_names = {str(item) for item in overrode}
     existing = {skill["name"] for skill in (installed or [])}
     amends = name in existing
     if not amends:
@@ -375,7 +455,7 @@ def propose(
         # under another name should be sent to read it, not add a second copy
         # for the next agent to have to choose between.
         for skill in installed or []:
-            if skill.get("name") in overrode_names:
+            if skill.get("name") in overrode:
                 continue
             # Strict: headline *and* procedure. Sending an agent away to read
             # an unrelated skill is worse than letting a near-duplicate through
@@ -394,11 +474,13 @@ def propose(
     with skills_lock():
         payload = _read()
         entries = payload.setdefault("entries", [])
+        _check_overrides(overrode, entries, installed or [])
+        _check_links(liked, entries)
         subject = (name, description, body)
         for entry in entries:
             if entry.get("status") != DECLINED:
                 continue
-            if entry["seq"] in overrode or str(entry["seq"]) in overrode_names:
+            if str(entry["seq"]) in overrode:
                 continue
             if _match(subject, entry) == SAME:
                 # The decline note exists for exactly this moment. A fresh
@@ -453,7 +535,7 @@ def propose(
         nearby = [other["seq"] for score, other in neighbours[:3] if score > 0]
         related += [seq for seq in liked if seq not in related]
         entry = {
-            "seq": len(entries) + 1,
+            "seq": max([other["seq"] for other in entries] or [0]) + 1,
             "name": name,
             "description": description,
             "body": body.strip(),
@@ -478,6 +560,34 @@ def propose(
         return entry
 
 
+def link(seq: int, other: int) -> dict:
+    """Say that two proposals already filed are the same lesson.
+
+    The nearest-proposals list is printed *after* the proposal is written --
+    it cannot be printed before, because the thing it compares against is the
+    proposal itself. So telling the agent to add `--like` and propose again
+    meant filing the lesson a second time, which is how a probe ended up with
+    two identical proposals and a link between one of them and a third. The
+    advice now points here, and this amends what is already there.
+    """
+    if seq == other:
+        raise SkillError("a proposal cannot be the same lesson as itself")
+    with skills_lock():
+        payload = _read()
+        entries = payload.setdefault("entries", [])
+        subject = _find(seq, entries)
+        _check_links([other], entries)
+        for one, two in ((subject, other), (_find(other, entries), seq)):
+            links = one.setdefault("related_to", [])
+            if two not in links:
+                links.append(two)
+        subject["nearby"] = [
+            near for near in subject.get("nearby", []) if near != other
+        ]
+        _write(payload)
+        return subject
+
+
 def _find(seq: int, entries: list) -> dict:
     for entry in entries:
         if entry.get("seq") == seq:
@@ -498,10 +608,20 @@ def accept(seq: int, *, root: Path, note: str = "") -> dict:
         # name has been through a plain JSON file on disk that anything can
         # edit, and this is the step that turns a name into a filesystem path:
         # a `../` that got in by any route would write outside the repository.
-        if not NAME_PATTERN.match(entry.get("name", "")):
+        # The whole proposal, not just the name. An entry that reached the
+        # store by hand rather than through `propose` has been through none of
+        # the checks, and one with an empty body installed as a skill file with
+        # nothing under the front matter -- a standing instruction saying
+        # nothing, which every future agent then reads.
+        try:
+            _validate(
+                entry.get("name", ""),
+                entry.get("description", ""),
+                entry.get("body", ""),
+            )
+        except SkillError as error:
             raise SkillError(
-                f"skill proposal #{seq} has a name that is not a directory "
-                f"name ({entry.get('name')!r}); refusing to install it"
+                f"skill proposal #{seq} cannot be installed as it stands: {error}"
             )
         directory = Path(root) / SKILLS_DIRNAME / entry["name"]
         manifest = directory / "SKILL.md"
