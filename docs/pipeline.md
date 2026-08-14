@@ -293,16 +293,29 @@ sequence-numbered notes, and delivery has three paths:
 
 * **At spawn:** `grogu plan brief --role <role>` includes the full standing set,
   so an agent started an hour after the note still gets it.
+* **Relayed:** `grogu plan steer` prints which agents are running right now, so
+  the session that spawned them can push the note in with `write_agent` while
+  the user is still at the terminal. This is the only path that does not wait,
+  because a running subagent cannot be reached by anything except its spawner.
 * **Mid-flight:** unread notes are appended to the output of *any* `grogu`
-  command the agent runs. The agent is already running heartbeats, gates and
-  status checks constantly, so steering rides along with something it did
-  anyway. Nothing has to remember to poll, because polling is not the mechanism.
-  The notice goes to stderr for a human at a terminal, and to stdout when stdout
-  is redirected, because an agent harness that captures only stdout was
+  command the agent runs. This is the fallback, and its latency is honest: an
+  engineer deep in an edit may not run a `grogu` command for half an hour, so
+  the agent prompts ask for a poll at decision points — before starting a
+  component, before completing a stage, after a failed run — rather than on a
+  clock. The notice goes to stderr for a human at a terminal, and to stdout when
+  stdout is redirected, because an agent harness that captures only stdout was
   otherwise dropping it.
 * **Binding:** `--requires-replan` moves the plan to `needs_review` and closes
   the gates until the architect revises it. Delivery alone is weak; an agent can
   read a note and reason its way past it.
+
+Each agent is shown a note exactly once: delivery acks it. Repeating it on every
+subsequent command bought nothing and charged for the same guidance a dozen
+times over in a context window that is the scarcest thing here. The cost is that
+an agent which discards the output has lost the note, which is why the binding
+kind lives in state instead — the gate refuses and quotes the text back at the
+point where it actually bites, rather than relying on the agent still having it
+in view.
 
 Ack watermarks are per *agent*, not per role. With parallel workstreams several
 engineers run at once, and a role-wide watermark meant the first one to poll

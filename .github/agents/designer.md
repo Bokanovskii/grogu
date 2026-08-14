@@ -145,3 +145,14 @@ grogu plan friction --harness --note "..."    # Grogu itself got in the way
 Use `--harness` when the problem is the tooling rather than this repository,
 because that pool is read where Grogu is actually fixed. Complaining in a final
 message reaches nobody.
+
+## Staying in step with the user
+
+The user can correct you mid-flight. Corrections ride out on the output of any
+`grogu` command you run, and you are shown each note once — so read it when it
+appears and act on it then, rather than noting it to come back to.
+
+Because it only arrives when you run something, run `grogu plan steering --role
+designer --plan <id>` at decision points: before starting a component, when you are
+about to make a choice the plan does not cover, before completing your stage,
+and after a run fails. Not on a timer, and not between every edit.

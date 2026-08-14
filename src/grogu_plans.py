@@ -747,6 +747,29 @@ def patterns_overlap(left: str, right: str, root: Optional[Path] = None) -> bool
     return left_prefix.startswith(right_prefix) or right_prefix.startswith(left_prefix)
 
 
+_DELIVERING: Optional[tuple] = None
+
+
+def mark_delivered() -> None:
+    """Ack the steering the last banner carried, now that it has been printed.
+
+    Called after the text reaches a stream rather than when it is composed, so
+    a command that fails before printing does not swallow the note. If the
+    output is discarded anyway the note is lost, which is the honest cost of
+    not repeating it; the gates, not the banner, are what stop a binding note
+    from being ignored.
+    """
+    global _DELIVERING
+    delivering, _DELIVERING = _DELIVERING, None
+    if not delivering:
+        return
+    role, plan_id, root = delivering
+    try:
+        PlanStore(root).ack_steering(role=role, plan_id=plan_id)
+    except (PlanError, OSError):
+        pass  # an ack must never be why a command fails
+
+
 def pending_banner(root: Optional[Path] = None) -> str:
     """Unread steering for the calling agent, as a block to append to any output.
 
@@ -778,6 +801,13 @@ def pending_banner(root: Optional[Path] = None) -> str:
     notes = pending.get("repository", []) + pending.get("plan", [])
     if not notes:
         return ""
+    # Remember what this banner is about to hand over. The caller acks it once
+    # the text is actually on a stream, so a note enters an agent's context
+    # exactly once instead of riding along with every command until the model
+    # remembers to run --ack. Repetition was never the enforcement anyway:
+    # binding notes hold the gate in state.
+    global _DELIVERING
+    _DELIVERING = (role, plan_id, root)
     lines = [
         "",
         f"── steering for the {role} ─────────────────────────────",
@@ -786,10 +816,8 @@ def pending_banner(root: Optional[Path] = None) -> str:
         binding = " [requires replan]" if note.get("requires_replan") else ""
         lines.append(f"  #{note['seq']}{binding} {note['text']}")
     lines.append(
-        "  Fold this in now, then run "
-        f"`grogu plan steering --role {role}"
-        + (f" --plan {plan_id}" if plan_id else "")
-        + " --ack`."
+        "  Fold this in now. You are shown each note once, so act on it here "
+        "rather than planning to come back to it."
     )
     if any(note.get("requires_replan") for note in notes):
         lines.append(
@@ -2411,12 +2439,25 @@ class PlanStore:
             if note.get("requires_replan") and note.get("at", "") > watermark
         ]
         if binding_repo:
+            # Quote them. A banner is shown once, and this is the moment the
+            # note actually bites, so an agent that has lost it from context
+            # gets the text back exactly when it needs it rather than a count
+            # and an instruction to go looking.
+            quoted = "; ".join(note["text"] for note in binding_repo[-3:])
             blockers.append(
                 f"{len(binding_repo)} binding repository steering note(s) postdate "
-                "this plan; the architect must fold them in and re-approve"
+                f"this plan; the architect must fold them in and re-approve: {quoted}"
             )
         if unread.get("requires_replan") and status != APPROVED:
-            blockers.append("binding steering has not been folded into the plan")
+            binding_plan = "; ".join(
+                note["text"]
+                for note in unread.get("plan", [])
+                if note.get("requires_replan")
+            )
+            blockers.append(
+                "binding steering has not been folded into the plan"
+                + (f": {binding_plan}" if binding_plan else "")
+            )
 
         return {
             "plan": plan_id,

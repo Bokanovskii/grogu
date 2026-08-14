@@ -128,11 +128,27 @@ grogu plan steer "<text>" [--plan <id>] [--role engineer] [--requires-replan]
 Notes are stored, role-scoped and sequence-numbered. Agents spawned later
 receive the full standing set in `grogu plan brief`; agents already running have
 unread notes appended to the output of any `grogu` command they run — as a
-`grogu_notice` field under `--json` — so nobody has to remember to poll. `--requires-replan` closes the gates until the
-architect folds the note in.
+`grogu_notice` field under `--json` — so nobody has to remember to poll.
+`--requires-replan` closes the gates until the architect folds the note in.
 
-Relay to a running subagent with `write_agent` by pointing at the command, never
-by pasting the text — one source of truth.
+**Each agent is shown a note once.** Delivery acks it, so the same guidance is
+never paid for twice in one context. The cost of that is real: an agent that
+discards the output has lost the note. Binding notes are therefore held in
+state rather than in the banner — the gate refuses and quotes the text back at
+the moment it bites, which is the moment it is needed.
+
+**Push, don't wait.** The banner only arrives when the agent happens to run
+`grogu`, and an engineer mid-edit may not run one for half an hour. Nothing can
+interrupt a running subagent except its spawner, so `grogu plan steer` names
+which agents are running and you relay immediately with `write_agent` — by
+pointing at the command, never by pasting the text. The banner is the path for
+agents nobody is holding a handle to.
+
+**When an agent should poll.** At decision points, not on a clock: before
+starting a component, when about to make a choice the plan does not cover,
+before completing a stage, and after a test run fails. Polling more often than
+that buys latency nobody is waiting on; polling less risks working an hour past
+a correction.
 
 ## Spawning an agent
 

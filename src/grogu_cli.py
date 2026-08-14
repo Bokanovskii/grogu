@@ -157,6 +157,7 @@ def print_json(value: object) -> None:
     if _PENDING_NOTICE and isinstance(value, dict) and "grogu_notice" not in value:
         value = dict(value, grogu_notice=_PENDING_NOTICE)
         _PENDING_NOTICE = ""
+        grogu_plans.mark_delivered()
     print(json.dumps(value, indent=2, sort_keys=True))
 
 
@@ -1239,6 +1240,7 @@ def _emit_notice(banner: str, parsed: argparse.Namespace) -> None:
     print(banner, file=sys.stdout if (redirected and not wants_json) else sys.stderr)
     global _PENDING_NOTICE
     _PENDING_NOTICE = ""
+    grogu_plans.mark_delivered()
 
 
 def _record_activity(parsed: argparse.Namespace) -> None:
@@ -1753,7 +1755,40 @@ def plan_steer(args: argparse.Namespace) -> int:
     print(f"steering #{note['seq']} recorded for {note['role']} on {scope}")
     if note["requires_replan"]:
         print("plan moved to needs_review: the architect must fold this in before work continues")
+    _relay_hint(note, plan_id)
     return 0
+
+
+def _relay_hint(note: dict, plan_id: str) -> None:
+    """Name the agents that should be told now rather than at their next poll.
+
+    Steering rides out on the next `grogu` command an agent happens to run, and
+    an engineer deep in an edit may not run one for half an hour. Nothing can
+    push text into a running subagent except its spawner, so the spawner is
+    told, here, while the user is still looking at the terminal. The banner
+    stays as the path for agents nobody is holding a handle to.
+    """
+    try:
+        targets = [
+            row
+            for row in grogu_watch.sessions(window_minutes=30)
+            if row.get("role")
+            and note["role"] in ("all", row["role"])
+            and (not plan_id or row.get("plan") in ("", plan_id))
+            and row.get("state") != "gone"
+        ]
+    except Exception:  # a hint must never be why steering fails to record
+        return
+    if not targets:
+        return
+    who = ", ".join(
+        f"{row['role']} (idle {int(row['idle_seconds'] // 60)}m)" for row in targets
+    )
+    print(f"  running now: {who}")
+    print(
+        "  relay it with write_agent rather than waiting for their next grogu "
+        "call; they poll at decision points, not on a clock"
+    )
 
 
 def plan_steering(args: argparse.Namespace) -> int:

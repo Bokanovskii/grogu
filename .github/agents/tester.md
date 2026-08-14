@@ -92,3 +92,14 @@ Testing infrastructure that was missing, slow or unreliable is a finding in its
 own right. Record it with `grogu plan friction --note "..."` so the tester
 overlay and the repository's test tooling improve instead of being worked around
 again next time.
+
+## Staying in step with the user
+
+The user can correct you mid-flight. Corrections ride out on the output of any
+`grogu` command you run, and you are shown each note once — so read it when it
+appears and act on it then, rather than noting it to come back to.
+
+Because it only arrives when you run something, run `grogu plan steering --role
+tester --plan <id>` at decision points: before starting a component, when you are
+about to make a choice the plan does not cover, before completing your stage,
+and after a run fails. Not on a timer, and not between every edit.

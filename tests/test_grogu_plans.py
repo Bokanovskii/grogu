@@ -1392,6 +1392,72 @@ class ParallelSteeringTests(unittest.TestCase):
             "the second engineer never saw the user's steering",
         )
 
+    def test_a_note_enters_an_agents_context_once(self):
+        """The banner used to ride along with every command until the model
+        remembered to ack, so one note could be paid for a dozen times."""
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        self.addCleanup(os.environ.pop, "GROGU_ROLE", None)
+        self._as("worktree-api")
+        self.store.steer("prefer the existing retry helper", role=grogu_plans.ENGINEER)
+        first = grogu_plans.pending_banner(self.root)
+        self.assertIn("prefer the existing retry helper", first)
+        grogu_plans.mark_delivered()
+        self.assertEqual(
+            grogu_plans.pending_banner(self.root),
+            "",
+            "the same note was loaded into the agent's context twice",
+        )
+
+    def test_an_undelivered_note_is_not_acked(self):
+        """The ack happens when the text reaches a stream, so a command that
+        composed a banner and then failed does not swallow the note."""
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        self.addCleanup(os.environ.pop, "GROGU_ROLE", None)
+        self._as("worktree-api")
+        self.store.steer("prefer the existing retry helper", role=grogu_plans.ENGINEER)
+        self.assertIn("retry helper", grogu_plans.pending_banner(self.root))
+        grogu_plans._DELIVERING = None  # the command died before printing
+        self.assertIn(
+            "retry helper",
+            grogu_plans.pending_banner(self.root),
+            "a note that was never printed must still be pending",
+        )
+
+    def test_delivery_to_one_agent_does_not_consume_its_peers_copy(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        self.addCleanup(os.environ.pop, "GROGU_ROLE", None)
+        self.store.steer("prefer the existing retry helper", role=grogu_plans.ENGINEER)
+        self._as("worktree-api")
+        self.assertIn("retry helper", grogu_plans.pending_banner(self.root))
+        grogu_plans.mark_delivered()
+        self._as("worktree-store")
+        self.assertIn(
+            "retry helper",
+            grogu_plans.pending_banner(self.root),
+            "the second engineer never saw the note",
+        )
+
+    def test_a_binding_note_is_quoted_where_it_actually_bites(self):
+        """Shown once means an agent can lose it. The gate is the moment it
+        matters, so the refusal carries the text rather than a count."""
+        plan = self.store.create("Test plan")
+        self.store.write_stage(
+            plan["id"], grogu_plans.IMPLEMENTATION, "# impl\n",
+            role=grogu_plans.ARCHITECT,
+        )
+        self.store.steer(
+            "must use the shared client",
+            role=grogu_plans.ENGINEER,
+            plan_id=plan["id"],
+            requires_replan=True,
+        )
+        gate = self.store.gate(plan["id"], "implement")
+        self.assertFalse(gate["allowed"])
+        self.assertTrue(
+            any("must use the shared client" in blocker for blocker in gate["blockers"]),
+            gate["blockers"],
+        )
+
     def test_the_summary_counts_unread_for_the_asking_agent(self):
         plan = self.store.create("Test plan")
         self.store.steer("watch the migration", role=grogu_plans.ENGINEER, plan_id=plan["id"])
