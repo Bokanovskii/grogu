@@ -1084,6 +1084,59 @@ def _headings(body: str) -> list:
     ]
 
 
+#: Below this a body is too short to judge for padding: a three-line testing
+#: plan may be terse and correct.
+PADDING_FLOOR_CHARS = 600
+
+
+def padded_body(body: str) -> str:
+    """Why this text is padding rather than a plan, or "" if it is a plan.
+
+    Stage bodies were checked only for being non-empty. That is enough for the
+    stages somebody reads in review, and not enough for the sealed ones: the
+    testing and evaluation plans are withheld from the engineer on purpose, so
+    the tester is the only role that ever sees them, and a testing plan that
+    says nothing produces a tester who tests nothing and reports success.
+
+    The first tester run in this pipeline's life was handed a testing plan that
+    was one sentence repeated ninety times. It coped -- it derived scope from
+    the user's steering instead and filed friction -- but the next one might
+    not, and neither the architect who wrote it nor the gate that let it
+    through noticed anything wrong. A length threshold cannot catch this,
+    because repetition is the cheapest way to reach any length.
+    """
+    stripped = body.strip()
+    if len(stripped) < PADDING_FLOOR_CHARS:
+        return ""
+    sentences = [
+        " ".join(piece.split()).lower()
+        for piece in re.split(r"(?<=[.!?])\s+|\n", stripped)
+        if len(piece.strip()) > 20
+    ]
+    if len(sentences) < 5:
+        return ""
+    unique = set(sentences)
+    if len(unique) / len(sentences) >= 0.3:
+        return ""
+    # Character share, not just the count: a long plan that happens to repeat a
+    # short boilerplate line many times is fine, and the thing being caught is
+    # a body that is *mostly* the same text over and over.
+    repeated = sum(
+        len(sentence)
+        for sentence in sentences
+        if sentences.count(sentence) > 1
+    )
+    if repeated / max(sum(len(one) for one in sentences), 1) < 0.6:
+        return ""
+    commonest = max(unique, key=sentences.count)
+    return (
+        f"{len(sentences)} sentences, {len(unique)} of them distinct, and most "
+        "of the text is the same line repeated -- this is padding, not a plan. "
+        f'The commonest line appears {sentences.count(commonest)} times: '
+        f'"{commonest[:70]}..."'
+    )
+
+
 def missing_design_sections(body: str) -> list:
     headings = _headings(body)
     return [
@@ -1698,6 +1751,15 @@ class PlanStore:
                 )
             if not body.strip():
                 raise PlanError("refusing to write an empty plan stage")
+            padding = padded_body(body)
+            if padding:
+                raise PlanError(
+                    f"refusing to write the {stage} stage: {padding}\n"
+                    "The testing and evaluation stages are sealed from the "
+                    "engineer, so nobody else reads them before the tester "
+                    "acts on them -- a stage that says nothing here produces a "
+                    "tester that tests nothing and reports that it passed."
+                )
             if stage == DESIGN:
                 missing = missing_design_sections(body)
                 if missing:

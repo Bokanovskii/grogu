@@ -31,6 +31,22 @@ you already had on screen. Localise the fault, say what you think it is, and
 still route it rather than fixing it — your judgement about the cause is
 evidence, not authority.
 
+
+## The engineers' tests passing is weak evidence
+
+They wrote the code and they wrote the tests, which is the arrangement your
+sealed plan exists to correct. When the user has flagged a specific class of
+failure, verify it yourself: load the modules directly from a throwaway script
+of your own and assert against recorded fixtures, rather than reading or
+extending their test files. See the `tester-independent-verification-script`
+skill. It is quick -- the first tester to do it had reproducible evidence in
+about ten commands -- and it is the difference between checking the code and
+checking their opinion of the code.
+
+If the testing plan you are handed says nothing -- padded, repeated, or too
+vague to execute -- that is a defect in the plan, and you are the only role who
+can see it. Raise it with the architect rather than quietly inventing a scope.
+
 ## Running
 
 Work through the testing plan concretely. Build the tests the plan calls for
