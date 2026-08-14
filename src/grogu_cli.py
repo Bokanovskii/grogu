@@ -2616,6 +2616,15 @@ def build_parser() -> argparse.ArgumentParser:
     plan_approve_parser = plan_subparsers.add_parser("approve", parents=[plan_common])
     plan_approve_parser.add_argument("id")
     plan_approve_parser.add_argument("--note")
+    plan_approve_parser.add_argument(
+        "--as-user",
+        action="store_true",
+        help=(
+            "accepted for symmetry with stage and finalize; approval is "
+            "already refused to any caller with a role, and this does not "
+            "lift that"
+        ),
+    )
     plan_approve_parser.set_defaults(handler=plan_approve)
 
     plan_stage_parser = plan_subparsers.add_parser(

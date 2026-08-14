@@ -1337,7 +1337,8 @@ class PlanStore:
         if current_role():
             raise PlanError(
                 f"the {current_role()} may not approve a plan on the user's "
-                "behalf; approval is the user's alone. Present the plan and stop"
+                "behalf; approval is the user's alone, and --as-user does not "
+                "lift that. Present the plan and stop"
             )
         with self.locked():
             manifest = self.load(plan_id)
