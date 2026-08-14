@@ -1211,6 +1211,11 @@ def task_inbox(args: argparse.Namespace) -> int:
 # agent, regardless of which role last bound this working directory.
 USER_ONLY_COMMANDS = frozenset({"approve"})
 
+# Commands where `--role` names *whose* steering is being asked about, not who
+# is asking. A person checking that their note landed was appearing on the
+# watch board as the agent they had steered, working.
+SUBJECT_ROLE_COMMANDS = frozenset({"steer", "steering", "commission"})
+
 
 def _notice_for(parsed: argparse.Namespace) -> str:
     """The unsolicited notice this command should carry, if any.
@@ -1272,10 +1277,10 @@ def _record_activity(parsed: argparse.Namespace) -> None:
             sub = getattr(parsed, attribute, "") or ""
             if sub:
                 break
-        # `--role` usually names the caller, but on `plan steer` it names the
-        # *target* — reading it there would report the user's own steering as
-        # the steered agent doing work, which is a board that lies.
-        claimed_role = "" if sub == "steer" else (getattr(parsed, "role", "") or "")
+        # `--role` usually names the caller, but on the steering commands it
+        # names the *target* — reading it there would report the user's own
+        # steering as the steered agent doing work, which is a board that lies.
+        claimed_role = "" if sub in SUBJECT_ROLE_COMMANDS else (getattr(parsed, "role", "") or "")
         role = grogu_plans.current_role() or claimed_role
         plan = os.environ.get("GROGU_PLAN", "").strip()
         # A plan named on the command line identifies the agent just as well as
@@ -2071,6 +2076,11 @@ def _relay_hint(note: dict, plan_id: str) -> None:
     a floor, never the list.
     """
     role = note.get("role", "all")
+    # Scoped to this working tree on purpose. The activity feed is machine-wide,
+    # so an unscoped read offered up an engineer working in an unrelated
+    # repository and told the user to relay this note into it -- steering for
+    # one project pushed into another project's agent.
+    here = str(Path.cwd())
     try:
         known = [
             row
@@ -2079,6 +2089,7 @@ def _relay_hint(note: dict, plan_id: str) -> None:
             and role in ("all", row["role"])
             and (not plan_id or row.get("plan") in ("", plan_id))
             and row.get("state") != "gone"
+            and str(row.get("cwd", "")) == here
         ]
     except Exception:  # a hint must never be why steering fails to record
         known = []
@@ -2118,10 +2129,17 @@ def plan_steering(args: argparse.Namespace) -> int:
     # and answering with the whole history every time is how a poll-at-
     # decision-points instruction turns into a context leak.
     unread_only = args.unread or (role != "all" and not args.all)
+    # Who is *asking* is not the same as whose steering is being asked about.
+    # The user checking that a note landed was acking it on the agent's behalf,
+    # so the agent's own first poll came back empty and the steering was lost
+    # in the one direction that matters most. A person looking is a peek.
+    caller_is_agent = bool(
+        grogu_plans.current_role() or (getattr(args, "agent", "") or "")
+    )
     result = store.steering(role=role, plan_id=plan_id, unread=unread_only)
     if args.json:
         print_json(result)
-        if unread_only:
+        if unread_only and caller_is_agent:
             store.ack_steering(role=role, plan_id=plan_id)
         return 0
     shown = 0
@@ -2145,9 +2163,15 @@ def plan_steering(args: argparse.Namespace) -> int:
                 )
             else:
                 print(f"no steering for the {role} on this plan")
-        else:
+        elif caller_is_agent:
             print(f"({shown} shown once and marked read; `--all` replays the history)")
-        store.ack_steering(role=role, plan_id=plan_id)
+        else:
+            print(
+                f"({shown} unread by the {role}; you are looking, not "
+                "consuming, so it is still waiting for them)"
+            )
+        if caller_is_agent:
+            store.ack_steering(role=role, plan_id=plan_id)
     return 0
 
 

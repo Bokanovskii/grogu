@@ -1448,13 +1448,45 @@ class PlanSteeringReadTests(unittest.TestCase):
     def test_a_role_scoped_read_shows_each_note_once(self):
         plan = self._plan()
         self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
-        first = self.run_cli("plan", "steering", "--plan", plan, "--role", "engineer")
+        first = self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer", role="engineer"
+        )
         self.assertIn("use zero for HUF", first.stdout)
-        second = self.run_cli("plan", "steering", "--plan", plan, "--role", "engineer")
+        second = self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer", role="engineer"
+        )
         self.assertNotIn("use zero for HUF", second.stdout)
         self.assertIn("no unread steering", second.stdout)
-        replay = self.run_cli("plan", "steering", "--plan", plan, "--role", "engineer", "--all")
+        replay = self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer", "--all", role="engineer"
+        )
         self.assertIn("use zero for HUF", replay.stdout)
+
+    def test_the_user_looking_does_not_consume_the_note(self):
+        """Checking that steering landed used to ack it for the agent."""
+        plan = self._plan()
+        self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
+        for _ in range(2):
+            peek = self.run_cli("plan", "steering", "--plan", plan, "--role", "engineer")
+            self.assertIn("use zero for HUF", peek.stdout)
+            self.assertIn("you are looking, not consuming", peek.stdout)
+        agent = self.run_cli(
+            "plan", "steering", "--plan", plan, "--role", "engineer", role="engineer"
+        )
+        self.assertIn("use zero for HUF", agent.stdout)
+
+    def test_naming_a_role_to_inspect_does_not_put_the_user_on_the_board(self):
+        """A person checking a note appeared as the agent they had steered."""
+        plan = self._plan()
+        self.run_cli("plan", "steer", "--plan", plan, "--role", "engineer", "use zero for HUF")
+        self.run_cli("plan", "steering", "--plan", plan, "--role", "engineer")
+        feed = Path(self.repo) / "home" / "activity.jsonl"
+        roles = {
+            json.loads(line).get("role", "")
+            for line in feed.read_text().splitlines()
+            if line.strip()
+        }
+        self.assertEqual(roles, {""})
 
     def test_acking_for_another_agent_does_not_ack_for_this_one(self):
         plan = self._plan()
