@@ -119,3 +119,31 @@ class ProvenanceTests(unittest.TestCase):
         self.store.seed_apple()
         self.store.remember("no green on the success path", scope="cli")
         self.assertEqual(self.store.status()["learned"], 1)
+
+
+class AgentsMayNotAssertTasteTests(unittest.TestCase):
+    """A dogfooding agent wrote "the user said this" about a fake project."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = grogu_design.DesignStore(Path(self.temporary.name))
+        self.addCleanup(self.temporary.cleanup)
+        os.environ.pop("GROGU_ROLE", None)
+
+    def tearDown(self):
+        os.environ.pop("GROGU_ROLE", None)
+
+    def test_a_designer_cannot_record_a_principle_as_the_users_own(self):
+        os.environ["GROGU_ROLE"] = "designer"
+        with self.assertRaises(grogu_design.DesignError):
+            self.store.remember("no green on the success path", scope="cli")
+
+    def test_a_designer_may_still_suggest(self):
+        os.environ["GROGU_ROLE"] = "designer"
+        self.store.suggest("no green on the success path", scope="cli")
+        self.assertEqual(len(self.store._pending()["candidates"]), 1)
+        self.assertEqual(self.store.status()["principles"], 0)
+
+    def test_the_user_may_record_their_own_taste(self):
+        self.store.remember("no green on the success path", scope="cli")
+        self.assertEqual(self.store.status()["learned"], 1)

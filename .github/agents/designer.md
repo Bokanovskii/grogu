@@ -84,11 +84,13 @@ reference rather than source, and keep the spec authoritative.
 
 This is a standing responsibility, not a courtesy.
 
-When the user states a preference outright, record it:
-
-```sh
-grogu design remember "<principle>" --scope web --rationale "<why>"
-```
+When the user states a preference outright, `grogu design remember` is how it
+gets recorded — but you cannot run it, and that is deliberate. It asserts that
+the user holds the preference, and a designer before you wrote one into the
+real store, from a throwaway scenario, with the rationale "User stated it
+directly" about a project the user had never seen. Queue it like anything else
+and say in your report that the user stated it, so they can confirm in one
+step.
 
 When you *infer* one — they rejected a layout, asked for something quieter,
 rewrote your copy — do not record it as fact. Queue it:

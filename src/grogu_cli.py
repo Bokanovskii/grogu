@@ -2431,6 +2431,16 @@ def design_status(args: argparse.Namespace) -> int:
         f"{status.get('seeded', 0)} seeded defaults), "
         f"{status['pending']} pending"
     )
+    if status["pending"]:
+        # "3 pending" meant nothing to the person it was addressed to, who had
+        # seeded a set of principles and never asked for a review queue. It is
+        # a queue of guesses, it is optional, and saying so costs one line.
+        print(
+            f"  the {status['pending']} pending are guesses a designer agent made "
+            "while working, waiting on your yes or no. Nothing uses them until "
+            "you say so, and ignoring them is fine: `grogu design review` to "
+            "look, `confirm`/`reject` to answer."
+        )
     if not status.get("learned"):
         print(
             "  nothing here was learned from you yet: a designer reading this "

@@ -188,7 +188,9 @@ spec, never the spec.
 Design preference belongs to a person, not a repository. It lives in
 `$GROGU_HOME/design/` and applies everywhere.
 
-`grogu design remember` records something the user actually said.
+`grogu design remember` records something the user actually said, and refuses
+to run for any role: it asserts the user's own taste, so only the user may
+assert it.
 `grogu design suggest` queues something the designer *inferred* — from a
 rejected layout, a rewritten sentence — and it does not apply until the user
 confirms it. That split is the same consent boundary personal memory uses, for

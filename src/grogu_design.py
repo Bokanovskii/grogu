@@ -254,6 +254,20 @@ class DesignStore:
             raise DesignError("a design principle needs a statement")
         if scope not in SCOPES:
             raise DesignError(f"unknown scope {scope!r}; expected one of {', '.join(SCOPES)}")
+        # `remember` asserts that the user holds this preference. A designer
+        # agent working a throwaway scenario wrote one into the real store with
+        # source "user" and the rationale "User stated it directly", from a
+        # project the user had never seen -- permanent, indistinguishable
+        # afterwards from taste the user actually stated, and read back to
+        # every later designer as the user's own words. An agent has `suggest`
+        # for what it infers; only the person whose taste it is may assert it.
+        role = os.environ.get("GROGU_ROLE", "").strip().lower()
+        if role:
+            raise DesignError(
+                f"a {role} may not record a principle as the user's own. Use "
+                "`grogu design suggest` and let the user confirm it; nothing "
+                "you infer is their stated taste until they say so."
+            )
         payload = self._principles()
         principle = {
             "id": self._unique_id(statement, payload["principles"]),
