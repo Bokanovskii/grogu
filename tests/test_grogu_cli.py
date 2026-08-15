@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +44,7 @@ class GroguCliTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf8",
                 env=environment,
             )
         finally:
@@ -253,6 +255,16 @@ class GroguCliTests(unittest.TestCase):
             adapter = grogu_imessage.MacOSIMessageAdapter()
             with self.assertRaises(grogu_imessage.ConfirmationRequiredError):
                 adapter.send(draft.recipient, draft.body)
+
+    def test_confirmed_imessage_send_still_requires_mac_os(self):
+        adapter = grogu_imessage.MacOSIMessageAdapter()
+        with mock.patch.object(adapter, "supported", return_value=False):
+            with self.assertRaises(grogu_imessage.UnsupportedPlatformError):
+                adapter.send(
+                    grogu_imessage.Recipient("+15551234567"),
+                    "Hello",
+                    confirmed=True,
+                )
 
     def test_gmail_is_disabled_by_default_and_drafts_are_local(self):
         adapter = grogu_gmail.GmailAdapter(access_token="token", enabled=False)
@@ -931,6 +943,7 @@ class BannerCommandTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf8",
                 env=environment,
             )
 

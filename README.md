@@ -10,7 +10,9 @@ of the way. Copilot's interaction model, permissions and output are unchanged.
 * [GitHub Copilot CLI](https://github.com/github/copilot-cli) on `PATH`
   (developed against 1.0.78)
 * Python 3.10 or newer, and `git`
-* macOS or Linux (the harness uses `flock` and POSIX signals)
+* macOS, Linux, or Windows for the Python harness. The bundled `setup.sh` and
+  `bin/grogu` launcher require a POSIX shell; on Windows, invoke
+  `python src/grogu_cli.py` directly until a native installer is available.
 * Optional: [`gh`](https://cli.github.com), for `grogu task adopt`
 
 ## Install
@@ -555,8 +557,12 @@ alternatives.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
+
+The suite runs on macOS, Linux, and Windows. Platform-specific behavior lives
+in `src/grogu_platform.py`; keep operating-system branches there rather than
+duplicating them across stores and command handlers.
 
 Local state stays outside the repository, and `.scratch/` is ignored, so a test
 run leaves the working tree clean.

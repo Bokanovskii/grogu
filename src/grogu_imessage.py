@@ -603,11 +603,11 @@ class MacOSIMessageAdapter:
         ]
 
     def send(self, recipient: Recipient, body: str, confirmed: bool = False) -> dict:
-        self._require_supported()
         if not confirmed:
             raise ConfirmationRequiredError(
                 "sending an iMessage requires explicit confirmation"
             )
+        self._require_supported()
         if not recipient.identifier.strip():
             raise ValueError("recipient identifier is required")
         if not body.strip():

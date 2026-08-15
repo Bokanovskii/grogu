@@ -30,6 +30,7 @@ import grogu_imessage
 import grogu_mcp
 import grogu_memory
 import grogu_personal_memory
+import grogu_platform
 import grogu_plans
 import grogu_privacy
 import grogu_skills
@@ -4589,6 +4590,15 @@ def _run_copilot(copilot: str, arguments: list[str], environment: dict[str, str]
     Copilot through the foreground process group; `restore_signals` resets the
     handlers Grogu ignores here before Copilot is executed.
     """
+    if os.name == "nt":
+        # Parent and child inherit the same console and standard handles.
+        # Windows has no POSIX process-group or controlling-terminal APIs;
+        # Ctrl+C is delivered by the console to both processes.
+        try:
+            return subprocess.run([copilot, *arguments], env=environment).returncode
+        except KeyboardInterrupt:
+            return 130
+
     previous = {
         number: signal.signal(number, signal.SIG_IGN)
         for number in (signal.SIGINT, signal.SIGQUIT)
@@ -4645,6 +4655,8 @@ def launch_copilot(arguments: list[str]) -> int:
         # `--plain` is the escape hatch: Copilot exactly as it ships, without
         # Grogu instructions, banner, terminal marks or the autopilot default.
         arguments = [argument for argument in arguments if argument != "--plain"]
+        if os.name == "nt":
+            return _run_copilot(copilot, arguments, os.environ.copy())
         os.execvpe(copilot, [copilot, *arguments], os.environ.copy())
         return 127
 
@@ -4687,6 +4699,8 @@ def launch_copilot(arguments: list[str]) -> int:
     )
 
     if not banner_enabled():
+        if os.name == "nt":
+            return _run_copilot(copilot, arguments, environment)
         os.execvpe(copilot, [copilot, *arguments], environment)
         return 127
 
@@ -4817,4 +4831,5 @@ def main(arguments: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    grogu_platform.configure_standard_streams()
     raise SystemExit(main(sys.argv[1:]))
