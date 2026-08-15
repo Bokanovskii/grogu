@@ -758,13 +758,13 @@ cannot keep them current.
 
 ## Models
 
-| Role | Model | Why |
-| --- | --- | --- |
-| architect | `claude-opus-5` | planning errors are cheap to fix here and expensive later |
-| designer | `claude-sonnet-5` | its output is byte-exact blocks, which is edit fidelity rather than reasoning |
-| engineer | `claude-sonnet-5` | general implementation, escalating when the work warrants it |
-| tester | `grok-4.5` | a different family from the engineer, on purpose |
-| supervisor | `claude-opus-5` | it decides what needs a plan at all, and it edits the harness |
+| Role | Model | Reasoning | Why |
+| --- | --- | --- | --- |
+| architect | `gpt-5.6-sol` | max | planning errors are cheap to fix here and expensive later |
+| designer | `gpt-5.6-sol` | max | design is still high-stakes even though its output is byte-exact blocks |
+| engineer | `gpt-5.6-sol` | medium | general implementation, escalating when the work warrants it |
+| tester | `grok-4.5` | default | a different family from the engineer, on purpose |
+| supervisor | `grok-4.6` | default | it decides what needs a plan at all, and it edits the harness |
 
 The tester's model is not arbitrary. It audits the engineer's work, and two
 models from the same family share the same blind spots — including the
@@ -784,16 +784,17 @@ established is a measured bug-catch delta for a cross-family tester in a
 write-and-run-tests role specifically; the mechanism is evidenced, the
 end-to-end ablation is not.
 
-The designer moved down to Sonnet for that reason. It was on Opus because
-design is high-stakes, which is true but is an argument about the *cost of being
-wrong*, not about which model is better at the work. What a designer actually
-emits is byte-exact fenced blocks — the literal strings and widths the engineer
-copies — and edit fidelity is the dimension Aider's architect/editor results
-attribute to the Sonnet class rather than to the heavier reasoners
-(`aider.chat/2024/09/26/architect.html`). It is also 2.5× cheaper. This is a
-reasoned swap, not a measured one: if design quality visibly drops, the seed
-suggestions get vaguer or the spec starts deferring decisions to the engineer,
-move it back.
+The designer runs at the same model and reasoning effort as the architect, on
+the reasoning that design is high-stakes and the cost of being wrong there is
+what matters, not which model is nominally better at the work. What a designer
+actually emits is byte-exact fenced blocks — the literal strings and widths the
+engineer copies — and edit fidelity is a separate dimension from reasoning
+depth: Aider's architect/editor results attribute it to certain model classes
+rather than uniformly to the heaviest reasoners
+(`aider.chat/2024/09/26/architect.html`). If design quality does not
+distinguishably benefit from the shared model/effort, the seed suggestions get
+vaguer or the spec starts deferring decisions to the engineer, split it back
+onto a lighter model.
 
 The engineer-never-sees-the-test-plan isolation, the most novel thing here, has
 no published ablation behind it at all. It is software-engineering intuition
