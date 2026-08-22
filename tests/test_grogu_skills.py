@@ -797,6 +797,150 @@ class LinkAndOverrideTests(unittest.TestCase):
             grogu_skills.propose("1", description="A number.", body=BODY)
 
 
+class RepositoryMessagingSkillContractTests(unittest.TestCase):
+    @classmethod
+    def skill_text(cls, name: str) -> str:
+        return (ROOT / ".github" / "skills" / name / "SKILL.md").read_text(
+            encoding="utf8"
+        )
+
+    def test_repository_discovers_both_messaging_skills(self) -> None:
+        installed = {
+            skill["name"]: skill for skill in grogu_skills.installed_skills(ROOT)
+        }
+        self.assertTrue({"imessage", "stim"}.issubset(installed))
+
+        for name in ("imessage", "stim"):
+            with self.subTest(name=name):
+                text = self.skill_text(name)
+                frontmatter, separator, body = text[4:].partition("\n---\n")
+                self.assertTrue(text.startswith("---\n"))
+                self.assertEqual(separator, "\n---\n")
+                self.assertIn(f"name: {name}\n", frontmatter + "\n")
+                self.assertIn("description: ", frontmatter)
+                self.assertTrue(installed[name]["description"].strip())
+                self.assertTrue(body.strip())
+                self.assertTrue(installed[name]["body"].strip())
+
+    def test_readme_documents_stim_as_a_private_confirmation_gated_skill(
+        self,
+    ) -> None:
+        text = " ".join((ROOT / "README.md").read_text(encoding="utf8").split())
+        self.assertIn("`stim` is a reusable skill", text)
+        self.assertIn("does not add a `grogu stim` subcommand", text)
+        self.assertIn("explicitly opt in to selected local context", text)
+        self.assertIn("derive a local draft pool", text)
+        self.assertIn("review every exact recipient/body pair", text)
+        self.assertIn("explicitly enable a bounded macOS-local schedule", text)
+        self.assertIn(
+            "Grok is used only when it is explicitly configured and selected", text
+        )
+        self.assertIn("never enables `auto`", text)
+        self.assertIn("falls back to another model", text)
+        self.assertIn("routes to Azure", text)
+        self.assertIn("$GROGU_HOME/stim/<workflow-id>/", text)
+        self.assertIn("outside the repository", text)
+        self.assertIn("Sending requires explicit confirmation", text)
+        self.assertIn("Any edit requires a replacement draft", text)
+
+    def test_imessage_requires_draft_review_confirmation_then_send(self) -> None:
+        text = " ".join(self.skill_text("imessage").split())
+        ordered_steps = [
+            "grogu imessage draft --recipient <recipient> --message <body>",
+            "Display the exact resolved recipient and the complete final body",
+            "Wait for an unambiguous user confirmation",
+            "grogu imessage send <draft-id> --confirm",
+        ]
+        positions = [text.index(step) for step in ordered_steps]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("Drafting is local and non-sending", text)
+        self.assertIn("sole external side effect", text)
+        self.assertIn("Never infer a recipient", text)
+        self.assertIn(
+            "Approval of a topic/tone, intent, or general idea is not approval",
+            text,
+        )
+        self.assertIn("create and display a replacement", text)
+        self.assertIn("obtain fresh confirmation", text)
+        for excluded in (
+            "repository files",
+            "telemetry",
+            "plans",
+            "commits",
+            "issues",
+            "pull requests",
+        ):
+            with self.subTest(excluded=excluded):
+                self.assertIn(excluded, text)
+
+    def test_stim_requires_complete_consent_and_provider_fidelity(self) -> None:
+        text = " ".join(self.skill_text("stim").split())
+        self.assertIn("Do not read message history or invoke a model until", text)
+        for field in (
+            "source conversation or conversations",
+            "one target recipient",
+            "purpose and tone",
+            "finite candidate-pool size",
+            "cadence",
+            "active window or end date",
+            "quiet hours",
+            "exact model and provider choice",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, text)
+
+        self.assertIn("currently active model/provider only", text)
+        self.assertIn("configured Grok model", text)
+        self.assertIn("Copilot's normal model selection", text)
+        self.assertIn("Never translate a requested model", text)
+        self.assertIn("enable `auto`", text)
+        self.assertIn("silently fall back", text)
+        self.assertIn("route to Azure", text)
+        self.assertIn("do not draft with a substitute", text)
+
+    def test_stim_keeps_private_state_local_and_drafting_non_sending(self) -> None:
+        text = " ".join(self.skill_text("stim").split())
+        self.assertIn("$GROGU_HOME/stim/<workflow-id>/", text)
+        self.assertIn("user-only permissions", text)
+        self.assertIn("opaque workflow and draft ids", text)
+        self.assertIn("out of the repository and every publishable", text)
+        self.assertIn("command-line arguments or telemetry", text)
+        self.assertIn("This phase must not send, schedule,", text)
+        self.assertIn("ordinary local iMessage draft", text)
+        self.assertIn("immutable reviewed draft id", text)
+        self.assertIn("changed recipient or body invalidates", text)
+        self.assertIn("Present every exact recipient/body pair", text)
+        self.assertIn("exact disable command", text)
+        self.assertIn("separate, unambiguous confirmation", text)
+        self.assertIn(
+            "Confirmation to derive or draft candidates is not", text
+        )
+
+    def test_stim_is_bounded_native_and_anti_bulk(self) -> None:
+        text = " ".join(self.skill_text("stim").split())
+        for contract in (
+            "exactly one recipient",
+            "at most seven messages",
+            "no more than one send in any 24-hour period",
+            "maximum 30-day lifetime",
+            "draft-only or manual-send only",
+            "must never call a model",
+            "pool is exhausted",
+            "a send fails",
+            "skip missed windows",
+            "no catch-up bursts",
+            "Reject cold outreach",
+            "bulk or multi-recipient use",
+            "asked not to be contacted",
+            "per-user LaunchAgent",
+            "launchctl bootout",
+            "Disabling must prevent every future send immediately",
+            "Never install a repository daemon",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, text)
+
+
 class RoundFourTests(unittest.TestCase):
     """Findings from the probe round that said no-go to the merge."""
 
