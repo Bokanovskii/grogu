@@ -64,10 +64,26 @@ class GroguCliTests(unittest.TestCase):
         self.assertIn("mcp_available", payload)
 
     def test_bare_launch_defaults_to_autopilot(self):
-        self.assertEqual(grogu_cli.copilot_arguments([]), ["--autopilot"])
+        plugin = ["--plugin-dir", str(ROOT)]
+        self.assertEqual(
+            grogu_cli.copilot_arguments([]),
+            [*plugin, "--autopilot"],
+        )
         self.assertEqual(
             grogu_cli.copilot_arguments(["--model", "gpt-5.4"]),
-            ["--autopilot", "--model", "gpt-5.4"],
+            [*plugin, "--autopilot", "--model", "gpt-5.4"],
+        )
+
+    def test_launch_preserves_explicit_plugin_directories(self):
+        self.assertEqual(
+            grogu_cli.copilot_arguments(["--plugin-dir", "/user/plugin"]),
+            [
+                "--plugin-dir",
+                str(ROOT),
+                "--autopilot",
+                "--plugin-dir",
+                "/user/plugin",
+            ],
         )
 
     def test_trace_record_and_list(self):

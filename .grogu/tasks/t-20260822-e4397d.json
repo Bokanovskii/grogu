@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "t-20260822-e4397d",
+  "title": "Make bundled Grogu skills discoverable",
+  "body": "Resolve harness friction #45 by ensuring repository-distributed skills remain discoverable when Grogu launches outside its source checkout; add regression tests and docs.",
+  "status": "active",
+  "priority": "normal",
+  "labels": [
+    "harness",
+    "skills"
+  ],
+  "issue": null,
+  "assignee": "charlie",
+  "created_at": "2026-08-22T21:48:16+00:00",
+  "created_by": "charlie",
+  "updated_at": "2026-08-22T21:58:50+00:00",
+  "revision": 4,
+  "log": [
+    {
+      "at": "2026-08-22T21:48:16+00:00",
+      "by": "charlie",
+      "event": "created",
+      "text": "Make bundled Grogu skills discoverable"
+    },
+    {
+      "at": "2026-08-22T21:48:16+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-22T21:50:22+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Reproduced friction 45: custom instruction directories load Grogu instructions but Copilot skill listing outside the source checkout contains only built-ins. Official CLI docs require project or personal skill roots or a session plugin; use a launcher-scoped plugin to avoid persistent user config changes."
+    },
+    {
+      "at": "2026-08-22T21:58:50+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Implemented a session-scoped Grogu plugin, launcher injection, setup validation, docs, and installation/launcher/live Copilot discovery tests. Targeted tests, live invocation, and the 536-test suite pass."
+    }
+  ]
+}
