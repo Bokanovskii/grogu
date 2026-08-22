@@ -19,6 +19,7 @@ def run(arguments, cwd):
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf8",
     )
     assert result.returncode == 0, f"{arguments} failed: {result.stderr}"
     return result.stdout

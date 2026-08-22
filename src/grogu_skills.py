@@ -23,7 +23,6 @@ where it can be reviewed in a diff like any other change.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -32,6 +31,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
+import grogu_platform
 import grogu_privacy
 
 PENDING = "pending"
@@ -99,10 +99,9 @@ def skills_lock() -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        yield
+        with grogu_platform.exclusive_lock(handle):
+            yield
     finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
         os.close(handle)
 
 

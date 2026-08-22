@@ -20,7 +20,6 @@ one after the fact.
 from __future__ import annotations
 
 import datetime as dt
-import fcntl
 import functools
 import json
 import os
@@ -28,6 +27,8 @@ import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Optional
+
+import grogu_platform
 
 SCHEMA_VERSION = 1
 
@@ -201,11 +202,10 @@ class DesignStore:
         handle = os.open(self.directory / ".lock", os.O_CREAT | os.O_RDWR, 0o600)
         self._lock_depth = 1
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX)
-            yield
+            with grogu_platform.exclusive_lock(handle):
+                yield
         finally:
             self._lock_depth = 0
-            fcntl.flock(handle, fcntl.LOCK_UN)
             os.close(handle)
 
     def status(self) -> dict:

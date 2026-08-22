@@ -30,6 +30,7 @@ import grogu_imessage
 import grogu_mcp
 import grogu_memory
 import grogu_personal_memory
+import grogu_platform
 import grogu_plans
 import grogu_privacy
 import grogu_skills
@@ -4581,6 +4582,90 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_WINDOWS_CMD_META = re.compile(r'([()\[\]%!^"`<>&|;, *?])')
+
+
+def _escape_windows_cmd(value: str) -> str:
+    return _WINDOWS_CMD_META.sub(r"^\1", value)
+
+
+def _escape_windows_cmd_argument(value: str, escape_depth: int) -> str:
+    value = re.sub(
+        r'(\\*)"',
+        lambda match: match.group(1) * 2 + r"\"",
+        value,
+    )
+    value = re.sub(r"(\\*)$", lambda match: match.group(1) * 2, value)
+    value = f'"{value}"'
+    for _ in range(escape_depth):
+        value = _WINDOWS_CMD_META.sub(r"^\1", value)
+    return value
+
+
+def _windows_batch_forwards_all_arguments(copilot: str) -> bool:
+    try:
+        with open(copilot, "rb") as shim:
+            content = shim.read()
+    except OSError:
+        return False
+    for raw_line in content.splitlines():
+        line = raw_line.lstrip()
+        lowered = line.lower()
+        if (
+            not line
+            or line.startswith(b":")
+            or re.match(br"@?rem(?:[ \t]|$)", lowered)
+        ):
+            continue
+        if any(
+            (len(match.group(0)) - 1) % 2
+            for match in re.finditer(br"%+\*", line)
+        ):
+            return True
+    return False
+
+
+def _windows_powershell_shim(copilot: str) -> str | None:
+    shim = f"{os.path.splitext(copilot)[0]}.ps1"
+    return shim if os.path.isfile(shim) else None
+
+
+def _windows_powershell(environment: dict[str, str]) -> str | None:
+    path = (
+        environment.get("PATH")
+        or environment.get("Path")
+        or environment.get("path")
+    )
+    for executable in ("pwsh.exe", "powershell.exe"):
+        resolved = shutil.which(executable, path=path)
+        if resolved:
+            return resolved
+    return None
+
+
+def _windows_batch_invocation(
+    copilot: str, arguments: list[str], environment: dict[str, str]
+) -> tuple[str, str]:
+    interpreter = (
+        environment.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
+    )
+    escape_depth = 2 if _windows_batch_forwards_all_arguments(copilot) else 1
+    shell_command = " ".join(
+        [
+            _escape_windows_cmd(copilot),
+            *(
+                _escape_windows_cmd_argument(argument, escape_depth)
+                for argument in arguments
+            ),
+        ]
+    )
+    command_line = (
+        f"{subprocess.list2cmdline([interpreter])} /d /v:off /s /c "
+        f'"{shell_command}"'
+    )
+    return interpreter, command_line
+
+
 def _run_copilot(copilot: str, arguments: list[str], environment: dict[str, str]) -> int:
     """Run Copilot as a child that owns the terminal directly.
 
@@ -4589,6 +4674,55 @@ def _run_copilot(copilot: str, arguments: list[str], environment: dict[str, str]
     Copilot through the foreground process group; `restore_signals` resets the
     handlers Grogu ignores here before Copilot is executed.
     """
+    if os.name == "nt":
+        # Parent and child inherit the same console and standard handles.
+        # Windows has no POSIX process-group or controlling-terminal APIs;
+        # Ctrl+C is delivered by the console to both processes.
+        try:
+            if os.path.splitext(copilot)[1].lower() in {".cmd", ".bat"}:
+                powershell_shim = _windows_powershell_shim(copilot)
+                if powershell_shim is not None:
+                    powershell = _windows_powershell(environment)
+                    if powershell is None:
+                        print(
+                            "grogu: a PowerShell sibling exists for the Windows "
+                            "Copilot shim, but no PowerShell executable was found",
+                            file=sys.stderr,
+                        )
+                        return 127
+                    return subprocess.run(
+                        [
+                            powershell,
+                            "-NoLogo",
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            powershell_shim,
+                            *arguments,
+                        ],
+                        env=environment,
+                    ).returncode
+                if any("%" in value for value in [copilot, *arguments]):
+                    print(
+                        "grogu: refusing to pass a percent-bearing command or "
+                        "argument through a .cmd/.bat shim without a sibling "
+                        "PowerShell shim; cmd.exe would expand or corrupt it",
+                        file=sys.stderr,
+                    )
+                    return 2
+                interpreter, command_line = _windows_batch_invocation(
+                    copilot, arguments, environment
+                )
+                return subprocess.run(
+                    command_line,
+                    executable=interpreter,
+                    env=environment,
+                ).returncode
+            return subprocess.run([copilot, *arguments], env=environment).returncode
+        except KeyboardInterrupt:
+            return 130
+
     previous = {
         number: signal.signal(number, signal.SIG_IGN)
         for number in (signal.SIGINT, signal.SIGQUIT)
@@ -4645,6 +4779,8 @@ def launch_copilot(arguments: list[str]) -> int:
         # `--plain` is the escape hatch: Copilot exactly as it ships, without
         # Grogu instructions, banner, terminal marks or the autopilot default.
         arguments = [argument for argument in arguments if argument != "--plain"]
+        if os.name == "nt":
+            return _run_copilot(copilot, arguments, os.environ.copy())
         os.execvpe(copilot, [copilot, *arguments], os.environ.copy())
         return 127
 
@@ -4687,6 +4823,8 @@ def launch_copilot(arguments: list[str]) -> int:
     )
 
     if not banner_enabled():
+        if os.name == "nt":
+            return _run_copilot(copilot, arguments, environment)
         os.execvpe(copilot, [copilot, *arguments], environment)
         return 127
 
@@ -4817,4 +4955,5 @@ def main(arguments: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    grogu_platform.configure_standard_streams()
     raise SystemExit(main(sys.argv[1:]))

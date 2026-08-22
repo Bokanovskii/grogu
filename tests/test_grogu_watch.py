@@ -111,9 +111,12 @@ class WatchTests(unittest.TestCase):
         self.assertIn("2 steering note(s) the engineer has not read", text)
 
     def test_recording_never_raises_when_the_log_is_unwritable(self):
-        os.environ["GROGU_HOME"] = "/dev/null/nope"
-        grogu_watch.record(command="plan gate", role="engineer", cwd="/w/a")
-        self.assertEqual(grogu_watch.activity(), [])
+        with tempfile.TemporaryDirectory() as directory:
+            blocker = Path(directory) / "not-a-directory"
+            blocker.write_text("x", encoding="utf8")
+            os.environ["GROGU_HOME"] = str(blocker)
+            grogu_watch.record(command="plan gate", role="engineer", cwd="/w/a")
+            self.assertEqual(grogu_watch.activity(), [])
 
     def test_an_empty_board_says_so_rather_than_printing_nothing(self):
         self.assertIn("No agent", grogu_watch.render(grogu_watch.board()))

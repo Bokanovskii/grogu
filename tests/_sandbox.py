@@ -16,6 +16,7 @@ import atexit
 import os
 import shutil
 import tempfile
+from pathlib import Path
 
 # Captured before anything is redirected, so a test can assert it is not here.
 REAL_HOME = os.path.expanduser("~")
@@ -29,6 +30,18 @@ os.environ["GROGU_HOME"] = _SANDBOX
 # puts the rest of the suite back on the developer's real state. Covering the
 # override and leaving the fallback open is not covering anything.
 os.environ["HOME"] = _SANDBOX
+if os.name == "nt":
+    # pathlib/ntpath resolves ~ from USERPROFILE before HOME.
+    os.environ["USERPROFILE"] = _SANDBOX
+    drive, tail = os.path.splitdrive(_SANDBOX)
+    os.environ["HOMEDRIVE"] = drive
+    os.environ["HOMEPATH"] = tail
+
+# User Git settings must not decide which branch a temporary test repository
+# starts on. The suite expects and documents `main` explicitly.
+_gitconfig = Path(_SANDBOX) / "gitconfig"
+_gitconfig.write_text("[init]\n\tdefaultBranch = main\n", encoding="utf8")
+os.environ["GIT_CONFIG_GLOBAL"] = str(_gitconfig)
 # A stray role or plan in the developer's shell changes what the CLI does.
 for _leaked in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
     os.environ.pop(_leaked, None)
