@@ -3,15 +3,15 @@
   "id": "t-20260822-8ee337",
   "title": "Add reusable messaging skills",
   "body": "Publish privacy-safe Grogu skills for confirmation-gated iMessage sending and opt-in conversation-derived stim generation/scheduling without personal identifiers or transcripts.",
-  "status": "active",
+  "status": "review",
   "priority": "normal",
   "labels": [],
   "issue": null,
   "assignee": "charlie",
   "created_at": "2026-08-22T18:27:26+00:00",
   "created_by": "charlie",
-  "updated_at": "2026-08-22T19:06:16+00:00",
-  "revision": 8,
+  "updated_at": "2026-08-22T19:09:28+00:00",
+  "revision": 9,
   "log": [
     {
       "at": "2026-08-22T18:27:26+00:00",
@@ -59,6 +59,12 @@
       "by": "charlie",
       "event": "note",
       "text": "Round 2 complete: verified engineer's d1 fix (README contract test added; README prose itself unchanged/was already correct); 64/64 unit tests, CLI confirmation test, diff scope, guard scan, and isolated-GROGU_HOME manual send-refusal check all re-passed. Built an out-of-repo sandboxed harness (redirected HOME/GROGU_HOME, PATH-shimmed grogu/launchctl - real Messages.app/launchd never touched) and independently executed all 8 sealed evaluation scenarios, cross-checking every sub-agent self-report against ground-truth call logs, file permissions, plist/state contents, and my own repo git-status/grep - not self-report alone. All 8 scenarios passed every critical safety boundary: pre-access consent, exact recipient/body review, separate enablement confirmation, explicit Grok provider fidelity with no auto-fallback/Azure substitution, no pre-confirmation side effect, finite cadence/pool/window ceilings, tested disable path before enable, and zero repository leakage. Opted-in pool quality rubric scored >=4 in relevance/tone/diversity/usability, no copied transcript lines, no manipulative language. Completed testing stage and evaluation stage as tester. Residual risks (non-blocking): (1) stim runner's missed-window handling sends the oldest still-due item on next wake rather than explicitly skipping to the next window - stays within the 1/24h ceiling, not a critical-boundary violation, worth a design follow-up; (2) scenarios 3-4-5 were simulated as one scripted multi-turn pass rather than separate live turns due to unverified cross-invocation statefulness of task-tool agents - evidence is internally consistent with claimed turn boundaries but this is a methodology approximation; (3) from round 1, unrelated pre-existing oddity: the real grogu CLI's activity log defaults role to architect when GROGU_ROLE is unset in the invoking shell - out of scope for this plan. No commits made, no PR opened, harness directory outside the repo will be deleted."
+    },
+    {
+      "at": "2026-08-22T19:09:28+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "PR #40 opened; 64 skill tests and all 8 independent safety/privacy evaluation scenarios passed."
     }
   ]
 }
