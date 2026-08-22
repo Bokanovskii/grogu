@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -102,11 +103,48 @@ class PlatformPrimitiveTests(unittest.TestCase):
                     pass
 
     @unittest.skipUnless(os.name == "nt", "Windows console behavior")
-    def test_windows_child_inherits_stdio_and_returns_its_exit_code(self):
-        result = grogu_cli._run_copilot(
-            os.environ["COMSPEC"], ["/d", "/c", "exit", "7"], os.environ.copy()
-        )
+    def test_windows_npm_cmd_shim_preserves_arguments_and_exit_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "npm shim"
+            root.mkdir()
+            checker = root / "checker.py"
+            arguments = ["two words", '"(foo|bar>baz|foz)"']
+            checker.write_text(
+                "import sys\n"
+                f"raise SystemExit(7 if sys.argv[1:] == {arguments!r} else 9)\n",
+                encoding="utf8",
+            )
+            shim = root / "copilot.cmd"
+            shim.write_text(
+                "@ECHO OFF\r\n"
+                f'"{sys.executable}" "{checker}" %*\r\n',
+                encoding="utf8",
+            )
+
+            result = grogu_cli._run_copilot(
+                str(shim), arguments, os.environ.copy()
+            )
+
         self.assertEqual(result, 7)
+
+    @unittest.skipUnless(os.name == "nt", "Windows console behavior")
+    def test_windows_native_executable_runs_directly(self):
+        environment = os.environ.copy()
+        completed = subprocess.CompletedProcess([], 7)
+        with mock.patch.object(
+            grogu_cli.subprocess, "run", return_value=completed
+        ) as run:
+            result = grogu_cli._run_copilot(
+                r"C:\Program Files\GitHub\copilot.exe",
+                ["--version"],
+                environment,
+            )
+
+        self.assertEqual(result, 7)
+        run.assert_called_once_with(
+            [r"C:\Program Files\GitHub\copilot.exe", "--version"],
+            env=environment,
+        )
 
 
 if __name__ == "__main__":

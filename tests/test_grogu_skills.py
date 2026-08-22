@@ -401,6 +401,7 @@ class SkillCommandTests(unittest.TestCase):
             env=environment,
             capture_output=True,
             text=True,
+            encoding="utf8",
         )
 
     def propose(self, role="engineer"):
@@ -442,6 +443,7 @@ class SkillCommandTests(unittest.TestCase):
             env={**os.environ, "GROGU_HOME": self.home.name, "GROGU_ROLE": "engineer"},
             capture_output=True,
             text=True,
+            encoding="utf8",
         )
         self.assertEqual(bind.returncode, 0, bind.stderr)
         refused = self.run_cli("accept", "1")
@@ -457,6 +459,7 @@ class SkillCommandTests(unittest.TestCase):
             env={**os.environ, "GROGU_HOME": self.home.name, "GROGU_ROLE": "engineer"},
             capture_output=True,
             text=True,
+            encoding="utf8",
         )
         accepted = self.run_cli("accept", "1", role="supervisor")
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
@@ -618,6 +621,7 @@ class DecideGateTests(unittest.TestCase):
             env=environment,
             capture_output=True,
             text=True,
+            encoding="utf8",
         )
 
     def propose(self) -> None:

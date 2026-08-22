@@ -101,6 +101,7 @@ class GroguCliTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf8",
                 env=environment,
             )
             self.assertEqual(result.returncode, 0)
@@ -307,6 +308,7 @@ class AggregateTests(unittest.TestCase):
             cwd=ROOT,
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=environment,
         )
 
@@ -578,6 +580,7 @@ class CodemodeCliTests(unittest.TestCase):
             cwd=ROOT,
             capture_output=True,
             text=True,
+            encoding="utf8",
             input=input,
             env=environment,
         )
@@ -1027,6 +1030,7 @@ class PersonalMemoryCommandTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf8",
                 env=environment,
             )
 
@@ -1041,6 +1045,7 @@ class PersonalMemoryCommandTests(unittest.TestCase):
                     cwd=ROOT,
                     capture_output=True,
                     text=True,
+                    encoding="utf8",
                     env=environment,
                 )
 
@@ -1066,6 +1071,7 @@ class PersonalMemoryCommandTests(unittest.TestCase):
                     cwd=ROOT,
                     capture_output=True,
                     text=True,
+                    encoding="utf8",
                     env=environment,
                 )
 
@@ -1881,6 +1887,7 @@ class CodemodeMcpExecTests(unittest.TestCase):
             cwd=ROOT,
             capture_output=True,
             text=True,
+            encoding="utf8",
             input=input,
             env=environment,
         )
@@ -1947,6 +1954,7 @@ class PlanSteeringReadTests(unittest.TestCase):
             cwd=self.repo,
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=environment,
         )
 
@@ -2028,6 +2036,7 @@ class SteerNoteAliasTests(unittest.TestCase):
             cwd=self.project,
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=environment,
         )
 
@@ -2066,6 +2075,7 @@ class DefectResolveAliasTests(unittest.TestCase):
             cwd=self.home,
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=environment,
         )
 
@@ -2109,6 +2119,7 @@ class SubcommandUsageTests(unittest.TestCase):
                 cwd=home,
                 capture_output=True,
                 text=True,
+                encoding="utf8",
                 env=environment,
             )
         self.assertEqual(result.returncode, 2)
@@ -2136,6 +2147,7 @@ class PlanIdFromEnvironmentTests(unittest.TestCase):
             cwd=self.root,
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=env,
         )
 
@@ -2209,11 +2221,13 @@ class AdoptedTasteIsNotReportedAsMissingTests(unittest.TestCase):
             environment.pop("GROGU_ROLE", None)
             subprocess.run(
                 [sys.executable, str(CLI), "design", "seed", "--apple"],
-                env=environment, capture_output=True, text=True, check=True,
+                env=environment, capture_output=True, text=True, encoding="utf8",
+                check=True,
             )
             result = subprocess.run(
                 [sys.executable, str(CLI), "design", "status"],
-                env=environment, capture_output=True, text=True, check=True,
+                env=environment, capture_output=True, text=True, encoding="utf8",
+                check=True,
             )
         self.assertIn("you adopted from Apple's Human Interface Guidelines", result.stdout)
         self.assertIn("nothing is owed", result.stdout)
@@ -2236,7 +2250,8 @@ class SteerTakesThePlanIdLikeEveryOtherCommandTests(unittest.TestCase):
         environment.pop("GROGU_ROLE", None)
         return subprocess.run(
             [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
-            cwd=self.repo, capture_output=True, text=True, env=environment,
+            cwd=self.repo, capture_output=True, text=True, encoding="utf8",
+            env=environment,
         )
 
     def test_a_leading_plan_id_scopes_rather_than_becoming_the_note(self):
@@ -2278,7 +2293,8 @@ class SupervisionIsNotWorkTests(unittest.TestCase):
             environment.pop("GROGU_ROLE", None)
         return subprocess.run(
             [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
-            cwd=self.repo, capture_output=True, text=True, env=environment,
+            cwd=self.repo, capture_output=True, text=True, encoding="utf8",
+            env=environment,
         )
 
     def _roles(self):
@@ -2330,6 +2346,7 @@ class ArchitectFrictionTests(unittest.TestCase):
             cwd=self.repo,
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=environment,
         )
 

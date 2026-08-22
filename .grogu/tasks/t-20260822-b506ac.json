@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "id": "t-20260822-b506ac",
+  "title": "Fix Windows Copilot launch",
+  "body": "Repair PR #39 so npm-installed copilot.cmd shims launch correctly on Windows and all CLI-subprocess test helpers decode UTF-8 consistently.",
+  "status": "review",
+  "priority": "normal",
+  "labels": [],
+  "issue": null,
+  "assignee": "charlie",
+  "created_at": "2026-08-22T20:26:53+00:00",
+  "created_by": "charlie",
+  "updated_at": "2026-08-22T20:41:02+00:00",
+  "revision": 7,
+  "log": [
+    {
+      "at": "2026-08-22T20:26:53+00:00",
+      "by": "charlie",
+      "event": "created",
+      "text": "Fix Windows Copilot launch"
+    },
+    {
+      "at": "2026-08-22T20:26:54+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-22T20:28:14+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Investigating reviewed Windows launch and UTF-8 test-helper blockers"
+    },
+    {
+      "at": "2026-08-22T20:36:36+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Implemented explicit cmd.exe shim invocation with hardened quoting and completed UTF-8 decoding across CLI/skills subprocess helpers"
+    },
+    {
+      "at": "2026-08-22T20:38:26+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Focused platform, CLI, and skills tests passed: 263 tests, 3 skipped"
+    },
+    {
+      "at": "2026-08-22T20:40:32+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Full unittest suite passed: 535 tests, 3 skipped; diff check clean"
+    },
+    {
+      "at": "2026-08-22T20:41:02+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "PR #39 merge blockers fixed; focused 263-test run and full 535-test suite passed, with UTF-8 helper coverage and Windows shim regression added"
+    }
+  ]
+}

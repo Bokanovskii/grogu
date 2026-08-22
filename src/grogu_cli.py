@@ -4582,6 +4582,42 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_WINDOWS_CMD_META = re.compile(r'([()\[\]%!^"`<>&|;, *?])')
+
+
+def _escape_windows_cmd(value: str) -> str:
+    return _WINDOWS_CMD_META.sub(r"^\1", value)
+
+
+def _escape_windows_cmd_argument(value: str) -> str:
+    value = re.sub(
+        r'(\\*)"',
+        lambda match: match.group(1) * 2 + r"\"",
+        value,
+    )
+    value = re.sub(r"(\\*)$", lambda match: match.group(1) * 2, value)
+    value = _escape_windows_cmd(f'"{value}"')
+    # npm's generated shims expand %* into a second cmd.exe parse.
+    return _escape_windows_cmd(value)
+
+
+def _windows_batch_invocation(
+    copilot: str, arguments: list[str], environment: dict[str, str]
+) -> tuple[str, str]:
+    interpreter = environment.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
+    shell_command = " ".join(
+        [
+            _escape_windows_cmd(copilot),
+            *(_escape_windows_cmd_argument(argument) for argument in arguments),
+        ]
+    )
+    command_line = (
+        f"{subprocess.list2cmdline([interpreter])} /d /s /c "
+        f'"{shell_command}"'
+    )
+    return interpreter, command_line
+
+
 def _run_copilot(copilot: str, arguments: list[str], environment: dict[str, str]) -> int:
     """Run Copilot as a child that owns the terminal directly.
 
@@ -4595,6 +4631,15 @@ def _run_copilot(copilot: str, arguments: list[str], environment: dict[str, str]
         # Windows has no POSIX process-group or controlling-terminal APIs;
         # Ctrl+C is delivered by the console to both processes.
         try:
+            if os.path.splitext(copilot)[1].lower() in {".cmd", ".bat"}:
+                interpreter, command_line = _windows_batch_invocation(
+                    copilot, arguments, environment
+                )
+                return subprocess.run(
+                    command_line,
+                    executable=interpreter,
+                    env=environment,
+                ).returncode
             return subprocess.run([copilot, *arguments], env=environment).returncode
         except KeyboardInterrupt:
             return 130
