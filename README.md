@@ -136,35 +136,53 @@ preserved.
 
 ## Messaging skills
 
-The opt-in `imessage` and `gmail` skills provide read/search assistance and
-draft-first outbound workflows. They are isolated from ordinary launches.
+The opt-in `imessage`, `stim`, and `gmail` skills provide read/search assistance
+and draft-first outbound workflows. They are isolated from ordinary launches.
 iMessage requires macOS and Full Disk Access. Gmail is disabled by default and
 uses an access token supplied through the environment; credentials are never
 stored by Grogu.
 
 `grogu imessage search` prefers a locally configured
-[seaglass](https://github.com/Bokanovskii/seaglass) MCP server when one is
-present in `~/.copilot/mcp-config.json` (semantic/ranked retrieval over the
-whole message history), and transparently falls back to a plain SQL substring
-scan otherwise, or if the seaglass call itself fails for any reason. Pass
-`--no-seaglass` to force the substring scan even when seaglass is configured.
-`grogu imessage status` reports whether seaglass is available via a
-`seaglass` boolean field.
+seaglass MCP server when one is present in `~/.copilot/mcp-config.json`
+(semantic/ranked retrieval over the whole message history), and transparently
+falls back to a plain SQL substring scan otherwise, or if the seaglass call
+itself fails for any reason. Pass `--no-seaglass` to force the substring scan
+even when seaglass is configured. `grogu imessage status` reports whether
+seaglass is available via a `seaglass` boolean field.
+
+`stim` is a reusable skill layered on the existing `grogu imessage` commands;
+it does not add a `grogu stim` subcommand. Its finite workflow is: explicitly
+opt in to selected local context and an exact model/provider, derive a local
+draft pool, review every exact recipient/body pair, explicitly enable a bounded
+macOS-local schedule, and retain an immediate `launchctl` disable path. Grok is
+used only when it is explicitly configured and selected through Copilot's
+normal model selection. The workflow never enables `auto`, silently substitutes
+a provider, falls back to another model, or routes to Azure.
+
+All conversation context, prompts, generated pools, draft ids, schedule state,
+and logs remain outside the repository under
+`$GROGU_HOME/stim/<workflow-id>/` with user-only permissions. A schedule is
+limited to one recipient, at most seven reviewed drafts, no more than one send
+per 24 hours, and at most 30 days. It skips missed windows rather than catching
+up. None of the private inputs or local artifacts belong in telemetry, plans,
+commits, issues, or pull requests.
 
 ```sh
 grogu imessage status
-grogu imessage search "dinner plans" --limit 10
-grogu imessage draft --recipient "+15551234567" --message "Hello"
-grogu imessage send DRAFT_ID --confirm
+grogu imessage search "<query>" --limit 10
+grogu imessage draft --recipient "<recipient>" --message "<body>"
+grogu imessage send <draft-id> --confirm
 
 GROGU_GMAIL_ENABLED=1 grogu gmail status
-GROGU_GMAIL_ENABLED=1 grogu gmail search "from:billing newer_than:30d"
-grogu gmail draft --to "person@example.com" --subject "Hello" --message "..."
-GROGU_GMAIL_ENABLED=1 grogu gmail send DRAFT_ID --confirm
+GROGU_GMAIL_ENABLED=1 grogu gmail search "<query>"
+grogu gmail draft --to "<recipient>" --subject "<subject>" --message "<body>"
+GROGU_GMAIL_ENABLED=1 grogu gmail send <draft-id> --confirm
 ```
 
-Sending requires explicit confirmation after showing the exact recipient and
-body. Message content and credentials are excluded from telemetry.
+Sending requires explicit confirmation after showing the exact resolved
+recipient and complete body. Any edit requires a replacement draft, exact
+re-review, and fresh confirmation. Message content, recipient identifiers, and
+credentials are excluded from repository files and telemetry.
 
 ## Remote sessions
 
