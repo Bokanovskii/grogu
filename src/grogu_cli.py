@@ -4583,21 +4583,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 _WINDOWS_CMD_META = re.compile(r'([()\[\]%!^"`<>&|;, *?])')
-_WINDOWS_PERCENT_MARKER = "\0"
 
 
-def _escape_windows_cmd(value: str, percent_reference: str = "") -> str:
-    if percent_reference:
-        value = value.replace("%", _WINDOWS_PERCENT_MARKER)
-    value = _WINDOWS_CMD_META.sub(r"^\1", value)
-    return value.replace(_WINDOWS_PERCENT_MARKER, percent_reference)
+def _escape_windows_cmd(value: str) -> str:
+    return _WINDOWS_CMD_META.sub(r"^\1", value)
 
 
-def _escape_windows_cmd_argument(
-    value: str, escape_depth: int, percent_reference: str = ""
-) -> str:
-    if percent_reference:
-        value = value.replace("%", _WINDOWS_PERCENT_MARKER)
+def _escape_windows_cmd_argument(value: str, escape_depth: int) -> str:
     value = re.sub(
         r'(\\*)"',
         lambda match: match.group(1) * 2 + r"\"",
@@ -4607,7 +4599,7 @@ def _escape_windows_cmd_argument(
     value = f'"{value}"'
     for _ in range(escape_depth):
         value = _WINDOWS_CMD_META.sub(r"^\1", value)
-    return value.replace(_WINDOWS_PERCENT_MARKER, percent_reference)
+    return value
 
 
 def _windows_batch_forwards_all_arguments(copilot: str) -> bool:
@@ -4633,34 +4625,36 @@ def _windows_batch_forwards_all_arguments(copilot: str) -> bool:
     return False
 
 
-def _windows_percent_reference(
-    copilot: str, arguments: list[str], environment: dict[str, str]
-) -> tuple[str, dict[str, str]]:
-    if not any("%" in value for value in [copilot, *arguments]):
-        return "", environment
-    variable = f"GROGU_CMD_PERCENT_{uuid.uuid4().hex}"
-    child_environment = environment.copy()
-    child_environment[variable] = "%"
-    return f"%{variable}%", child_environment
+def _windows_powershell_shim(copilot: str) -> str | None:
+    shim = f"{os.path.splitext(copilot)[0]}.ps1"
+    return shim if os.path.isfile(shim) else None
+
+
+def _windows_powershell(environment: dict[str, str]) -> str | None:
+    path = (
+        environment.get("PATH")
+        or environment.get("Path")
+        or environment.get("path")
+    )
+    for executable in ("pwsh.exe", "powershell.exe"):
+        resolved = shutil.which(executable, path=path)
+        if resolved:
+            return resolved
+    return None
 
 
 def _windows_batch_invocation(
     copilot: str, arguments: list[str], environment: dict[str, str]
-) -> tuple[str, str, dict[str, str]]:
+) -> tuple[str, str]:
     interpreter = (
         environment.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
     )
     escape_depth = 2 if _windows_batch_forwards_all_arguments(copilot) else 1
-    percent_reference, child_environment = _windows_percent_reference(
-        copilot, arguments, environment
-    )
     shell_command = " ".join(
         [
-            _escape_windows_cmd(copilot, percent_reference),
+            _escape_windows_cmd(copilot),
             *(
-                _escape_windows_cmd_argument(
-                    argument, escape_depth, percent_reference
-                )
+                _escape_windows_cmd_argument(argument, escape_depth)
                 for argument in arguments
             ),
         ]
@@ -4669,7 +4663,7 @@ def _windows_batch_invocation(
         f"{subprocess.list2cmdline([interpreter])} /d /v:off /s /c "
         f'"{shell_command}"'
     )
-    return interpreter, command_line, child_environment
+    return interpreter, command_line
 
 
 def _run_copilot(copilot: str, arguments: list[str], environment: dict[str, str]) -> int:
@@ -4686,15 +4680,44 @@ def _run_copilot(copilot: str, arguments: list[str], environment: dict[str, str]
         # Ctrl+C is delivered by the console to both processes.
         try:
             if os.path.splitext(copilot)[1].lower() in {".cmd", ".bat"}:
-                interpreter, command_line, child_environment = (
-                    _windows_batch_invocation(
-                        copilot, arguments, environment
+                powershell_shim = _windows_powershell_shim(copilot)
+                if powershell_shim is not None:
+                    powershell = _windows_powershell(environment)
+                    if powershell is None:
+                        print(
+                            "grogu: a PowerShell sibling exists for the Windows "
+                            "Copilot shim, but no PowerShell executable was found",
+                            file=sys.stderr,
+                        )
+                        return 127
+                    return subprocess.run(
+                        [
+                            powershell,
+                            "-NoLogo",
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            powershell_shim,
+                            *arguments,
+                        ],
+                        env=environment,
+                    ).returncode
+                if any("%" in value for value in [copilot, *arguments]):
+                    print(
+                        "grogu: refusing to pass a percent-bearing command or "
+                        "argument through a .cmd/.bat shim without a sibling "
+                        "PowerShell shim; cmd.exe would expand or corrupt it",
+                        file=sys.stderr,
                     )
+                    return 2
+                interpreter, command_line = _windows_batch_invocation(
+                    copilot, arguments, environment
                 )
                 return subprocess.run(
                     command_line,
                     executable=interpreter,
-                    env=child_environment,
+                    env=environment,
                 ).returncode
             return subprocess.run([copilot, *arguments], env=environment).returncode
         except KeyboardInterrupt:

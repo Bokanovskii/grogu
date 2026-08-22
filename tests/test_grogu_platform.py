@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -126,15 +127,14 @@ class PlatformPrimitiveTests(unittest.TestCase):
             )
 
     @unittest.skipUnless(os.name == "nt", "Windows console behavior")
-    def test_windows_npm_cmd_shim_preserves_percent_arguments_and_exit_code(self):
+    def test_windows_npm_powershell_shim_preserves_arguments_and_exit_code(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "npm shim"
             root.mkdir()
             checker = root / "checker.py"
             arguments = [
                 "two words",
-                '"(foo|bar>baz|foz)"',
-                "literal-%GROGU_PERCENT_EXPANSION_PROBE%-&-safe",
+                "literal-%GROGU_PERCENT_EXPANSION_PROBE%-&|<>^-safe",
             ]
             checker.write_text(
                 "import sys\n"
@@ -144,15 +144,40 @@ class PlatformPrimitiveTests(unittest.TestCase):
             shim = root / "copilot.cmd"
             shim.write_text(
                 "@ECHO OFF\r\n"
-                f'"{sys.executable}" "{checker}" %*\r\n',
+                f'"{sys.executable}" "{checker}" %*\r\n'
+                "EXIT /B 99\r\n",
+                encoding="utf8",
+            )
+            shim.with_suffix(".ps1").write_text(
+                "& $env:GROGU_TEST_PYTHON $env:GROGU_TEST_CHECKER @args\r\n"
+                "exit $LASTEXITCODE\r\n",
                 encoding="utf8",
             )
 
             environment = os.environ.copy()
             environment["GROGU_PERCENT_EXPANSION_PROBE"] = "expanded"
+            environment["GROGU_TEST_PYTHON"] = sys.executable
+            environment["GROGU_TEST_CHECKER"] = str(checker)
             result = grogu_cli._run_copilot(str(shim), arguments, environment)
 
         self.assertEqual(result, 7)
+
+    @unittest.skipUnless(os.name == "nt", "Windows console behavior")
+    def test_windows_batch_without_powershell_refuses_percent_arguments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wrapper = Path(directory) / "copilot.cmd"
+            wrapper.write_text("@ECHO OFF\r\nEXIT /B 99\r\n", encoding="utf8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                result = grogu_cli._run_copilot(
+                    str(wrapper),
+                    ["literal-%GROGU_PERCENT_EXPANSION_PROBE%"],
+                    os.environ.copy(),
+                )
+
+        self.assertEqual(result, 2)
+        self.assertIn("refusing to pass a percent-bearing", stderr.getvalue())
+        self.assertIn("without a sibling PowerShell shim", stderr.getvalue())
 
     @unittest.skipUnless(os.name == "nt", "Windows console behavior")
     def test_windows_simple_batch_wrapper_uses_one_escape_layer(self):
@@ -175,22 +200,12 @@ class PlatformPrimitiveTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows console behavior")
     def test_windows_native_executable_runs_directly(self):
-        environment = os.environ.copy()
-        completed = subprocess.CompletedProcess([], 7)
-        with mock.patch.object(
-            grogu_cli.subprocess, "run", return_value=completed
-        ) as run:
-            result = grogu_cli._run_copilot(
-                r"C:\Program Files\GitHub\copilot.exe",
-                ["--version"],
-                environment,
-            )
-
-        self.assertEqual(result, 7)
-        run.assert_called_once_with(
-            [r"C:\Program Files\GitHub\copilot.exe", "--version"],
-            env=environment,
+        result = grogu_cli._run_copilot(
+            sys.executable,
+            ["-c", "raise SystemExit(7)"],
+            os.environ.copy(),
         )
+        self.assertEqual(result, 7)
 
 
 if __name__ == "__main__":

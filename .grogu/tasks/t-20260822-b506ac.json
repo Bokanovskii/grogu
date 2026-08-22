@@ -10,8 +10,8 @@
   "assignee": "charlie",
   "created_at": "2026-08-22T20:26:53+00:00",
   "created_by": "charlie",
-  "updated_at": "2026-08-22T21:21:26+00:00",
-  "revision": 13,
+  "updated_at": "2026-08-22T21:52:32+00:00",
+  "revision": 18,
   "log": [
     {
       "at": "2026-08-22T20:26:53+00:00",
@@ -88,6 +88,35 @@
       "by": "charlie",
       "event": "release",
       "text": "Re-review gaps fixed and verified; content-aware shim escaping, literal-percent forwarding, simple batch wrapper regression, and repository-wide UTF-8 decoding audit complete"
+    },
+    {
+      "at": "2026-08-22T21:39:50+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-22T21:39:50+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Round 3: replacing cmd percent markers with sibling PowerShell shim launch and explicit generic batch refusal"
+    },
+    {
+      "at": "2026-08-22T21:48:52+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Replaced percent-marker cmd transport with sibling PowerShell shim execution and explicit generic batch percent refusal"
+    },
+    {
+      "at": "2026-08-22T21:52:18+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Round 3 verified on macOS: focused platform 11 tests/4 Windows skips; full suite 538 tests/5 skips. PowerShell sibling path replaces cmd percent transport."
+    },
+    {
+      "at": "2026-08-22T21:52:32+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "Round 3 complete: npm sibling PowerShell launch preserves literal percent arguments; generic batch files reject percent input and retain percent-free support; macOS suites pass"
     }
   ]
 }
