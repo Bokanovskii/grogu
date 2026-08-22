@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -126,6 +127,52 @@ class PlatformPrimitiveTests(unittest.TestCase):
                 grogu_cli._windows_batch_forwards_all_arguments(str(simple))
             )
 
+    def test_windows_powershell_shim_requires_an_existing_sibling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            command = Path(directory) / "copilot.cmd"
+            command.write_text("@ECHO OFF\r\n", encoding="utf8")
+            sibling = command.with_suffix(".ps1")
+
+            self.assertIsNone(grogu_cli._windows_powershell_shim(str(command)))
+            sibling.write_text("exit 0\r\n", encoding="utf8")
+            self.assertEqual(
+                grogu_cli._windows_powershell_shim(str(command)),
+                str(sibling),
+            )
+
+    def test_windows_powershell_prefers_pwsh(self):
+        environment = {"Path": "powershell-search-path"}
+        with mock.patch.object(
+            grogu_cli.shutil,
+            "which",
+            return_value=r"C:\Program Files\PowerShell\7\pwsh.exe",
+        ) as which:
+            resolved = grogu_cli._windows_powershell(environment)
+
+        self.assertEqual(resolved, r"C:\Program Files\PowerShell\7\pwsh.exe")
+        which.assert_called_once_with("pwsh.exe", path="powershell-search-path")
+
+    def test_windows_powershell_falls_back_to_windows_powershell(self):
+        environment = {"PATH": "powershell-search-path"}
+        with mock.patch.object(
+            grogu_cli.shutil,
+            "which",
+            side_effect=[None, r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"],
+        ) as which:
+            resolved = grogu_cli._windows_powershell(environment)
+
+        self.assertEqual(
+            resolved,
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        )
+        self.assertEqual(
+            which.call_args_list,
+            [
+                mock.call("pwsh.exe", path="powershell-search-path"),
+                mock.call("powershell.exe", path="powershell-search-path"),
+            ],
+        )
+
     @unittest.skipUnless(os.name == "nt", "Windows console behavior")
     def test_windows_npm_powershell_shim_preserves_arguments_and_exit_code(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -134,6 +181,7 @@ class PlatformPrimitiveTests(unittest.TestCase):
             checker = root / "checker.py"
             arguments = [
                 "two words",
+                'embedded "literal quotes"',
                 "literal-%GROGU_PERCENT_EXPANSION_PROBE%-&|<>^-safe",
             ]
             checker.write_text(

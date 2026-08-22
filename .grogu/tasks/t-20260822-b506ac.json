@@ -10,8 +10,8 @@
   "assignee": "charlie",
   "created_at": "2026-08-22T20:26:53+00:00",
   "created_by": "charlie",
-  "updated_at": "2026-08-22T21:52:32+00:00",
-  "revision": 18,
+  "updated_at": "2026-08-22T22:05:04+00:00",
+  "revision": 23,
   "log": [
     {
       "at": "2026-08-22T20:26:53+00:00",
@@ -117,6 +117,35 @@
       "by": "charlie",
       "event": "release",
       "text": "Round 3 complete: npm sibling PowerShell launch preserves literal percent arguments; generic batch files reject percent input and retain percent-free support; macOS suites pass"
+    },
+    {
+      "at": "2026-08-22T22:03:32+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-22T22:03:32+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Closing final verification gaps: embedded quotes and portable PowerShell discovery tests"
+    },
+    {
+      "at": "2026-08-22T22:03:47+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Added embedded-quote PowerShell regression plus portable sibling resolution and pwsh/Windows PowerShell discovery tests"
+    },
+    {
+      "at": "2026-08-22T22:05:00+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Final verification gaps closed: focused platform 14 tests/4 skips; full suite 541 tests/5 skips"
+    },
+    {
+      "at": "2026-08-22T22:05:04+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "Final pre-push verification coverage added for quoted PowerShell arguments, sibling resolution, and executable preference/fallback"
     }
   ]
 }
