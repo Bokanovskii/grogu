@@ -102,13 +102,40 @@ class PlatformPrimitiveTests(unittest.TestCase):
                 with store.locked():
                     pass
 
+    def test_windows_batch_forwarding_detection_reads_the_shim(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            forwarding = root / "forwarding.cmd"
+            forwarding.write_text(
+                '@ECHO OFF\r\n"node.exe" "cli.js" %*\r\n',
+                encoding="utf8",
+            )
+            simple = root / "simple.cmd"
+            simple.write_text(
+                "@ECHO OFF\r\nREM This wrapper does not forward all arguments.\r\n"
+                "ECHO %%*\r\n"
+                'IF "%~1"=="ok" EXIT /B 0\r\n',
+                encoding="utf8",
+            )
+
+            self.assertTrue(
+                grogu_cli._windows_batch_forwards_all_arguments(str(forwarding))
+            )
+            self.assertFalse(
+                grogu_cli._windows_batch_forwards_all_arguments(str(simple))
+            )
+
     @unittest.skipUnless(os.name == "nt", "Windows console behavior")
-    def test_windows_npm_cmd_shim_preserves_arguments_and_exit_code(self):
+    def test_windows_npm_cmd_shim_preserves_percent_arguments_and_exit_code(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "npm shim"
             root.mkdir()
             checker = root / "checker.py"
-            arguments = ["two words", '"(foo|bar>baz|foz)"']
+            arguments = [
+                "two words",
+                '"(foo|bar>baz|foz)"',
+                "literal-%GROGU_PERCENT_EXPANSION_PROBE%-&-safe",
+            ]
             checker.write_text(
                 "import sys\n"
                 f"raise SystemExit(7 if sys.argv[1:] == {arguments!r} else 9)\n",
@@ -121,8 +148,27 @@ class PlatformPrimitiveTests(unittest.TestCase):
                 encoding="utf8",
             )
 
+            environment = os.environ.copy()
+            environment["GROGU_PERCENT_EXPANSION_PROBE"] = "expanded"
+            result = grogu_cli._run_copilot(str(shim), arguments, environment)
+
+        self.assertEqual(result, 7)
+
+    @unittest.skipUnless(os.name == "nt", "Windows console behavior")
+    def test_windows_simple_batch_wrapper_uses_one_escape_layer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "simple wrapper"
+            root.mkdir()
+            wrapper = root / "copilot.bat"
+            wrapper.write_text(
+                "@ECHO OFF\r\n"
+                'IF "%~1"=="two words & safe" EXIT /B 7\r\n'
+                "EXIT /B 9\r\n",
+                encoding="utf8",
+            )
+
             result = grogu_cli._run_copilot(
-                str(shim), arguments, os.environ.copy()
+                str(wrapper), ["two words & safe"], os.environ.copy()
             )
 
         self.assertEqual(result, 7)

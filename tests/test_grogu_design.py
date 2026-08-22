@@ -80,6 +80,7 @@ class DesignCliTests(unittest.TestCase):
             [sys.executable, str(ROOT / "src" / "grogu_cli.py"), *args],
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=self.env,
             cwd=str(ROOT),
         )

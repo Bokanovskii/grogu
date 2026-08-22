@@ -4583,39 +4583,93 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 _WINDOWS_CMD_META = re.compile(r'([()\[\]%!^"`<>&|;, *?])')
+_WINDOWS_PERCENT_MARKER = "\0"
 
 
-def _escape_windows_cmd(value: str) -> str:
-    return _WINDOWS_CMD_META.sub(r"^\1", value)
+def _escape_windows_cmd(value: str, percent_reference: str = "") -> str:
+    if percent_reference:
+        value = value.replace("%", _WINDOWS_PERCENT_MARKER)
+    value = _WINDOWS_CMD_META.sub(r"^\1", value)
+    return value.replace(_WINDOWS_PERCENT_MARKER, percent_reference)
 
 
-def _escape_windows_cmd_argument(value: str) -> str:
+def _escape_windows_cmd_argument(
+    value: str, escape_depth: int, percent_reference: str = ""
+) -> str:
+    if percent_reference:
+        value = value.replace("%", _WINDOWS_PERCENT_MARKER)
     value = re.sub(
         r'(\\*)"',
         lambda match: match.group(1) * 2 + r"\"",
         value,
     )
     value = re.sub(r"(\\*)$", lambda match: match.group(1) * 2, value)
-    value = _escape_windows_cmd(f'"{value}"')
-    # npm's generated shims expand %* into a second cmd.exe parse.
-    return _escape_windows_cmd(value)
+    value = f'"{value}"'
+    for _ in range(escape_depth):
+        value = _WINDOWS_CMD_META.sub(r"^\1", value)
+    return value.replace(_WINDOWS_PERCENT_MARKER, percent_reference)
+
+
+def _windows_batch_forwards_all_arguments(copilot: str) -> bool:
+    try:
+        with open(copilot, "rb") as shim:
+            content = shim.read()
+    except OSError:
+        return False
+    for raw_line in content.splitlines():
+        line = raw_line.lstrip()
+        lowered = line.lower()
+        if (
+            not line
+            or line.startswith(b":")
+            or re.match(br"@?rem(?:[ \t]|$)", lowered)
+        ):
+            continue
+        if any(
+            (len(match.group(0)) - 1) % 2
+            for match in re.finditer(br"%+\*", line)
+        ):
+            return True
+    return False
+
+
+def _windows_percent_reference(
+    copilot: str, arguments: list[str], environment: dict[str, str]
+) -> tuple[str, dict[str, str]]:
+    if not any("%" in value for value in [copilot, *arguments]):
+        return "", environment
+    variable = f"GROGU_CMD_PERCENT_{uuid.uuid4().hex}"
+    child_environment = environment.copy()
+    child_environment[variable] = "%"
+    return f"%{variable}%", child_environment
 
 
 def _windows_batch_invocation(
     copilot: str, arguments: list[str], environment: dict[str, str]
-) -> tuple[str, str]:
-    interpreter = environment.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
+) -> tuple[str, str, dict[str, str]]:
+    interpreter = (
+        environment.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
+    )
+    escape_depth = 2 if _windows_batch_forwards_all_arguments(copilot) else 1
+    percent_reference, child_environment = _windows_percent_reference(
+        copilot, arguments, environment
+    )
     shell_command = " ".join(
         [
-            _escape_windows_cmd(copilot),
-            *(_escape_windows_cmd_argument(argument) for argument in arguments),
+            _escape_windows_cmd(copilot, percent_reference),
+            *(
+                _escape_windows_cmd_argument(
+                    argument, escape_depth, percent_reference
+                )
+                for argument in arguments
+            ),
         ]
     )
     command_line = (
-        f"{subprocess.list2cmdline([interpreter])} /d /s /c "
+        f"{subprocess.list2cmdline([interpreter])} /d /v:off /s /c "
         f'"{shell_command}"'
     )
-    return interpreter, command_line
+    return interpreter, command_line, child_environment
 
 
 def _run_copilot(copilot: str, arguments: list[str], environment: dict[str, str]) -> int:
@@ -4632,13 +4686,15 @@ def _run_copilot(copilot: str, arguments: list[str], environment: dict[str, str]
         # Ctrl+C is delivered by the console to both processes.
         try:
             if os.path.splitext(copilot)[1].lower() in {".cmd", ".bat"}:
-                interpreter, command_line = _windows_batch_invocation(
-                    copilot, arguments, environment
+                interpreter, command_line, child_environment = (
+                    _windows_batch_invocation(
+                        copilot, arguments, environment
+                    )
                 )
                 return subprocess.run(
                     command_line,
                     executable=interpreter,
-                    env=environment,
+                    env=child_environment,
                 ).returncode
             return subprocess.run([copilot, *arguments], env=environment).returncode
         except KeyboardInterrupt:

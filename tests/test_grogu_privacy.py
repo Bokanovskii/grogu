@@ -147,6 +147,7 @@ class StagedScanTests(unittest.TestCase):
     def _git(self, *arguments):
         return subprocess.run(
             ["git", *arguments], cwd=str(self.repo), capture_output=True, text=True,
+            encoding="utf8",
             check=False,
         )
 
@@ -271,7 +272,7 @@ class WorktreeHookTests(unittest.TestCase):
         def git(*arguments, cwd=None):
             return subprocess.run(
                 ["git", *arguments], cwd=str(cwd or repo), check=True,
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="utf8",
             )
 
         git("init", "-q", "-b", "main", ".")

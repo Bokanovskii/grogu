@@ -2245,6 +2245,7 @@ class FinalizeArtifactTests(unittest.TestCase):
             cwd=self.root,
             capture_output=True,
             text=True,
+            encoding="utf8",
         )
         return set(listing.stdout.split())
 
@@ -2717,6 +2718,7 @@ class WorkingStateStaysLocalTests(unittest.TestCase):
             cwd=self.root,
             capture_output=True,
             text=True,
+            encoding="utf8",
         ).stdout
         self.assertNotIn("manifest.json", staged)
         self.assertIn("implementation.md", staged)
@@ -2734,6 +2736,7 @@ class WorkingStateStaysLocalTests(unittest.TestCase):
             cwd=self.root,
             capture_output=True,
             text=True,
+            encoding="utf8",
         ).stdout
         self.assertNotIn("revisions/", staged)
 
