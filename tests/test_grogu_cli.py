@@ -2344,6 +2344,88 @@ class ArchitectFrictionTests(unittest.TestCase):
         self.assertIn("no stage called", result.stderr)
         self.assertIn("implementation", result.stderr)
 
+    def test_shape_help_explains_the_audited_clear_review_inverse(self):
+        result = self.run_cli("plan", "shape", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        help_text = " ".join(result.stdout.split())
+        self.assertIn("--clear-review", help_text)
+        self.assertIn("requires --why", help_text)
+        self.assertIn("architect only", help_text)
+
+    def test_mistaken_review_hold_is_recovered_on_the_same_plan(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "write", plan, "implementation",
+            "--body", "implementation body", role="architect",
+        )
+        self.run_cli(
+            "plan", "write", plan, "testing",
+            "--body", "testing body", role="architect",
+        )
+        self.run_cli(
+            "plan", "stage", plan, "implementation", "in_progress", role="engineer"
+        )
+        store = grogu_plans.PlanStore(self.repo)
+        stage_paths = {
+            stage: store.stage_path(plan, stage)
+            for stage in (grogu_plans.IMPLEMENTATION, grogu_plans.TESTING)
+        }
+        stage_bytes = {stage: path.read_bytes() for stage, path in stage_paths.items()}
+        stage_state = dict(store.load(plan)["stage_state"])
+
+        held = self.run_cli(
+            "plan", "shape", plan, "--require-review", role="architect"
+        )
+        self.assertEqual(held.returncode, 0, held.stderr)
+        blocked = self.run_cli("plan", "gate", plan, "--stage", "implement")
+        self.assertEqual(blocked.returncode, 3)
+
+        cleared = self.run_cli(
+            "plan", "shape", plan, "--clear-review", "--why",
+            "hold targeted the wrong plan", role="architect",
+        )
+
+        self.assertEqual(cleared.returncode, 0, cleared.stderr)
+        self.assertEqual(
+            cleared.stdout.strip(),
+            f"{plan}: cleared the unapproved review requirement; "
+            "other plan state is unchanged",
+        )
+        self.assertEqual(
+            self.run_cli("plan", "gate", plan, "--stage", "implement").returncode,
+            0,
+        )
+        manifest = store.load(plan)
+        self.assertEqual([item["id"] for item in store.list_plans()], [plan])
+        self.assertEqual(manifest["stage_state"], stage_state)
+        self.assertEqual(
+            {stage: path.read_bytes() for stage, path in stage_paths.items()},
+            stage_bytes,
+        )
+        event = manifest["events"][-1]
+        self.assertEqual(event["event"], "review_cleared")
+        self.assertEqual(event["reason"], "hold targeted the wrong plan")
+        self.assertTrue(event["actor"])
+        self.assertTrue(event["at"])
+
+    def test_clear_review_refuses_missing_reason_and_non_architects(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "shape", plan, "--require-review", role="architect"
+        )
+        missing = self.run_cli(
+            "plan", "shape", plan, "--clear-review", role="architect"
+        )
+        self.assertEqual(missing.returncode, 3)
+        self.assertIn("needs a reason", missing.stderr)
+        refused = self.run_cli(
+            "plan", "shape", plan, "--clear-review", "--why", "mistake",
+            role="engineer",
+        )
+        self.assertEqual(refused.returncode, 3)
+        self.assertIn("architect", refused.stderr)
+        self.assertTrue(grogu_plans.PlanStore(self.repo).load(plan)["review_required"])
+
     def test_two_stages_at_once_are_refused(self):
         plan = self._plan()
         result = self.run_cli(

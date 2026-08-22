@@ -1811,6 +1811,15 @@ def plan_shape(args: argparse.Namespace) -> int:
         store.decline_stage(plan_id, args.decline, args.why or "", role=role)
         print(f"{plan_id}: recorded that no {args.decline} stage is warranted")
         return 0
+    if args.clear_review:
+        store.clear_review_requirement(
+            plan_id, args.why or "", role=role
+        )
+        print(
+            f"{plan_id}: cleared the unapproved review requirement; "
+            "other plan state is unchanged"
+        )
+        return 0
     manifest = store.require_review(plan_id, role=role)
     for warning in manifest.get("warnings", []):
         print(f"grogu: {warning}", file=sys.stderr)
@@ -3896,7 +3905,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan_shape_parser = plan_subparsers.add_parser(
         "shape",
-        help="add, decline or hold stages of an existing plan (architect only)",
+        help="change stages or the review hold of an existing plan (architect only)",
         parents=[plan_common, role_common],
     )
     plan_shape_parser.add_argument("id", nargs="?", default="")
@@ -3917,7 +3926,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="hold work until the user approves the plan",
     )
-    plan_shape_parser.add_argument("--why", help="reason, required with --decline")
+    plan_shape_group.add_argument(
+        "--clear-review",
+        action="store_true",
+        help=(
+            "clear an unapproved review requirement "
+            "(architect only; requires --why)"
+        ),
+    )
+    plan_shape_parser.add_argument(
+        "--why", help="reason, required with --decline or --clear-review"
+    )
     plan_shape_parser.add_argument(
         "--reset",
         choices=grogu_plans.STAGES,

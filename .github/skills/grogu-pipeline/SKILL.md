@@ -40,6 +40,13 @@ existing plan changes it with `grogu plan shape <id> --add eval|design`,
 `--decline eval|design --why '...'`, or `--require-review`. Only the architect
 may; the other roles are refused.
 
+If `--require-review` was applied to the wrong plan, the architect may undo
+that unapproved hold with
+`grogu plan shape <id> --clear-review --why 'the hold targeted the wrong plan'`.
+The reason is mandatory and audited with actor and time. This is deliberately
+narrow: it does not work after approval or in amending/terminal states, and it
+does not alter stage text/state or clear an independent `needs_review` blocker.
+
 Research anything external before committing to it — `web_search` for current
 state, `web_fetch` for the vendor's own docs, the GitHub tools for whether a
 project is still alive — and cite the source and date in the plan. Model

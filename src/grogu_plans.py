@@ -125,6 +125,7 @@ SUPERSEDED = "superseded"
 COMPLETE = "complete"
 PLAN_STATUSES = (DRAFT, APPROVED, AMENDING, NEEDS_REVIEW, SUPERSEDED, COMPLETE)
 BLOCKING_STATUSES = frozenset({AMENDING, NEEDS_REVIEW, SUPERSEDED})
+REVIEW_CLEARABLE_STATUSES = frozenset({DRAFT, NEEDS_REVIEW})
 
 PENDING = "pending"
 IN_PROGRESS = "in_progress"
@@ -1641,6 +1642,40 @@ class PlanStore:
                     "the hold applies to remaining stages only"
                 ]
             return manifest
+
+    def clear_review_requirement(
+        self, plan_id: str, reason: str, *, role: str = ""
+    ) -> dict:
+        """Remove a mistaken, unapproved review hold without changing plan state."""
+        role = role or current_role() or ARCHITECT
+        if role != ARCHITECT:
+            raise PlanError(
+                f"role {role!r} may not clear a plan's review requirement; "
+                "that is the architect's"
+            )
+        reason = reason.strip()
+        if not reason:
+            raise PlanError(
+                "clearing a review requirement needs a reason the next reader can audit"
+            )
+        with self.locked():
+            manifest = self.load(plan_id)
+            if manifest.get("approved_at") or manifest.get("status") == APPROVED:
+                raise PlanError(
+                    f"plan {plan_id} was already approved; its review requirement "
+                    "cannot be cleared"
+                )
+            status = manifest.get("status")
+            if status not in REVIEW_CLEARABLE_STATUSES:
+                raise PlanError(
+                    f"plan {plan_id} is {status or 'in an unknown state'}; "
+                    "only draft or needs_review plans may clear an unapproved "
+                    "review requirement"
+                )
+            if not manifest.get("review_required"):
+                raise PlanError(f"plan {plan_id} has no review requirement to clear")
+            manifest["review_required"] = False
+            return self._save(manifest, "review_cleared", reason=reason)
 
     def commission(
         self, plan_id: str, role: str, brief: str, *, by: str = "", replace: bool = False
