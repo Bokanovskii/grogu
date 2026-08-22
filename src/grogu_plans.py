@@ -22,7 +22,9 @@ accidents, **not a security boundary**: an agent running as the same user can
 trivially decode it. What it buys is that an engineer who opens
 `testing.sealed`, greps the repository, or reads a directory listing does not
 absorb the testing plan by accident, and that deliberately unsealing it is a
-recorded, visible act rather than an invisible one.
+recorded, visible act rather than an invisible one. Once an agent has an
+identity, its first role claim is also persisted and conflicting later claims
+are refused, including after a fresh shell loses the role environment.
 """
 
 from __future__ import annotations
@@ -932,7 +934,17 @@ def pending_banner(
         store = PlanStore(root)
         if not role:
             bound = store.session_binding()
-            role, plan_id = bound.get("role", ""), plan_id or bound.get("plan", "")
+            explicit_agent = os.environ.get("GROGU_AGENT", "").strip()
+            bound_agent = (bound.get("agent", "") or "").strip()
+            # A named agent sharing this checkout is not the unnamed or
+            # differently named agent that last fetched a brief here. Let its
+            # command establish its own role instead of delivering and
+            # recording steering under somebody else's identity.
+            if not explicit_agent or explicit_agent == bound_agent:
+                role, plan_id = (
+                    bound.get("role", ""),
+                    plan_id or bound.get("plan", ""),
+                )
         if not role:
             return harness_friction_banner(root)
         if plan_id:
@@ -940,7 +952,8 @@ def pending_banner(
             # only agents the plan knew about were the ones that had already
             # read something, so "which of my two engineers has not seen this
             # correction" was unanswerable until one of them answered it.
-            store.note_agent_presence(plan_id, role)
+            if not store.note_agent_presence(plan_id, role):
+                return harness_friction_banner(root)
         pending = store.steering(role=role, plan_id=plan_id, unread=True)
     except (PlanError, OSError):
         return ""  # steering must never be the reason a command fails
@@ -1526,6 +1539,7 @@ class PlanStore:
         stage they alone are qualified to call for.
         """
         role = role or current_role() or ARCHITECT
+        self.claim_agent_role(plan_id, role)
         if role != ARCHITECT:
             raise PlanError(f"role {role!r} may not change the shape of a plan")
         if stage not in (DESIGN, EVALUATION):
@@ -1560,6 +1574,7 @@ class PlanStore:
         command is worse than any bug it was chasing.
         """
         role = role or current_role() or ARCHITECT
+        self.claim_agent_role(plan_id, role)
         if role != ARCHITECT:
             raise PlanError(f"role {role!r} may not reset a stage; that is the architect's")
         if stage not in STAGES:
@@ -1590,6 +1605,7 @@ class PlanStore:
         the architect ruled it out or never thought about it.
         """
         role = role or current_role() or ARCHITECT
+        self.claim_agent_role(plan_id, role)
         if role != ARCHITECT:
             raise PlanError(f"role {role!r} may not change the shape of a plan")
         if stage not in (DESIGN, EVALUATION):
@@ -1617,6 +1633,7 @@ class PlanStore:
         the request wants review needs to be able to say so.
         """
         role = role or current_role() or ARCHITECT
+        self.claim_agent_role(plan_id, role)
         if role != ARCHITECT:
             raise PlanError(f"role {role!r} may not put a plan up for review")
         with self.locked():
@@ -1658,6 +1675,7 @@ class PlanStore:
         weighting the user's taste above its own inference.
         """
         by = by or current_role() or ARCHITECT
+        self.claim_agent_role(plan_id, by)
         if by != ARCHITECT:
             raise PlanError(f"role {by!r} may not commission work; that is the architect's")
         if role not in ROLES:
@@ -1735,6 +1753,7 @@ class PlanStore:
         where work was lost that no other role could recover.
         """
         role = role or current_role() or ARCHITECT
+        self.claim_agent_role(plan_id, role)
         writers = STAGE_WRITERS.get(stage, frozenset({ARCHITECT}))
         if role not in writers:
             raise PlanError(
@@ -1948,6 +1967,12 @@ class PlanStore:
     def read_stage(self, plan_id: str, stage: str, *, role: str, record: bool = True) -> str:
         if role not in ROLES:
             raise PlanError(f"unknown role {role!r}; expected one of {', '.join(ROLES)}")
+        try:
+            self.claim_agent_role(plan_id, role)
+        except PlanError:
+            if record:
+                self._record_access(plan_id, role, stage, False)
+            raise
         allowed = stage in ROLE_READABLE_STAGES[role]
         if record:
             self._record_access(plan_id, role, stage, allowed)
@@ -2062,6 +2087,8 @@ class PlanStore:
                 f"--as-user is for the user; this session is running as the "
                 f"{current_role()}"
             )
+        if role and not as_user:
+            self.claim_agent_role(plan_id, role)
         if not role and stage in SEALED_STAGES and state == COMPLETE and not as_user:
             # Default-deny, because the check above was only ever as strong as
             # the caller's willingness to declare itself. An engineer that
@@ -2506,6 +2533,102 @@ class PlanStore:
                 agent = "unknown"
         return f"{role}@{agent}"
 
+    @staticmethod
+    def _binding_time(entry: dict) -> dt.datetime:
+        try:
+            stamp = dt.datetime.fromisoformat(
+                str(entry.get("at") or "").replace("Z", "+00:00")
+            )
+        except ValueError:
+            return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+        return stamp if stamp.tzinfo else stamp.replace(tzinfo=dt.timezone.utc)
+
+    def _identified_agent(self, *, include_worktree: bool = False) -> tuple[str, str]:
+        """Return the stable agent name and any role already bound to it."""
+        explicit = os.environ.get("GROGU_AGENT", "").strip()
+        if explicit:
+            matching = [
+                entry
+                for entry in self.session_bindings().values()
+                if isinstance(entry, dict)
+                and (entry.get("agent", "") or "").strip() == explicit
+            ]
+            binding = max(matching, key=self._binding_time, default={})
+            return explicit, (binding.get("role", "") or "").strip()
+
+        binding = self.binding_covering()
+        agent = (binding.get("agent", "") or "").strip()
+        if agent:
+            return agent, (binding.get("role", "") or "").strip()
+        if include_worktree:
+            try:
+                return (
+                    str(Path.cwd().resolve()),
+                    (binding.get("role", "") or "").strip(),
+                )
+            except OSError:
+                return "", ""
+        return "", ""
+
+    def claim_agent_role(
+        self,
+        plan_id: str,
+        role: str,
+        *,
+        identify: bool = False,
+        record_presence: bool = True,
+    ) -> str:
+        """Bind an identified agent to one pipeline role.
+
+        `GROGU_AGENT` is the explicit identity. A persisted session binding
+        recovers it when a later command runs in a fresh shell, and CLI entry
+        points may opt into the working-directory fallback used by steering.
+        Anonymous library callers retain the old trust-on-assert behavior.
+        """
+        role = (role or "").strip().lower()
+        if role not in ROLES:
+            raise PlanError(f"unknown role {role!r}; expected one of {', '.join(ROLES)}")
+        declared = current_role()
+        if declared and declared != role:
+            raise PlanError(
+                f"this session is the {declared}; it cannot act as the {role}. "
+                f"If the {role} should do this, spawn one with a distinct "
+                "GROGU_AGENT"
+            )
+
+        agent, bound_role = self._identified_agent(include_worktree=identify)
+        if not agent:
+            return ""
+
+        with self.locked():
+            manifest = self.load(plan_id) if plan_id else {}
+            roles = {
+                key.split("@", 1)[0]
+                for key in manifest.get("agents_seen", {})
+                if "@" in key and key.split("@", 1)[1] == agent
+            }
+            if bound_role in ROLES:
+                roles.add(bound_role)
+            conflicts = sorted(existing for existing in roles if existing != role)
+            if conflicts:
+                previous = ", ".join(conflicts)
+                raise PlanError(
+                    f"this agent is already bound to the {previous} role"
+                    + (f" on {plan_id}" if plan_id else "")
+                    + f"; it cannot act as the {role}. Spawn a distinct {role} "
+                    "agent with its own GROGU_AGENT"
+                )
+
+            if plan_id and record_presence:
+                seen = manifest.setdefault("agents_seen", {})
+                key = f"{role}@{agent}"
+                stamp = now()[:16]
+                if seen.get(key) != stamp:
+                    seen[key] = stamp
+                    self._write_json(self.manifest_path(plan_id), manifest)
+            self._remember_session_role(role, plan_id, agent)
+        return agent
+
     def _acked_seq(self, acked: dict, role: str) -> int:
         """This agent's high-water mark, falling back to the role-wide one.
 
@@ -2557,6 +2680,7 @@ class PlanStore:
         kind: str = KIND_AMENDMENT,
     ) -> dict:
         raised_by = raised_by or current_role() or ENGINEER
+        self.claim_agent_role(plan_id, raised_by)
         if not claim.strip():
             raise PlanError("an amendment needs a claim")
         with self.locked():
@@ -2611,6 +2735,7 @@ class PlanStore:
         role: str = "",
     ) -> dict:
         role = role or current_role() or ARCHITECT
+        self.claim_agent_role(plan_id, role)
         if role != ARCHITECT:
             raise PlanError(
                 f"role {role!r} may not resolve amendments; only the architect owns the plan"
@@ -2735,6 +2860,7 @@ class PlanStore:
         if not report.strip():
             raise PlanError("a defect needs a report")
         raised_by = raised_by or current_role() or TESTER
+        self.claim_agent_role(plan_id, raised_by)
         escalate = False
         with self.locked():
             manifest = self.load(plan_id)
@@ -3141,6 +3267,7 @@ class PlanStore:
         a recording, captured terminal output — rather than an assurance.
         """
         role = role or current_role() or DESIGNER
+        self.claim_agent_role(plan_id, role)
         if role != DESIGNER:
             raise PlanError(
                 f"role {role!r} may not sign off on the design; spawn the "
@@ -3468,19 +3595,13 @@ class PlanStore:
             "steering_undelivered": self._steering_undelivered(manifest),
         }
 
-    def note_agent_presence(self, plan_id: str, role: str) -> None:
+    def note_agent_presence(self, plan_id: str, role: str) -> bool:
         """Record that an agent of this role is alive on this plan."""
-        key = self._ack_key(role)
         try:
-            with self.locked():
-                manifest = self.load(plan_id)
-                seen = manifest.setdefault("agents_seen", {})
-                if seen.get(key) == now()[:16]:
-                    return
-                seen[key] = now()[:16]
-                self._write_json(self.manifest_path(plan_id), manifest)
+            self.claim_agent_role(plan_id, role, identify=True)
         except (PlanError, OSError):
-            return  # presence is a convenience; it must never fail a command
+            return False  # presence is a convenience; it must never fail a command
+        return True
 
     def _steering_undelivered(self, manifest: dict) -> list:
         """Notes no agent of the target role has read yet.
@@ -3598,6 +3719,8 @@ class PlanStore:
                 f"--as-user is for the user; this session is running as the "
                 f"{current_role()}"
             )
+        if role and not as_user:
+            self.claim_agent_role(plan_id, role)
         if not role and not as_user:
             raise PlanError(
                 "finalizing unseals the testing and evaluation stages, so say "
@@ -3771,6 +3894,9 @@ class PlanStore:
         artifact nobody runs is a comment.
         """
         plan_id = self.resolve(plan_id)
+        acting_role = role or current_role()
+        if acting_role in ROLES:
+            self.claim_agent_role(plan_id, acting_role)
         checks = self.verifiers(plan_id)
         if not checks:
             raise PlanError(
@@ -3877,6 +4003,9 @@ class PlanStore:
         whole out of a working directory.
         """
         plan_id = self.resolve(plan_id)
+        acting_role = role or current_role()
+        if acting_role in ROLES:
+            self.claim_agent_role(plan_id, acting_role)
         clean = os.path.basename(name.strip())
         if not clean or clean.startswith("."):
             raise PlanError("an attachment needs a plain file name")
@@ -4310,6 +4439,17 @@ class PlanStore:
         """Where a target repository customises a role's prompt."""
         return self.store / "roles" / f"{role}.md"
 
+    def _remember_session_role(self, role: str, plan_id: str, agent: str) -> None:
+        path = self.state_dir / "session-roles.json"
+        payload = self._read_json(path) if path.exists() else {}
+        payload[str(Path.cwd().resolve())] = {
+            "role": role,
+            "plan": plan_id,
+            "at": now(),
+            "agent": agent,
+        }
+        self._write_json(path, payload)
+
     def bind_session(self, role: str, plan_id: str = "") -> None:
         """Record which role is working in this directory.
 
@@ -4318,24 +4458,12 @@ class PlanStore:
         becomes discoverable; every later `grogu` call in that directory can
         then carry steering without the model being asked to poll for it.
         """
-        path = self.state_dir / "session-roles.json"
-        payload = self._read_json(path) if path.exists() else {}
-        here = str(Path.cwd().resolve())
-        previous = payload.get(here, {})
-        # The agent's name is remembered with the role, because a subagent runs
-        # every command in a fresh shell: an exported GROGU_AGENT survives only
-        # as long as the model keeps typing it. One architect that exported it
-        # on some calls and not others became two identities to the harness,
-        # each with its own idea of what steering it had seen -- so a note it
-        # had read stayed listed as undelivered, and relaying it would have
-        # pushed the same text into the context that already had it.
-        payload[here] = {
-            "role": role,
-            "plan": plan_id,
-            "at": now(),
-            "agent": os.environ.get("GROGU_AGENT", "").strip() or previous.get("agent", ""),
-        }
-        self._write_json(path, payload)
+        self.claim_agent_role(
+            plan_id,
+            role,
+            identify=True,
+            record_presence=False,
+        )
 
     def session_bindings(self) -> dict:
         path = self.state_dir / "session-roles.json"
@@ -4384,16 +4512,7 @@ class PlanStore:
         # any junk in that field masked the live agent and reopened the same
         # hole from the other side. An unreadable timestamp is treated as
         # ancient: it cannot be used to claim someone is still working.
-        def when(entry: dict) -> dt.datetime:
-            try:
-                stamp = dt.datetime.fromisoformat(
-                    str(entry.get("at") or "").replace("Z", "+00:00")
-                )
-            except ValueError:
-                return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
-            return stamp if stamp.tzinfo else stamp.replace(tzinfo=dt.timezone.utc)
-
-        return max(found, key=when, default={})
+        return max(found, key=self._binding_time, default={})
 
     def brief(self, role: str, *, plan_id: str = "", base_dir: Optional[Path] = None) -> dict:
         """Assemble a role's prompt: shared contract + repository overlay.

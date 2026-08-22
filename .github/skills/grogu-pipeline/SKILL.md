@@ -158,12 +158,15 @@ a correction.
 
 ## Spawning an agent
 
-Set `GROGU_ROLE` and `GROGU_PLAN` in the environment of every agent you start,
-and `GROGU_AGENT` too if two agents share a working directory. The role is what
-the gates check and what steering is addressed to; the plan is what a bare
-`grogu plan status` resolves to. An agent spawned without them is not blocked,
-it is worse — it reads no steering and its stage completions are refused with a
-message about a missing role rather than about the work.
+Set `GROGU_ROLE`, `GROGU_PLAN` and a stable, unique `GROGU_AGENT` in the
+environment of every agent you start. The role is what the gates check and what
+steering is addressed to; the plan is what a bare `grogu plan status` resolves
+to; the agent name binds that role across commands and fresh shells. Once an
+identified agent has acted as the engineer on a plan, reusing its identity with
+`--role tester` or `--role architect` is refused. Spawn the other role with its
+own identity instead. An agent spawned without this context is not merely
+inconvenient: it can miss steering, lose stable attribution, or receive a
+missing-role refusal instead of the work it needs.
 
 Start every pipeline role in **background mode**. The pipeline is a loop: the
 engineer raises an amendment the architect has to rule on, the tester finds a

@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "id": "t-20260822-1efdff",
+  "title": "Bind pipeline roles to agent identity",
+  "body": "Fix harness friction #35: prevent an identified GROGU_AGENT from impersonating another sealed pipeline role while preserving fresh role agents, humans, and fresh-shell recovery.",
+  "status": "active",
+  "priority": "normal",
+  "labels": [
+    "harness-friction"
+  ],
+  "issue": null,
+  "assignee": "charlie",
+  "created_at": "2026-08-22T21:48:22+00:00",
+  "created_by": "charlie",
+  "updated_at": "2026-08-22T23:50:05+00:00",
+  "revision": 7,
+  "log": [
+    {
+      "at": "2026-08-22T21:48:22+00:00",
+      "by": "charlie",
+      "event": "created",
+      "text": "Bind pipeline roles to agent identity"
+    },
+    {
+      "at": "2026-08-22T21:48:22+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-22T21:50:15+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Created pipeline plan p-20260822-11f261 and completed architect implementation/testing specifications."
+    },
+    {
+      "at": "2026-08-22T22:02:24+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Implemented agent-role binding in PlanStore with fresh-shell recovery and added store/CLI regression coverage; targeted suites are passing aside from one unrelated warning-sensitive flake that passed alone."
+    },
+    {
+      "at": "2026-08-22T22:04:24+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Implementation complete; entering independent tester stage."
+    },
+    {
+      "at": "2026-08-22T22:21:48+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Tester verification passed: targeted role suites and full 552-test suite (1 skipped)."
+    },
+    {
+      "at": "2026-08-22T23:50:05+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Final verification passed: 552 tests OK (1 skipped), guard staged clean, and cached diff check clean."
+    }
+  ]
+}

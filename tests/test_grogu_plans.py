@@ -2860,6 +2860,149 @@ class OneAgentIsOneIdentityTests(unittest.TestCase):
         )
 
 
+class AgentRoleBindingTests(unittest.TestCase):
+    """An identity may not become another pipeline role to cross a seal."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.previous_cwd = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, self.previous_cwd)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("role binding")["id"]
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "build from the contract", role="architect"
+        )
+        self.store.write_stage(
+            self.plan, grogu_plans.TESTING, "sealed independent assertions", role="architect"
+        )
+
+    def _as(self, role: str, agent: str) -> None:
+        os.environ["GROGU_ROLE"] = role
+        os.environ["GROGU_AGENT"] = agent
+
+    def test_an_identified_engineer_cannot_impersonate_a_reader_of_the_seal(self):
+        self._as(grogu_plans.ENGINEER, "engineer-one")
+        self.store.read_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, role=grogu_plans.ENGINEER
+        )
+        os.environ.pop("GROGU_ROLE")
+
+        for claimed in (grogu_plans.TESTER, grogu_plans.ARCHITECT):
+            with self.subTest(claimed=claimed):
+                with self.assertRaises(grogu_plans.PlanError) as caught:
+                    self.store.read_stage(
+                        self.plan, grogu_plans.TESTING, role=claimed
+                    )
+                self.assertIn(f"cannot act as the {claimed}", str(caught.exception))
+
+        denied = [
+            entry
+            for entry in self.store.load(self.plan)["access_log"]
+            if not entry["allowed"]
+        ]
+        self.assertEqual(len(denied), 2)
+
+    def test_the_binding_survives_a_fresh_shell_that_lost_both_variables(self):
+        self._as(grogu_plans.ENGINEER, "engineer-one")
+        self.store.brief(grogu_plans.ENGINEER, plan_id=self.plan)
+        self.store.read_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, role=grogu_plans.ENGINEER
+        )
+        os.environ.pop("GROGU_ROLE")
+        os.environ.pop("GROGU_AGENT")
+
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.read_stage(
+                self.plan, grogu_plans.TESTING, role=grogu_plans.TESTER
+            )
+        self.assertIn("already bound to the engineer", str(caught.exception))
+
+    def test_distinct_tester_and_architect_identities_keep_their_access(self):
+        self._as(grogu_plans.ENGINEER, "engineer-one")
+        self.store.read_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, role=grogu_plans.ENGINEER
+        )
+
+        self._as(grogu_plans.TESTER, "tester-one")
+        testing = self.store.read_stage(
+            self.plan, grogu_plans.TESTING, role=grogu_plans.TESTER
+        )
+        self.assertIn("independent assertions", testing)
+
+        self._as(grogu_plans.ARCHITECT, "architect-two")
+        architect_copy = self.store.read_stage(
+            self.plan, grogu_plans.TESTING, role=grogu_plans.ARCHITECT
+        )
+        self.assertEqual(architect_copy, testing)
+        self.assertEqual(
+            set(self.store.load(self.plan)["agents_seen"]),
+            {
+                "engineer@engineer-one",
+                "tester@tester-one",
+                "architect@architect-two",
+            },
+        )
+        os.environ.pop("GROGU_ROLE")
+        os.environ["GROGU_AGENT"] = "engineer-one"
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.read_stage(
+                self.plan, grogu_plans.TESTING, role=grogu_plans.TESTER
+            )
+
+    def test_briefs_reject_role_switching_but_accept_a_distinct_agent(self):
+        self._as(grogu_plans.ENGINEER, "engineer-one")
+        self.store.brief(grogu_plans.ENGINEER, plan_id=self.plan)
+        os.environ.pop("GROGU_ROLE")
+
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.brief(grogu_plans.TESTER, plan_id=self.plan)
+
+        self._as(grogu_plans.TESTER, "tester-one")
+        brief = self.store.brief(grogu_plans.TESTER, plan_id=self.plan)
+        self.assertEqual(brief["role"], grogu_plans.TESTER)
+
+    def test_human_as_user_operations_ignore_an_agents_persisted_binding(self):
+        self._as(grogu_plans.ENGINEER, "engineer-one")
+        self.store.brief(grogu_plans.ENGINEER, plan_id=self.plan)
+        os.environ.pop("GROGU_ROLE")
+        os.environ.pop("GROGU_AGENT")
+
+        self.store.set_stage_state(
+            self.plan,
+            grogu_plans.IMPLEMENTATION,
+            grogu_plans.COMPLETE,
+            as_user=True,
+        )
+        self.store.set_stage_state(
+            self.plan,
+            grogu_plans.TESTING,
+            grogu_plans.COMPLETE,
+            as_user=True,
+        )
+        result = self.store.finalize(self.plan, as_user=True)
+        self.assertEqual(result["status"], grogu_plans.COMPLETE)
+
+    def test_steering_a_different_role_does_not_change_the_callers_binding(self):
+        self._as(grogu_plans.ENGINEER, "engineer-one")
+        self.store.brief(grogu_plans.ENGINEER, plan_id=self.plan)
+        self.store.steer(
+            "check the null branch",
+            role=grogu_plans.TESTER,
+            plan_id=self.plan,
+        )
+        os.environ.pop("GROGU_ROLE")
+        os.environ.pop("GROGU_AGENT")
+
+        binding = self.store.session_binding()
+        self.assertEqual(binding["role"], grogu_plans.ENGINEER)
+        self.assertEqual(binding["agent"], "engineer-one")
+
+
 class PaddedStageTests(unittest.TestCase):
     """A sealed stage nobody else reads has to be worth reading.
 
