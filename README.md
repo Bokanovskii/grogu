@@ -556,6 +556,12 @@ grogu worktree prune --dry-run
 grogu worktree prune
 ```
 
+This is about Grogu's *own* source checkout specifically. A plan's declared
+workstreams get their own, separate worktrees in the repository they target
+(any repository, not just this one) via `grogu plan workstream-worktree`; see
+[Planning](#planning-architect-designer-engineer-tester) and
+[docs/pipeline.md](docs/pipeline.md#parallelism-is-declared-not-inferred).
+
 ## Splitting work into pull requests
 
 When a session's work spans several unrelated concerns, Grogu splits it into

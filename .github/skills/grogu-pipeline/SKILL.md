@@ -195,10 +195,22 @@ the one flag that turns the gates off.
 ```sh
 grogu plan workstream <id> --name api --path 'src/api/**'
 grogu plan workstreams <id> --check
+grogu plan workstream-worktree <id> --name api   # dedicated worktree, prints `cd <path>`
 ```
 
 Fan out only along declared workstreams with disjoint file sets and a clean
 check. Dependent steps do not become faster by being given more agents.
+
+Give each workstream its own checkout with `grogu plan workstream-worktree`
+before spawning the agent that owns it — `cd` into the path its last line
+prints, then run the engineer there. This is not just convention: the path and
+branch (`workstream/<plan>/<name>`) are deterministic, so a supervisor
+computing it to spawn an engineer and the engineer itself always agree, and
+running two workstreams in one shared checkout — the way harness friction #40
+described a workstream's scratch files leaking outside its declared paths —
+is no longer possible, since there is no shared checkout to leak into.
+`--list` shows every workstream worktree already created for a plan;
+`--remove [--force] [--delete-branch]` cleans one up once its work has landed.
 
 ## Finishing and improving
 

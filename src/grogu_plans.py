@@ -47,6 +47,7 @@ from typing import Iterator, Optional
 import grogu_platform
 import grogu_privacy
 from grogu_tasks import actor, repository_root, session_id
+import grogu_worktrees
 
 SCHEMA_VERSION = 1
 STORE_DIRNAME = ".grogu"
@@ -3196,6 +3197,110 @@ class PlanStore:
             manifest.get("workstream_state", {}).pop(name, None)
             self._save(manifest, "workstream_dropped", workstream=name)
             return existing
+
+    # -- workstream worktrees ------------------------------------------
+
+    def workstream_worktree(
+        self, plan_id: str, name: str, *, base: Optional[str] = None
+    ) -> dict:
+        """Get or create the dedicated git worktree for one declared workstream.
+
+        This is the harness-level fix for friction #40: declared parallel
+        workstreams used to run against one shared checkout by convention,
+        and a workstream's scratch files could land anywhere in it despite
+        the declared path globs being disjoint -- the disjoint-paths
+        guarantee had nothing actually enforcing it. Every caller asking
+        about the same workstream gets back the same worktree, because the
+        path and branch are a deterministic function of the plan id and the
+        workstream name (`grogu_worktrees.workstream_worktree_path`), never a
+        freshly chosen name -- so the engineer that owns the workstream and
+        the supervisor that spawned it agree on where it lives without a
+        message ever passing between them.
+        """
+        manifest = self.load(plan_id)
+        workstreams = manifest.get("workstreams", [])
+        if not any(stream["name"] == name for stream in workstreams):
+            known = ", ".join(stream["name"] for stream in workstreams) or "none"
+            raise PlanError(
+                f"plan {plan_id} has no workstream {name!r}; it has: {known}"
+            )
+        try:
+            result = grogu_worktrees.ensure_workstream_worktree(
+                self.root, plan_id, name, base=base or None
+            )
+        except grogu_worktrees.WorktreeError as error:
+            raise PlanError(str(error)) from error
+        return {
+            "name": name,
+            "path": str(result.path),
+            "branch": result.branch,
+            "created": result.created,
+        }
+
+    def list_workstream_worktrees(self, plan_id: str) -> list:
+        """Every dedicated workstream worktree already created for this plan.
+
+        Read-only: it reports what `workstream_worktree` already made, and
+        never creates one itself, so listing a plan's state is never the
+        thing that scatters a new worktree onto disk.
+        """
+        declared = {
+            stream["name"] for stream in self.load(plan_id).get("workstreams", [])
+        }
+        entries = []
+        for entry in grogu_worktrees.list_workstream_worktrees(self.root, plan_id):
+            name = entry.branch.rsplit("/", 1)[-1]
+            entries.append(
+                {
+                    "name": name,
+                    "path": str(entry.path),
+                    "branch": entry.branch,
+                    "declared": name in declared,
+                }
+            )
+        return entries
+
+    def remove_workstream_worktree(
+        self,
+        plan_id: str,
+        name: str,
+        *,
+        force: bool = False,
+        delete_branch: bool = False,
+        base: Optional[str] = None,
+    ) -> dict:
+        """Clean up one workstream's dedicated worktree once it is no longer needed.
+
+        Deliberately does not require the workstream still be declared: a
+        finished workstream is often dropped from the plan (`drop_workstream`)
+        before anyone remembers to clean up the worktree it left behind, and
+        cleanup has to reach it anyway. Removing a workstream nothing ever
+        created for is not an error either -- it is reported as nothing to do.
+        """
+        try:
+            removed = grogu_worktrees.remove_workstream_worktree(
+                self.root,
+                plan_id,
+                name,
+                force=force,
+                delete_branch=delete_branch,
+                base=base or None,
+            )
+        except grogu_worktrees.WorktreeError as error:
+            raise PlanError(str(error)) from error
+        if removed is None:
+            return {
+                "name": name,
+                "removed": "",
+                "branch_deleted": False,
+                "branch_kept_reason": "",
+            }
+        return {
+            "name": name,
+            "removed": str(removed.path),
+            "branch_deleted": removed.branch_deleted,
+            "branch_kept_reason": removed.branch_kept_reason,
+        }
 
     def record_review(
         self,

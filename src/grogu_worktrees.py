@@ -1,6 +1,7 @@
 """Detect and prune stale `git worktree` checkouts left over from Grogu's own
-self-modification workflow, and keep the primary checkout's `main` in sync
-with `origin/main`.
+self-modification workflow, keep the primary checkout's `main` in sync with
+`origin/main`, and give a parallel pipeline workstream a dedicated worktree of
+its own instead of a shared checkout.
 
 Per the operating contract in `.github/AGENTS.md`, Grogu changes to its own
 source checkout happen in a dedicated `git worktree` on a branch, and that
@@ -24,11 +25,26 @@ A worktree is only ever removed automatically when it has no uncommitted
 changes, so in-progress work is never discarded. Likewise, `main` is only
 ever fast-forwarded when the primary checkout is already on a clean `main`;
 it is never switched to `main` or reset over local changes.
+
+Harness friction #40 recorded the same problem one level up: a plan's
+declared parallel workstreams were run against one shared checkout rather
+than a worktree each, and a workstream's untracked scratch files ended up
+sitting in the repository root instead of confined to any workstream's
+declared paths -- the disjoint-globs guarantee this pipeline advertises had
+nothing enforcing it. `ensure_workstream_worktree` and its companions below
+are that enforcement: a workstream's dedicated worktree is a deterministic
+function of the plan id and the workstream name, so every caller that asks
+for it -- the engineer that owns it, the supervisor that spawned that
+engineer -- computes the identical path and branch without a message ever
+passing between them, and a second call finds exactly what the first one
+made rather than picking a fresh name or falling back to the shared
+checkout.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -86,9 +102,9 @@ def list_worktrees(root: Path) -> list[Worktree]:
     return worktrees
 
 
-def _is_merged_into_main(root: Path, branch: str) -> bool:
+def _is_merged_into(root: Path, branch: str, target: str) -> bool:
     output = _run(
-        ["git", "merge-base", "--is-ancestor", branch, "main"], root
+        ["git", "merge-base", "--is-ancestor", branch, target], root
     )
     # `_run` only returns non-None on a zero exit status, which is exactly
     # what `--is-ancestor` uses to signal "yes, merged".
@@ -181,7 +197,7 @@ def stale_worktrees(root: Path) -> list[StaleWorktree]:
             continue
         if not _worktree_is_clean(worktree.path):
             continue
-        if _is_merged_into_main(root, worktree.branch):
+        if _is_merged_into(root, worktree.branch, "main"):
             stale.append(StaleWorktree(worktree, "branch merged into main"))
         elif _remote_branch_deleted(root, worktree.branch):
             stale.append(StaleWorktree(worktree, "remote branch deleted"))
@@ -207,3 +223,252 @@ def prune_stale_worktrees(root: Path) -> list[StaleWorktree]:
             _run(["git", "branch", "-D", entry.worktree.branch], root)
         pruned.append(entry)
     return pruned
+
+
+# -- workstream worktrees ---------------------------------------------------
+#
+# One dedicated worktree per declared pipeline workstream, computed the same
+# way by every caller so parallel agents never have to agree on a name or
+# fall back to sharing `root`.
+
+
+class WorktreeError(Exception):
+    """A workstream worktree could not be found, created or removed safely.
+
+    Raised instead of guessing whenever the deterministic path or branch is
+    already claimed by something unexpected -- a stray file, a different
+    branch, or the same branch checked out somewhere else -- so a collision
+    is surfaced to the caller rather than silently papered over by deleting
+    or reusing the wrong thing.
+    """
+
+
+@dataclasses.dataclass
+class WorkstreamWorktree:
+    path: Path
+    branch: str
+    created: bool
+
+
+_SLUG_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _slug(value: str) -> str:
+    """A filesystem- and Git-ref-safe token derived from `value`.
+
+    Plan ids are already safe (they are generated internally), but a
+    workstream name is whatever the architect typed, so this is what keeps a
+    name like "api gateway" from breaking a branch name or a path component.
+    """
+    cleaned = _SLUG_UNSAFE.sub("-", value.strip()).strip("-")
+    return cleaned or "workstream"
+
+
+def workstream_branch(plan_id: str, name: str) -> str:
+    """Deterministic branch name for one workstream of one plan.
+
+    Grouped under `workstream/<plan>/` so every workstream of a plan shares a
+    prefix (`git branch --list 'workstream/<plan>/*'` finds them all), and
+    two different plans never collide even if an architect reuses a
+    workstream name like "api" across them.
+    """
+    return f"workstream/{_slug(plan_id)}/{_slug(name)}"
+
+
+def workstreams_root(root: Path) -> Path:
+    """Sibling directory holding every dedicated workstream worktree for `root`.
+
+    Mirrors the self-modification convention in `.github/AGENTS.md`
+    (`git worktree add ../grogu-worktrees/<branch> ...`), generalised to
+    whichever repository a plan targets -- which is not always Grogu's own
+    checkout.
+    """
+    return root.parent / f"{root.name}-worktrees"
+
+
+def workstream_worktree_path(root: Path, plan_id: str, name: str) -> Path:
+    """Deterministic dedicated worktree path for one workstream.
+
+    Pure and side-effect free: a supervisor computing this to fan out and the
+    engineer it spawned both land on the exact same path without a message
+    ever passing between them, which is what makes `ensure_workstream_worktree`
+    idempotent rather than merely retryable.
+    """
+    return workstreams_root(root) / f"{_slug(plan_id)}-{_slug(name)}"
+
+
+def _branch_exists(root: Path, branch: str) -> bool:
+    return (
+        _run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], root)
+        is not None
+    )
+
+
+def _branch_worktree_path(root: Path, branch: str) -> Optional[Path]:
+    for worktree in list_worktrees(root):
+        if worktree.branch == branch:
+            return worktree.path
+    return None
+
+
+def ensure_workstream_worktree(
+    root: Path, plan_id: str, name: str, *, base: Optional[str] = None
+) -> WorkstreamWorktree:
+    """Get or create the one dedicated worktree for this workstream.
+
+    Idempotent and safe to call from every agent that picks up the
+    workstream: the path and branch are computed the same way every time (see
+    `workstream_worktree_path`), so a second caller finds exactly what the
+    first one made instead of creating a sibling copy or falling back to the
+    shared checkout the way friction #40 described.
+
+    Never removes or overwrites anything already at the deterministic path.
+    A collision -- the path exists but is not this workstream's worktree, or
+    the branch is already checked out somewhere else -- raises
+    `WorktreeError` instead of guessing which side is right.
+
+    `base` is the commit the workstream's branch forks from when it does not
+    already exist; it defaults to whatever branch `root` is currently on (or
+    its bare `HEAD` commit when that cannot be named), which is the same
+    convention the self-modification worktrees use with `main`.
+    """
+    if not plan_id.strip() or not name.strip():
+        raise WorktreeError("a workstream worktree needs both a plan id and a name")
+    branch = workstream_branch(plan_id, name)
+    path = workstream_worktree_path(root, plan_id, name)
+
+    existing_branch_path = _branch_worktree_path(root, branch)
+    if existing_branch_path is not None:
+        if existing_branch_path.resolve() != path.resolve():
+            raise WorktreeError(
+                f"workstream {name!r} of {plan_id} is already checked out at "
+                f"{existing_branch_path}, not {path}; remove it first if it is "
+                "stale, or use the worktree that is already there"
+            )
+        return WorkstreamWorktree(path=path, branch=branch, created=False)
+
+    registered_paths = {worktree.path.resolve() for worktree in list_worktrees(root)}
+    if path.exists() or path.resolve() in registered_paths:
+        raise WorktreeError(
+            f"{path} already exists and is not the worktree for workstream "
+            f"{name!r} of {plan_id}; move or remove it before this workstream "
+            "can claim it"
+        )
+
+    workstreams_root(root).mkdir(parents=True, exist_ok=True)
+    if _branch_exists(root, branch):
+        created = _run(["git", "worktree", "add", str(path), branch], root)
+    else:
+        fork_point = base or _current_branch(root) or "HEAD"
+        created = _run(
+            ["git", "worktree", "add", str(path), "-b", branch, fork_point], root
+        )
+    if created is None:
+        # Two agents picking up the same workstream at once can both pass
+        # every check above before either calls `git worktree add`; re-check
+        # rather than fail the loser of that race.
+        winner = _branch_worktree_path(root, branch)
+        if winner is not None and winner.resolve() == path.resolve():
+            return WorkstreamWorktree(path=path, branch=branch, created=False)
+        raise WorktreeError(f"git worktree add failed for branch {branch!r} at {path}")
+    return WorkstreamWorktree(path=path, branch=branch, created=True)
+
+
+def list_workstream_worktrees(
+    root: Path, plan_id: Optional[str] = None
+) -> list[WorkstreamWorktree]:
+    """Every dedicated workstream worktree registered for `root`.
+
+    Scoped to one plan when `plan_id` is given, otherwise every workstream
+    worktree for every plan this repository has run.
+    """
+    prefix = f"workstream/{_slug(plan_id)}/" if plan_id else "workstream/"
+    return [
+        WorkstreamWorktree(path=worktree.path, branch=worktree.branch, created=False)
+        for worktree in list_worktrees(root)
+        if worktree.branch and worktree.branch.startswith(prefix)
+    ]
+
+
+def workstream_branch_is_stale(
+    root: Path, plan_id: str, name: str, *, base: Optional[str] = None
+) -> Optional[str]:
+    """Why a workstream's branch would be safe to delete, or `None`.
+
+    Reuses the exact staleness rules `stale_worktrees` applies to
+    self-modification worktrees -- merged into its base, its remote branch
+    deleted, or its pull request merged -- rather than inventing a second,
+    looser rule for the same question.
+    """
+    branch = workstream_branch(plan_id, name)
+    target = base or _current_branch(root) or "HEAD"
+    if _is_merged_into(root, branch, target):
+        return f"merged into {target}"
+    if _remote_branch_deleted(root, branch):
+        return "remote branch deleted"
+    if _pr_merged_via_gh(root, branch):
+        return "pull request merged"
+    return None
+
+
+@dataclasses.dataclass
+class RemovedWorkstreamWorktree:
+    path: Path
+    branch_deleted: bool
+    branch_kept_reason: str = ""
+
+
+def remove_workstream_worktree(
+    root: Path,
+    plan_id: str,
+    name: str,
+    *,
+    force: bool = False,
+    delete_branch: bool = False,
+    base: Optional[str] = None,
+) -> Optional[RemovedWorkstreamWorktree]:
+    """Remove one workstream's dedicated worktree, and report where it was.
+
+    Returns `None` when there was nothing registered to remove, which makes
+    this safe to call twice. Refuses a worktree that still has uncommitted
+    changes unless `force` is set -- the same rule self-modification pruning
+    uses, except here it is one explicit, named workstream a caller asked to
+    clean up rather than a background sweep, so an unmerged branch is fine;
+    only losing uncommitted work by accident is not.
+
+    `delete_branch` additionally deletes the local branch, but only when
+    `workstream_branch_is_stale` finds a reason it is safe to. When it is not,
+    this does not raise -- the worktree was still what the caller asked to
+    remove and that part succeeded -- it reports `branch_kept_reason` instead,
+    the same way a partially-successful cleanup should never be indistinguishable
+    from a failed one.
+    """
+    branch = workstream_branch(plan_id, name)
+    path = _branch_worktree_path(root, branch)
+    if path is None:
+        return None
+    if not force and path.is_dir() and not _worktree_is_clean(path):
+        raise WorktreeError(
+            f"{path} has uncommitted changes; commit or stash them, or pass "
+            "force to remove it anyway"
+        )
+    arguments = ["git", "worktree", "remove", str(path)]
+    if force:
+        arguments.append("--force")
+    removed = _run(arguments, root)
+    if removed is None and path.is_dir():
+        raise WorktreeError(f"failed to remove the worktree at {path}")
+    _run(["git", "worktree", "prune"], root)
+    branch_deleted = False
+    branch_kept_reason = ""
+    if delete_branch:
+        reason = workstream_branch_is_stale(root, plan_id, name, base=base)
+        if reason is None:
+            branch_kept_reason = "not merged and no closed pull request was found"
+        else:
+            _run(["git", "branch", "-D", branch], root)
+            branch_deleted = True
+    return RemovedWorkstreamWorktree(
+        path=path, branch_deleted=branch_deleted, branch_kept_reason=branch_kept_reason
+    )
+

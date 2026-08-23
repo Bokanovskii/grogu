@@ -503,7 +503,21 @@ stays shut.
 The architect declares workstreams with the file globs they own.
 `grogu plan workstreams --check` refuses overlapping sets, resolving globs
 against the working tree when the files exist. Fan-out happens only along clean,
-independent workstreams, one worktree each.
+independent workstreams, one worktree each — literally: `grogu plan
+workstream-worktree <id> --name <name>` gets or creates a dedicated `git
+worktree` for that workstream, at a path and branch computed the same way for
+every caller (`workstream/<plan>/<name>`, under `<repo>-worktrees/`), and
+prints a `cd <path>` line so the engineer or the supervisor that spawned it can
+use the answer directly instead of parsing it. `grogu plan workstreams` shows
+which workstreams already have one; `--list`/`--remove` on the same command
+inspect or clean them up.
+
+Disjoint path globs alone only constrain what an agent is *supposed* to touch.
+Harness friction #40 was a workstream's untracked scratch files landing in a
+shared checkout outside any declared path — the guarantee had nothing actually
+enforcing it. A dedicated worktree per workstream removes the shared checkout
+entirely, so there is nowhere for one workstream's stray file to cross into
+another's.
 
 Agents are not free. A sequence of dependent steps does not get faster with more
 of them; it gets more expensive and acquires merge conflicts.

@@ -74,9 +74,15 @@ indistinguishable from one that never happened. The test gate stays shut until
 each required review has one.
 
 Fan out only along those lines, one worktree per workstream, and
-only when the conflict check is clean. Independent workstreams are worth
-parallelising; a sequence of dependent steps is not, and spawning agents for it
-just multiplies the cost of the same wait.
+only when the conflict check is clean. Get that worktree with
+`grogu plan workstream-worktree <id> --name <name>` before spawning the agent
+that owns the workstream — its last line of output is `cd <path>`, so `cd`
+there and spawn from inside it rather than the shared repository. Two
+workstreams sharing one checkout is exactly how a scratch file from one ends
+up owned by neither (harness friction #40); a dedicated worktree per
+workstream leaves no shared checkout for that to happen in. Independent
+workstreams are worth parallelising; a sequence of dependent steps is not, and
+spawning agents for it just multiplies the cost of the same wait.
 
 ## Finishing
 
