@@ -205,6 +205,14 @@ else
     printf '%s\n' "  Fix: reinstall Grogu from a complete checkout."
 fi
 
+if [ -f "$ROOT/plugin.json" ] &&
+   [ -f "$ROOT/.github/skills/grogu-pipeline/SKILL.md" ]; then
+    check_ok "Bundled Copilot skills found"
+else
+    check_fail "Bundled Copilot skills missing"
+    printf '%s\n' "  Fix: reinstall Grogu from a complete checkout."
+fi
+
 if [ "$(uname -s)" = "Darwin" ]; then
     imessage_status=$("$TARGET" imessage status 2>/dev/null || true)
     if printf '%s' "$imessage_status" | grep -q '"available": true'; then

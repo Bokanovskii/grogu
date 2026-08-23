@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import math
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -451,6 +452,9 @@ def install_hook(repo: Path, *, python: str, script: str) -> Path:
     hooks = hooks_dir(repo)
     hooks.mkdir(parents=True, exist_ok=True)
     path = hooks / "pre-commit"
-    path.write_text(HOOK.format(python=python, script=script), encoding="utf8")
+    path.write_text(
+        HOOK.format(python=shlex.quote(python), script=shlex.quote(script)),
+        encoding="utf8",
+    )
     path.chmod(0o755)
     return path

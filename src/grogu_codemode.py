@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import resource
 import subprocess
 import sys
 import textwrap
@@ -40,6 +39,7 @@ from typing import Optional
 import grogu_context
 import grogu_mcp
 import grogu_memory
+import grogu_platform
 import grogu_tasks
 
 TOOLS_DIRNAME = ".grogu/state/codemode/tools"
@@ -202,10 +202,7 @@ def generate_tool_tree(root: Path) -> Path:
 def _limit_resources() -> None:
     # Best-effort caps so a runaway script cannot exhaust the host; this is
     # not a security boundary, only a guard against accidents.
-    try:
-        resource.setrlimit(resource.RLIMIT_CPU, (MAX_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS))
-    except (ValueError, OSError):
-        pass
+    grogu_platform.limit_cpu_time(MAX_TIMEOUT_SECONDS)
 
 
 def _bootstrap_source(root: Path, src_dir: Path) -> str:

@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +44,7 @@ class GroguCliTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf8",
                 env=environment,
             )
         finally:
@@ -64,10 +66,26 @@ class GroguCliTests(unittest.TestCase):
         self.assertIn("mcp_available", payload)
 
     def test_bare_launch_defaults_to_autopilot(self):
-        self.assertEqual(grogu_cli.copilot_arguments([]), ["--autopilot"])
+        plugin = ["--plugin-dir", str(ROOT)]
+        self.assertEqual(
+            grogu_cli.copilot_arguments([]),
+            [*plugin, "--autopilot"],
+        )
         self.assertEqual(
             grogu_cli.copilot_arguments(["--model", "gpt-5.4"]),
-            ["--autopilot", "--model", "gpt-5.4"],
+            [*plugin, "--autopilot", "--model", "gpt-5.4"],
+        )
+
+    def test_launch_preserves_explicit_plugin_directories(self):
+        self.assertEqual(
+            grogu_cli.copilot_arguments(["--plugin-dir", "/user/plugin"]),
+            [
+                "--plugin-dir",
+                str(ROOT),
+                "--autopilot",
+                "--plugin-dir",
+                "/user/plugin",
+            ],
         )
 
     def test_trace_record_and_list(self):
@@ -99,6 +117,7 @@ class GroguCliTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf8",
                 env=environment,
             )
             self.assertEqual(result.returncode, 0)
@@ -254,6 +273,16 @@ class GroguCliTests(unittest.TestCase):
             with self.assertRaises(grogu_imessage.ConfirmationRequiredError):
                 adapter.send(draft.recipient, draft.body)
 
+    def test_confirmed_imessage_send_still_requires_mac_os(self):
+        adapter = grogu_imessage.MacOSIMessageAdapter()
+        with mock.patch.object(adapter, "supported", return_value=False):
+            with self.assertRaises(grogu_imessage.UnsupportedPlatformError):
+                adapter.send(
+                    grogu_imessage.Recipient("+15551234567"),
+                    "Hello",
+                    confirmed=True,
+                )
+
     def test_gmail_is_disabled_by_default_and_drafts_are_local(self):
         adapter = grogu_gmail.GmailAdapter(access_token="token", enabled=False)
         self.assertFalse(adapter.status()["enabled"])
@@ -295,6 +324,7 @@ class AggregateTests(unittest.TestCase):
             cwd=ROOT,
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=environment,
         )
 
@@ -566,6 +596,7 @@ class CodemodeCliTests(unittest.TestCase):
             cwd=ROOT,
             capture_output=True,
             text=True,
+            encoding="utf8",
             input=input,
             env=environment,
         )
@@ -931,6 +962,7 @@ class BannerCommandTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf8",
                 env=environment,
             )
 
@@ -1014,6 +1046,7 @@ class PersonalMemoryCommandTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf8",
                 env=environment,
             )
 
@@ -1028,6 +1061,7 @@ class PersonalMemoryCommandTests(unittest.TestCase):
                     cwd=ROOT,
                     capture_output=True,
                     text=True,
+                    encoding="utf8",
                     env=environment,
                 )
 
@@ -1053,6 +1087,7 @@ class PersonalMemoryCommandTests(unittest.TestCase):
                     cwd=ROOT,
                     capture_output=True,
                     text=True,
+                    encoding="utf8",
                     env=environment,
                 )
 
@@ -1868,6 +1903,7 @@ class CodemodeMcpExecTests(unittest.TestCase):
             cwd=ROOT,
             capture_output=True,
             text=True,
+            encoding="utf8",
             input=input,
             env=environment,
         )
@@ -1934,6 +1970,7 @@ class PlanSteeringReadTests(unittest.TestCase):
             cwd=self.repo,
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=environment,
         )
 
@@ -2015,6 +2052,7 @@ class SteerNoteAliasTests(unittest.TestCase):
             cwd=self.project,
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=environment,
         )
 
@@ -2053,6 +2091,7 @@ class DefectResolveAliasTests(unittest.TestCase):
             cwd=self.home,
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=environment,
         )
 
@@ -2096,6 +2135,7 @@ class SubcommandUsageTests(unittest.TestCase):
                 cwd=home,
                 capture_output=True,
                 text=True,
+                encoding="utf8",
                 env=environment,
             )
         self.assertEqual(result.returncode, 2)
@@ -2123,6 +2163,7 @@ class PlanIdFromEnvironmentTests(unittest.TestCase):
             cwd=self.root,
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=env,
         )
 
@@ -2196,11 +2237,13 @@ class AdoptedTasteIsNotReportedAsMissingTests(unittest.TestCase):
             environment.pop("GROGU_ROLE", None)
             subprocess.run(
                 [sys.executable, str(CLI), "design", "seed", "--apple"],
-                env=environment, capture_output=True, text=True, check=True,
+                env=environment, capture_output=True, text=True, encoding="utf8",
+                check=True,
             )
             result = subprocess.run(
                 [sys.executable, str(CLI), "design", "status"],
-                env=environment, capture_output=True, text=True, check=True,
+                env=environment, capture_output=True, text=True, encoding="utf8",
+                check=True,
             )
         self.assertIn("you adopted from Apple's Human Interface Guidelines", result.stdout)
         self.assertIn("nothing is owed", result.stdout)
@@ -2223,7 +2266,8 @@ class SteerTakesThePlanIdLikeEveryOtherCommandTests(unittest.TestCase):
         environment.pop("GROGU_ROLE", None)
         return subprocess.run(
             [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
-            cwd=self.repo, capture_output=True, text=True, env=environment,
+            cwd=self.repo, capture_output=True, text=True, encoding="utf8",
+            env=environment,
         )
 
     def test_a_leading_plan_id_scopes_rather_than_becoming_the_note(self):
@@ -2265,7 +2309,8 @@ class SupervisionIsNotWorkTests(unittest.TestCase):
             environment.pop("GROGU_ROLE", None)
         return subprocess.run(
             [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
-            cwd=self.repo, capture_output=True, text=True, env=environment,
+            cwd=self.repo, capture_output=True, text=True, encoding="utf8",
+            env=environment,
         )
 
     def _roles(self):
@@ -2318,6 +2363,7 @@ class ArchitectFrictionTests(unittest.TestCase):
             cwd=self.repo,
             capture_output=True,
             text=True,
+            encoding="utf8",
             env=environment,
         )
 
@@ -2344,6 +2390,160 @@ class ArchitectFrictionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("no stage called", result.stderr)
         self.assertIn("implementation", result.stderr)
+
+    def test_shape_help_explains_the_audited_clear_review_inverse(self):
+        result = self.run_cli("plan", "shape", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        help_text = " ".join(result.stdout.split())
+        self.assertIn("--clear-review", help_text)
+        self.assertIn("requires --why", help_text)
+        self.assertIn("declared architect or --as-user", help_text)
+        self.assertIn("permits --clear-review without an architect role", help_text)
+
+    def test_mistaken_review_hold_is_recovered_on_the_same_plan(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "write", plan, "implementation",
+            "--body", "implementation body", role="architect",
+        )
+        self.run_cli(
+            "plan", "write", plan, "testing",
+            "--body", "testing body", role="architect",
+        )
+        self.run_cli(
+            "plan", "stage", plan, "implementation", "in_progress", role="engineer"
+        )
+        store = grogu_plans.PlanStore(self.repo)
+        stage_paths = {
+            stage: store.stage_path(plan, stage)
+            for stage in (grogu_plans.IMPLEMENTATION, grogu_plans.TESTING)
+        }
+        stage_bytes = {stage: path.read_bytes() for stage, path in stage_paths.items()}
+        stage_state = dict(store.load(plan)["stage_state"])
+
+        held = self.run_cli(
+            "plan", "shape", plan, "--require-review", role="architect"
+        )
+        self.assertEqual(held.returncode, 0, held.stderr)
+        blocked = self.run_cli("plan", "gate", plan, "--stage", "implement")
+        self.assertEqual(blocked.returncode, 3)
+
+        cleared = self.run_cli(
+            "plan", "shape", plan, "--clear-review", "--why",
+            "hold targeted the wrong plan", role="architect",
+        )
+
+        self.assertEqual(cleared.returncode, 0, cleared.stderr)
+        self.assertEqual(
+            cleared.stdout.strip(),
+            f"{plan}: cleared the unapproved review requirement; "
+            "other plan state is unchanged",
+        )
+        self.assertEqual(
+            self.run_cli("plan", "gate", plan, "--stage", "implement").returncode,
+            0,
+        )
+        manifest = store.load(plan)
+        self.assertEqual([item["id"] for item in store.list_plans()], [plan])
+        self.assertEqual(manifest["stage_state"], stage_state)
+        self.assertEqual(
+            {stage: path.read_bytes() for stage, path in stage_paths.items()},
+            stage_bytes,
+        )
+        event = manifest["events"][-1]
+        self.assertEqual(event["event"], "review_cleared")
+        self.assertEqual(event["reason"], "hold targeted the wrong plan")
+        self.assertEqual(event["role"], grogu_plans.ARCHITECT)
+        self.assertFalse(event["as_user"])
+        self.assertTrue(event["actor"])
+        self.assertTrue(event["at"])
+
+    def test_clear_review_default_denies_but_explicit_user_succeeds(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "shape", plan, "--require-review", role="architect"
+        )
+
+        undeclared = self.run_cli(
+            "plan", "shape", plan, "--clear-review", "--why", "wrong plan"
+        )
+
+        self.assertEqual(undeclared.returncode, 3)
+        self.assertIn("--as-user", undeclared.stderr)
+        store = grogu_plans.PlanStore(self.repo)
+        self.assertTrue(store.load(plan)["review_required"])
+
+        cleared = self.run_cli(
+            "plan", "shape", plan, "--clear-review", "--why", "wrong plan",
+            "--as-user",
+        )
+
+        self.assertEqual(cleared.returncode, 0, cleared.stderr)
+        event = store.load(plan)["events"][-1]
+        self.assertEqual(event["event"], "review_cleared")
+        self.assertEqual(event["role"], "user")
+        self.assertTrue(event["as_user"])
+
+    def test_role_bound_agent_cannot_use_clear_review_as_user(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "shape", plan, "--require-review", role="architect"
+        )
+
+        refused = self.run_cli(
+            "plan", "shape", plan, "--clear-review", "--why", "wrong plan",
+            "--as-user", role="engineer",
+        )
+
+        self.assertEqual(refused.returncode, 3)
+        self.assertIn("architect", refused.stderr)
+        self.assertTrue(grogu_plans.PlanStore(self.repo).load(plan)["review_required"])
+
+    def test_identified_engineer_cannot_clear_review_as_architect(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "shape", plan, "--require-review",
+            role="architect", agent="architect-one",
+        )
+        self.run_cli(
+            "plan", "brief", "--role", "engineer", "--plan", plan,
+            role="engineer", agent="engineer-one",
+        )
+
+        refused = self.run_cli(
+            "plan", "shape", plan, "--clear-review", "--why", "wrong plan",
+            "--role", "architect", agent="engineer-one",
+        )
+
+        self.assertEqual(refused.returncode, 3)
+        self.assertIn("already bound to the engineer", refused.stderr)
+        self.assertTrue(grogu_plans.PlanStore(self.repo).load(plan)["review_required"])
+
+    def test_clear_review_refuses_missing_reason_and_non_architects(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "shape", plan, "--require-review", role="architect"
+        )
+        missing = self.run_cli(
+            "plan", "shape", plan, "--clear-review", role="architect"
+        )
+        self.assertEqual(missing.returncode, 3)
+        self.assertIn("needs a reason", missing.stderr)
+        refused = self.run_cli(
+            "plan", "shape", plan, "--clear-review", "--why", "mistake",
+            role="engineer",
+        )
+        self.assertEqual(refused.returncode, 3)
+        self.assertIn("architect", refused.stderr)
+        self.assertTrue(grogu_plans.PlanStore(self.repo).load(plan)["review_required"])
+
+    def test_shape_as_user_is_only_for_clear_review(self):
+        plan = self._plan()
+        result = self.run_cli(
+            "plan", "shape", plan, "--require-review", "--as-user"
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("only valid with --clear-review", result.stderr)
 
     def test_two_stages_at_once_are_refused(self):
         plan = self._plan()

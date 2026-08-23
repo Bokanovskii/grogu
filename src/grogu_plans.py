@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
-import fcntl
 import uuid
 import fnmatch
 import json
@@ -45,6 +44,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
+import grogu_platform
 import grogu_privacy
 from grogu_tasks import actor, repository_root, session_id
 
@@ -127,6 +127,7 @@ SUPERSEDED = "superseded"
 COMPLETE = "complete"
 PLAN_STATUSES = (DRAFT, APPROVED, AMENDING, NEEDS_REVIEW, SUPERSEDED, COMPLETE)
 BLOCKING_STATUSES = frozenset({AMENDING, NEEDS_REVIEW, SUPERSEDED})
+REVIEW_CLEARABLE_STATUSES = frozenset({DRAFT, NEEDS_REVIEW})
 
 PENDING = "pending"
 IN_PROGRESS = "in_progress"
@@ -258,10 +259,9 @@ def harness_friction_lock() -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        yield
+        with grogu_platform.exclusive_lock(handle):
+            yield
     finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
         os.close(handle)
 
 
@@ -1362,10 +1362,9 @@ class PlanStore:
         self._protect_working_state()
         handle = os.open(self.state_dir / "plans.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX)
-            yield
+            with grogu_platform.exclusive_lock(handle):
+                yield
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
             os.close(handle)
 
     def _write_json(self, path: Path, payload: dict) -> None:
@@ -1658,6 +1657,64 @@ class PlanStore:
                     "the hold applies to remaining stages only"
                 ]
             return manifest
+
+    def clear_review_requirement(
+        self,
+        plan_id: str,
+        reason: str,
+        *,
+        role: str = "",
+        as_user: bool = False,
+    ) -> dict:
+        """Remove a mistaken hold as a declared architect or explicit user."""
+        role = role or current_role()
+        if role and role != ARCHITECT:
+            raise PlanError(
+                f"role {role!r} may not clear a plan's review requirement; "
+                "that is the architect's"
+            )
+        if as_user and current_role():
+            raise PlanError(
+                f"--as-user is for the user; this session is running as the "
+                f"{current_role()}"
+            )
+        if role and not as_user:
+            self.claim_agent_role(plan_id, role)
+        if not role and not as_user:
+            raise PlanError(
+                "clearing a review requirement needs a role: export "
+                "GROGU_ROLE=architect, pass --role architect, or pass --as-user "
+                "if you are the user"
+            )
+        reason = reason.strip()
+        if not reason:
+            raise PlanError(
+                "clearing a review requirement needs a reason the next reader can audit"
+            )
+        with self.locked():
+            manifest = self.load(plan_id)
+            if manifest.get("approved_at") or manifest.get("status") == APPROVED:
+                raise PlanError(
+                    f"plan {plan_id} was already approved; its review requirement "
+                    "cannot be cleared"
+                )
+            status = manifest.get("status")
+            if status not in REVIEW_CLEARABLE_STATUSES:
+                raise PlanError(
+                    f"plan {plan_id} is {status or 'in an unknown state'}; "
+                    "only draft or needs_review plans may clear an unapproved "
+                    "review requirement"
+                )
+            if not manifest.get("review_required"):
+                raise PlanError(f"plan {plan_id} has no review requirement to clear")
+            manifest["review_required"] = False
+            return self._save(
+                manifest,
+                "review_cleared",
+                reason=reason,
+                role=role or "user",
+                as_user=bool(as_user),
+            )
 
     def commission(
         self, plan_id: str, role: str, brief: str, *, by: str = "", replace: bool = False
