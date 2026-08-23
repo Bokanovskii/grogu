@@ -3,7 +3,7 @@
   "id": "t-20260822-5922d0",
   "title": "Isolate parallel workstreams in dedicated git worktrees (friction #40)",
   "body": "Harness friction #40: two declared-parallel workstreams ran in one shared checkout; disjoint path globs mostly held, but untracked scratch files still crossed ownership. Give each workstream a deterministic, dedicated git worktree (create/list/cleanup, collision-safe) via grogu_worktrees, wire into PlanStore and the CLI (plan workstream-worktree), make engineer/supervisor output directly cd-able, and update docs/skills/agent instructions. Branch: fix/workstream-isolation.",
-  "status": "active",
+  "status": "review",
   "priority": "normal",
   "labels": [
     "friction"
@@ -12,8 +12,8 @@
   "assignee": "charlie",
   "created_at": "2026-08-22T22:05:39+00:00",
   "created_by": "charlie",
-  "updated_at": "2026-08-23T01:52:29+00:00",
-  "revision": 3,
+  "updated_at": "2026-08-23T04:11:14+00:00",
+  "revision": 4,
   "log": [
     {
       "at": "2026-08-22T22:05:39+00:00",
@@ -31,6 +31,12 @@
       "by": "charlie",
       "event": "note",
       "text": "Core grogu_worktrees/grogu_plans/grogu_cli plumbing done, tests added (worktrees/plans/cli, all passing), docs+skill+agent instructions updated. Next: run full suite, resolve friction #40, commit/push/PR."
+    },
+    {
+      "at": "2026-08-23T04:11:14+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "PR #44: https://github.com/Bokanovskii/grogu/pull/44 -- grogu plan workstream-worktree (get/create/list/remove), wired into PlanStore + CLI + docs/skill/agent instructions. Friction #40 resolved. Full suite 588 tests, 0 failures. Not merged, awaiting review."
     }
   ]
 }
