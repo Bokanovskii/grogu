@@ -801,6 +801,26 @@ class LinkAndOverrideTests(unittest.TestCase):
             grogu_skills.propose("1", description="A number.", body=BODY)
 
 
+class BrowserValidationSkillContractTests(unittest.TestCase):
+    def test_browser_validation_never_reuses_the_users_browser_context(
+        self,
+    ) -> None:
+        text = " ".join(
+            (
+                ROOT / ".github" / "skills" / "browser-validate" / "SKILL.md"
+            ).read_text(encoding="utf8").split()
+        )
+
+        self.assertIn("fresh, automation-owned browser context", text)
+        self.assertIn("temporary profile", text)
+        self.assertIn(
+            "Never attach to, inspect, or drive the user's current browser", text
+        )
+        self.assertIn("Do not rely on the active window", text)
+        self.assertIn("separate headed browser/context dedicated to the task", text)
+        self.assertIn("through Playwright handles", text)
+
+
 class RepositoryMessagingSkillContractTests(unittest.TestCase):
     @classmethod
     def skill_text(cls, name: str) -> str:
