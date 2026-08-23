@@ -3,15 +3,15 @@
   "id": "t-20260822-b506ac",
   "title": "Fix Windows Copilot launch",
   "body": "Repair PR #39 so npm-installed copilot.cmd shims launch correctly on Windows and all CLI-subprocess test helpers decode UTF-8 consistently.",
-  "status": "review",
+  "status": "done",
   "priority": "normal",
   "labels": [],
   "issue": null,
   "assignee": "charlie",
   "created_at": "2026-08-22T20:26:53+00:00",
   "created_by": "charlie",
-  "updated_at": "2026-08-22T22:05:04+00:00",
-  "revision": 23,
+  "updated_at": "2026-08-23T14:33:51+00:00",
+  "revision": 25,
   "log": [
     {
       "at": "2026-08-22T20:26:53+00:00",
@@ -146,6 +146,17 @@
       "by": "charlie",
       "event": "release",
       "text": "Final pre-push verification coverage added for quoted PowerShell arguments, sibling resolution, and executable preference/fallback"
+    },
+    {
+      "at": "2026-08-23T14:33:51+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-23T14:33:51+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "Merged to main in PR #39."
     }
   ]
 }

@@ -3,15 +3,15 @@
   "id": "t-20260822-8ee337",
   "title": "Add reusable messaging skills",
   "body": "Publish privacy-safe Grogu skills for confirmation-gated iMessage sending and opt-in conversation-derived stim generation/scheduling without personal identifiers or transcripts.",
-  "status": "review",
+  "status": "done",
   "priority": "normal",
   "labels": [],
   "issue": null,
   "assignee": "charlie",
   "created_at": "2026-08-22T18:27:26+00:00",
   "created_by": "charlie",
-  "updated_at": "2026-08-22T19:09:28+00:00",
-  "revision": 9,
+  "updated_at": "2026-08-23T14:33:50+00:00",
+  "revision": 11,
   "log": [
     {
       "at": "2026-08-22T18:27:26+00:00",
@@ -65,6 +65,17 @@
       "by": "charlie",
       "event": "release",
       "text": "PR #40 opened; 64 skill tests and all 8 independent safety/privacy evaluation scenarios passed."
+    },
+    {
+      "at": "2026-08-23T14:33:50+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-23T14:33:50+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "Merged to main in PR #40."
     }
   ]
 }

@@ -3,7 +3,7 @@
   "id": "t-20260822-e4397d",
   "title": "Make bundled Grogu skills discoverable",
   "body": "Resolve harness friction #45 by ensuring repository-distributed skills remain discoverable when Grogu launches outside its source checkout; add regression tests and docs.",
-  "status": "review",
+  "status": "done",
   "priority": "normal",
   "labels": [
     "harness",
@@ -13,8 +13,8 @@
   "assignee": "charlie",
   "created_at": "2026-08-22T21:48:16+00:00",
   "created_by": "charlie",
-  "updated_at": "2026-08-23T05:29:26+00:00",
-  "revision": 15,
+  "updated_at": "2026-08-23T14:33:51+00:00",
+  "revision": 17,
   "log": [
     {
       "at": "2026-08-22T21:48:16+00:00",
@@ -102,6 +102,17 @@
       "by": "charlie",
       "event": "release",
       "text": "PR #42 updated after Windows CI integration fix; awaiting rerun."
+    },
+    {
+      "at": "2026-08-23T14:33:51+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-23T14:33:51+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "Merged to main in PR #42."
     }
   ]
 }
