@@ -279,15 +279,22 @@ to decide that the user probably would have approved.
 If an architect applies that hold to the wrong plan, the supported inverse is:
 
 ```sh
-grogu plan shape <id> --clear-review --why "the hold targeted the wrong plan"
+grogu plan shape <id> --clear-review --why "the hold targeted the wrong plan" \
+  --role architect
+# Or, from the person's own undeclared shell:
+grogu plan shape <id> --clear-review --why "the hold targeted the wrong plan" \
+  --as-user
 ```
 
-Only the architect may use it, and the non-empty reason is recorded with the
-actor and time in the manifest event log. It works only before approval on a
-`draft` or `needs_review` plan. It clears only `review_required`: stage text and
-state are untouched, and an independent `needs_review` steering block remains
-in force. Approved, amending, superseded, complete and unknown states are
-refused rather than repaired by weakening another gate.
+A declared architect or the person explicitly passing `--as-user` may use it;
+an undeclared caller is refused rather than assumed to be the architect.
+`--as-user` is also refused when `GROGU_ROLE` identifies an agent. The non-empty
+reason is recorded with actor, time, authorization role and `as_user` in the
+manifest event log. It works only before approval on a `draft` or
+`needs_review` plan. It clears only `review_required`: stage text and state are
+untouched, and an independent `needs_review` steering block remains in force.
+Approved, amending, superseded, complete and unknown states are refused rather
+than repaired by weakening another gate.
 
 Role checks default to deny. Completing a sealed stage or finalizing a plan
 requires a declared role — `GROGU_ROLE`, `--role`, or `--as-user` for the user

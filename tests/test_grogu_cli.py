@@ -2350,7 +2350,8 @@ class ArchitectFrictionTests(unittest.TestCase):
         help_text = " ".join(result.stdout.split())
         self.assertIn("--clear-review", help_text)
         self.assertIn("requires --why", help_text)
-        self.assertIn("architect only", help_text)
+        self.assertIn("declared architect or --as-user", help_text)
+        self.assertIn("permits --clear-review without an architect role", help_text)
 
     def test_mistaken_review_hold_is_recovered_on_the_same_plan(self):
         plan = self._plan()
@@ -2405,8 +2406,51 @@ class ArchitectFrictionTests(unittest.TestCase):
         event = manifest["events"][-1]
         self.assertEqual(event["event"], "review_cleared")
         self.assertEqual(event["reason"], "hold targeted the wrong plan")
+        self.assertEqual(event["role"], grogu_plans.ARCHITECT)
+        self.assertFalse(event["as_user"])
         self.assertTrue(event["actor"])
         self.assertTrue(event["at"])
+
+    def test_clear_review_default_denies_but_explicit_user_succeeds(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "shape", plan, "--require-review", role="architect"
+        )
+
+        undeclared = self.run_cli(
+            "plan", "shape", plan, "--clear-review", "--why", "wrong plan"
+        )
+
+        self.assertEqual(undeclared.returncode, 3)
+        self.assertIn("--as-user", undeclared.stderr)
+        store = grogu_plans.PlanStore(self.repo)
+        self.assertTrue(store.load(plan)["review_required"])
+
+        cleared = self.run_cli(
+            "plan", "shape", plan, "--clear-review", "--why", "wrong plan",
+            "--as-user",
+        )
+
+        self.assertEqual(cleared.returncode, 0, cleared.stderr)
+        event = store.load(plan)["events"][-1]
+        self.assertEqual(event["event"], "review_cleared")
+        self.assertEqual(event["role"], "user")
+        self.assertTrue(event["as_user"])
+
+    def test_role_bound_agent_cannot_use_clear_review_as_user(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "shape", plan, "--require-review", role="architect"
+        )
+
+        refused = self.run_cli(
+            "plan", "shape", plan, "--clear-review", "--why", "wrong plan",
+            "--as-user", role="engineer",
+        )
+
+        self.assertEqual(refused.returncode, 3)
+        self.assertIn("architect", refused.stderr)
+        self.assertTrue(grogu_plans.PlanStore(self.repo).load(plan)["review_required"])
 
     def test_clear_review_refuses_missing_reason_and_non_architects(self):
         plan = self._plan()
@@ -2425,6 +2469,14 @@ class ArchitectFrictionTests(unittest.TestCase):
         self.assertEqual(refused.returncode, 3)
         self.assertIn("architect", refused.stderr)
         self.assertTrue(grogu_plans.PlanStore(self.repo).load(plan)["review_required"])
+
+    def test_shape_as_user_is_only_for_clear_review(self):
+        plan = self._plan()
+        result = self.run_cli(
+            "plan", "shape", plan, "--require-review", "--as-user"
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("only valid with --clear-review", result.stderr)
 
     def test_two_stages_at_once_are_refused(self):
         plan = self._plan()

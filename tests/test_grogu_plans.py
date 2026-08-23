@@ -1900,6 +1900,8 @@ class PlanShapeTests(unittest.TestCase):
         self.assertEqual(event["event"], "review_cleared")
         self.assertEqual(event["actor"], "architect@test")
         self.assertEqual(event["reason"], "hold targeted the wrong plan")
+        self.assertEqual(event["role"], grogu_plans.ARCHITECT)
+        self.assertFalse(event["as_user"])
         self.assertTrue(event["at"])
 
     def test_clearing_review_preserves_an_independent_needs_review_blocker(self):
@@ -1928,6 +1930,46 @@ class PlanShapeTests(unittest.TestCase):
             self.store.clear_review_requirement(plan, "  ", role="architect")
         self.assertIn("reason", str(caught.exception))
 
+    def test_clear_review_default_denies_an_undeclared_caller(self):
+        plan = self._plan()
+        self.store.require_review(plan, role="architect")
+
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.clear_review_requirement(plan, "mistake")
+
+        self.assertIn("--as-user", str(caught.exception))
+        self.assertTrue(self.store.load(plan)["review_required"])
+
+    def test_clear_review_allows_an_explicit_user_and_audits_authorization(self):
+        plan = self._plan()
+        self.store.require_review(plan, role="architect")
+
+        with mock.patch.object(grogu_plans, "actor", return_value="human@test"):
+            manifest = self.store.clear_review_requirement(
+                plan, "  wrong plan  ", as_user=True
+            )
+
+        self.assertFalse(manifest["review_required"])
+        event = manifest["events"][-1]
+        self.assertEqual(event["event"], "review_cleared")
+        self.assertEqual(event["actor"], "human@test")
+        self.assertEqual(event["reason"], "wrong plan")
+        self.assertEqual(event["role"], "user")
+        self.assertTrue(event["as_user"])
+
+    def test_role_bound_agent_cannot_clear_review_as_user(self):
+        plan = self._plan()
+        self.store.require_review(plan, role="architect")
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        self.addCleanup(os.environ.pop, "GROGU_ROLE", None)
+
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.clear_review_requirement(
+                plan, "mistake", as_user=True
+            )
+
+        self.assertTrue(self.store.load(plan)["review_required"])
+
     def test_clear_review_refuses_missing_approved_and_invalid_holds(self):
         no_hold = self._plan()
         with self.assertRaises(grogu_plans.PlanError):
@@ -1940,11 +1982,13 @@ class PlanShapeTests(unittest.TestCase):
         self.store.write_stage(approved, grogu_plans.TESTING, "body", role="architect")
         self.store.require_review(approved, role="architect")
         self.store.approve(approved)
-        with self.assertRaises(grogu_plans.PlanError) as caught:
-            self.store.clear_review_requirement(
-                approved, "mistake", role="architect"
-            )
-        self.assertIn("already approved", str(caught.exception))
+        for authorization in ({"role": "architect"}, {"as_user": True}):
+            with self.subTest(approved_authorization=authorization):
+                with self.assertRaises(grogu_plans.PlanError) as caught:
+                    self.store.clear_review_requirement(
+                        approved, "mistake", **authorization
+                    )
+                self.assertIn("already approved", str(caught.exception))
 
         for status in (
             grogu_plans.AMENDING,
@@ -1958,10 +2002,12 @@ class PlanShapeTests(unittest.TestCase):
                 manifest = self.store.load(plan)
                 manifest["status"] = status
                 self.store._write_json(self.store.manifest_path(plan), manifest)
-                with self.assertRaises(grogu_plans.PlanError):
-                    self.store.clear_review_requirement(
-                        plan, "mistake", role="architect"
-                    )
+                for authorization in ({"role": "architect"}, {"as_user": True}):
+                    with self.subTest(authorization=authorization):
+                        with self.assertRaises(grogu_plans.PlanError):
+                            self.store.clear_review_requirement(
+                                plan, "mistake", **authorization
+                            )
                 self.assertTrue(self.store.load(plan)["review_required"])
 
     def test_an_empty_reference_resolves_to_the_ambient_plan(self):

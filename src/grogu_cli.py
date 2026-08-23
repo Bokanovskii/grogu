@@ -1799,6 +1799,10 @@ def plan_shape(args: argparse.Namespace) -> int:
     store = plan_store(args)
     plan_id = store.resolve(args.id)
     role = getattr(args, "role", "") or ""
+    if args.as_user and not args.clear_review:
+        raise grogu_plans.PlanError(
+            "plan shape --as-user is only valid with --clear-review"
+        )
     if args.add:
         store.add_stage(plan_id, args.add, role=role)
         print(f"{plan_id}: added a {args.add} stage")
@@ -1813,7 +1817,7 @@ def plan_shape(args: argparse.Namespace) -> int:
         return 0
     if args.clear_review:
         store.clear_review_requirement(
-            plan_id, args.why or "", role=role
+            plan_id, args.why or "", role=role, as_user=args.as_user
         )
         print(
             f"{plan_id}: cleared the unapproved review requirement; "
@@ -3931,11 +3935,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "clear an unapproved review requirement "
-            "(architect only; requires --why)"
+            "(declared architect or --as-user; requires --why)"
         ),
     )
     plan_shape_parser.add_argument(
         "--why", help="reason, required with --decline or --clear-review"
+    )
+    plan_shape_parser.add_argument(
+        "--as-user",
+        action="store_true",
+        help=(
+            "you are the user, not an agent; permits --clear-review without "
+            "an architect role"
+        ),
     )
     plan_shape_parser.add_argument(
         "--reset",

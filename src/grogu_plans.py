@@ -1644,14 +1644,30 @@ class PlanStore:
             return manifest
 
     def clear_review_requirement(
-        self, plan_id: str, reason: str, *, role: str = ""
+        self,
+        plan_id: str,
+        reason: str,
+        *,
+        role: str = "",
+        as_user: bool = False,
     ) -> dict:
-        """Remove a mistaken, unapproved review hold without changing plan state."""
-        role = role or current_role() or ARCHITECT
-        if role != ARCHITECT:
+        """Remove a mistaken hold as a declared architect or explicit user."""
+        role = role or current_role()
+        if role and role != ARCHITECT:
             raise PlanError(
                 f"role {role!r} may not clear a plan's review requirement; "
                 "that is the architect's"
+            )
+        if as_user and current_role():
+            raise PlanError(
+                f"--as-user is for the user; this session is running as the "
+                f"{current_role()}"
+            )
+        if not role and not as_user:
+            raise PlanError(
+                "clearing a review requirement needs a role: export "
+                "GROGU_ROLE=architect, pass --role architect, or pass --as-user "
+                "if you are the user"
             )
         reason = reason.strip()
         if not reason:
@@ -1675,7 +1691,13 @@ class PlanStore:
             if not manifest.get("review_required"):
                 raise PlanError(f"plan {plan_id} has no review requirement to clear")
             manifest["review_required"] = False
-            return self._save(manifest, "review_cleared", reason=reason)
+            return self._save(
+                manifest,
+                "review_cleared",
+                reason=reason,
+                role=role or "user",
+                as_user=bool(as_user),
+            )
 
     def commission(
         self, plan_id: str, role: str, brief: str, *, by: str = "", replace: bool = False
