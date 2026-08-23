@@ -301,13 +301,20 @@ requires a declared role — `GROGU_ROLE`, `--role`, or `--as-user` for the user
 — because a check that only applies to callers who identify themselves is
 optional to exactly the role it exists to stop.
 
-Be clear about how strong that is. Everything here runs as the same user, so an
-agent can pass `--as-user` as easily as it can omit a role; `--as-user` is
-refused when `GROGU_ROLE` is set, and that is the whole of the enforcement. This
-is the same class of protection as the seal itself: it stops the drift, the
-shortcut and the plausible-sounding rationalisation at three in the morning. It
-does not stop an agent that has decided to lie, and nothing available inside one
-process would.
+An identified agent's role claim is sticky. `GROGU_AGENT` is the explicit
+identity; `grogu plan brief` persists it with the role in the session binding,
+and `agents_seen` records the association on the plan. Later commands recover
+that identity when a fresh shell has lost `GROGU_ROLE` and `GROGU_AGENT`, and a
+conflicting `--role` is refused before a sealed stage is returned. A new tester
+or architect remains legitimate because it has a different `GROGU_AGENT`; do
+not reuse one agent name across roles.
+
+Be clear about how strong that is. Everything here runs as the same user, so a
+determined agent can invent a fresh identity or pass `--as-user`; `--as-user`
+is refused when `GROGU_ROLE` is set, but remains available to a human whose
+shell inherited only a persisted binding. This is the same class of protection
+as the seal itself: it stops drift, shortcuts and plausible-sounding
+rationalisation. It is not a cryptographic security boundary.
 
 Verification expires. A defect filed after the tests were marked complete
 reopens the testing and evaluation stages, because "complete" was a claim about
@@ -465,10 +472,12 @@ text that should not accumulate in a file nobody remembers exists. And the log
 lives in `GROGU_HOME`, not in a repository, so agents spread across worktrees
 appear on one board and nothing about it is ever committed.
 
-Agent identity is `(working directory, role, plan)`. When `GROGU_ROLE` is unset
-the role comes from the session binding recorded for that directory, so a user
-session sharing a directory with a bound agent inherits its label. Give each
-agent its own worktree and the board stays honest.
+Agent identity is `GROGU_AGENT` when set and otherwise the working directory;
+role and plan are attributes bound to that identity. When a fresh shell loses
+the environment, the role and explicit agent name come from the session binding
+recorded for that directory. Give each agent its own worktree and always give
+agents sharing a checkout distinct `GROGU_AGENT` values, or attribution becomes
+ambiguous.
 
 ## The architect assigns, it does not just describe
 

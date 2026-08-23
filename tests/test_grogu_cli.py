@@ -2352,6 +2352,7 @@ class ArchitectFrictionTests(unittest.TestCase):
     def run_cli(self, *arguments, role="", agent=""):
         environment = os.environ.copy()
         environment["GROGU_HOME"] = str(self.repo / "home")
+        agent = agent or (f"{role}-agent" if role else "")
         for name, value in (("GROGU_ROLE", role), ("GROGU_AGENT", agent)):
             if value:
                 environment[name] = value
@@ -2496,6 +2497,26 @@ class ArchitectFrictionTests(unittest.TestCase):
 
         self.assertEqual(refused.returncode, 3)
         self.assertIn("architect", refused.stderr)
+        self.assertTrue(grogu_plans.PlanStore(self.repo).load(plan)["review_required"])
+
+    def test_identified_engineer_cannot_clear_review_as_architect(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "shape", plan, "--require-review",
+            role="architect", agent="architect-one",
+        )
+        self.run_cli(
+            "plan", "brief", "--role", "engineer", "--plan", plan,
+            role="engineer", agent="engineer-one",
+        )
+
+        refused = self.run_cli(
+            "plan", "shape", plan, "--clear-review", "--why", "wrong plan",
+            "--role", "architect", agent="engineer-one",
+        )
+
+        self.assertEqual(refused.returncode, 3)
+        self.assertIn("already bound to the engineer", refused.stderr)
         self.assertTrue(grogu_plans.PlanStore(self.repo).load(plan)["review_required"])
 
     def test_clear_review_refuses_missing_reason_and_non_architects(self):
@@ -2643,6 +2664,114 @@ class ArchitectFrictionTests(unittest.TestCase):
         self.assertEqual(impersonation.returncode, 2)
         self.assertIn("cannot act as the tester", impersonation.stderr)
         self.assertNotIn("y" * 20, impersonation.stdout)
+
+    def test_an_identified_agent_cannot_switch_roles_by_dropping_grogu_role(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "write", plan, "testing", "--body", "sealed assertions " * 20,
+            role="architect", agent="architect-one",
+        )
+        self.run_cli(
+            "plan", "brief", "--role", "engineer", "--plan", plan,
+            role="engineer", agent="engineer-one",
+        )
+        impersonation = self.run_cli(
+            "plan", "show", plan, "testing", "--role", "tester",
+            agent="engineer-one",
+        )
+        self.assertEqual(impersonation.returncode, 3)
+        self.assertIn("already bound to the engineer", impersonation.stderr)
+        self.assertNotIn("sealed assertions", impersonation.stdout)
+
+    def test_role_binding_survives_a_fresh_cli_shell(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "write", plan, "testing", "--body", "sealed assertions " * 20,
+            role="architect", agent="architect-one",
+        )
+        self.run_cli(
+            "plan", "brief", "--role", "engineer", "--plan", plan,
+            role="engineer", agent="engineer-one",
+        )
+        impersonation = self.run_cli(
+            "plan", "show", plan, "testing", "--role", "tester"
+        )
+        self.assertEqual(impersonation.returncode, 3)
+        self.assertIn("already bound to the engineer", impersonation.stderr)
+        self.assertNotIn("sealed assertions", impersonation.stdout)
+
+    def test_impersonation_does_not_receive_the_other_roles_steering(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "write", plan, "testing", "--body", "sealed assertions " * 20,
+            role="architect", agent="architect-one",
+        )
+        self.run_cli(
+            "plan", "brief", "--role", "engineer", "--plan", plan,
+            role="engineer", agent="engineer-one",
+        )
+        self.run_cli(
+            "plan", "steer", plan, "--role", "tester",
+            "--note", "tester-only direction",
+        )
+        impersonation = self.run_cli(
+            "plan", "show", plan, "testing",
+            role="tester", agent="engineer-one",
+        )
+        self.assertEqual(impersonation.returncode, 3)
+        self.assertNotIn(
+            "tester-only direction",
+            impersonation.stdout + impersonation.stderr,
+        )
+
+    def test_distinct_tester_and_architect_agents_keep_sealed_access(self):
+        plan = self._plan()
+        body = "sealed assertions " * 20
+        self.run_cli(
+            "plan", "write", plan, "testing", "--body", body,
+            role="architect", agent="architect-one",
+        )
+        self.run_cli(
+            "plan", "brief", "--role", "engineer", "--plan", plan,
+            role="engineer", agent="engineer-one",
+        )
+        tester = self.run_cli(
+            "plan", "show", plan, "testing", "--role", "tester",
+            agent="tester-one",
+        )
+        architect = self.run_cli(
+            "plan", "show", plan, "testing", "--role", "architect",
+            agent="architect-two",
+        )
+        self.assertEqual(tester.returncode, 0, tester.stderr)
+        self.assertEqual(architect.returncode, 0, architect.stderr)
+        self.assertEqual(tester.stdout, body)
+        self.assertEqual(architect.stdout, body)
+
+    def test_human_as_user_still_works_after_an_engineer_brief(self):
+        plan = self._plan()
+        self.run_cli(
+            "plan", "write", plan, "implementation", "--body", "implementation " * 20,
+            role="architect", agent="architect-one",
+        )
+        self.run_cli(
+            "plan", "write", plan, "testing", "--body", "assertions " * 20,
+            role="architect", agent="architect-one",
+        )
+        self.run_cli(
+            "plan", "brief", "--role", "engineer", "--plan", plan,
+            role="engineer", agent="engineer-one",
+        )
+        implementation = self.run_cli(
+            "plan", "stage", plan, "implementation", "complete", "--as-user"
+        )
+        testing = self.run_cli(
+            "plan", "stage", plan, "testing", "complete", "--as-user"
+        )
+        finalized = self.run_cli("plan", "finalize", plan, "--as-user")
+        self.assertEqual(implementation.returncode, 0, implementation.stderr)
+        self.assertEqual(testing.returncode, 0, testing.stderr)
+        self.assertEqual(finalized.returncode, 0, finalized.stderr)
 
     def test_steering_another_role_is_still_allowed(self):
         """--role names a subject on the steering commands, not the caller."""

@@ -43,7 +43,11 @@ when the user asked for a plan directly it refuses work until they approve it â€
 autopilot does not waive user review. The testing and evaluation plans are
 sealed from the engineer, because an implementation written against its own
 tests only proves the tests were satisfiable; never decode a sealed stage to
-route around that.
+route around that. Give every spawned role a stable, unique `GROGU_AGENT`.
+Grogu binds an identified agent's first role claim and carries that binding
+across fresh shells, so the same agent may not switch from engineer to tester or
+architect to cross the seal. A genuinely distinct agent uses a distinct
+identity; `--as-user` is reserved for the human at the terminal.
 
 Record friction whenever Grogu itself gets in the way â€” a command that should
 exist, output that had to be parsed by hand, a step that took three calls and

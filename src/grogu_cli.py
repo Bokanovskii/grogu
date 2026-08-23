@@ -4906,15 +4906,11 @@ GROGU_COMMANDS = frozenset(
 
 
 def _role_claim_is_honest(parsed: argparse.Namespace) -> bool:
-    """Refuse a role an agent has already contradicted about itself.
+    """Fast-path a role contradiction still visible in this process.
 
-    `--role` used to be a bare assertion, which made the seal on the testing
-    plan a norm rather than a control: an engineer could type `--role tester`
-    and read the plan it is supposed to be judged against. This does not make
-    the seal cryptographic -- an agent that never exports GROGU_ROLE is still
-    only bound by the contract, and the sealed file is decodable by anyone who
-    wants to. What it does close is the one path that mattered in practice: an
-    agent that *has* declared itself cannot then declare itself somebody else.
+    PlanStore also binds the claim to the agent identity, which covers later
+    commands after a fresh shell has dropped GROGU_ROLE. Keeping this check
+    gives the immediate mismatch the CLI's concise usage-error exit.
     """
     declared = grogu_plans.current_role()
     if not declared:

@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "id": "t-20260822-1efdff",
+  "title": "Bind pipeline roles to agent identity",
+  "body": "Fix harness friction #35: prevent an identified GROGU_AGENT from impersonating another sealed pipeline role while preserving fresh role agents, humans, and fresh-shell recovery.",
+  "status": "review",
+  "priority": "normal",
+  "labels": [
+    "harness-friction"
+  ],
+  "issue": null,
+  "assignee": "charlie",
+  "created_at": "2026-08-22T21:48:22+00:00",
+  "created_by": "charlie",
+  "updated_at": "2026-08-23T09:12:38+00:00",
+  "revision": 14,
+  "log": [
+    {
+      "at": "2026-08-22T21:48:22+00:00",
+      "by": "charlie",
+      "event": "created",
+      "text": "Bind pipeline roles to agent identity"
+    },
+    {
+      "at": "2026-08-22T21:48:22+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-22T21:50:15+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Created pipeline plan p-20260822-11f261 and completed architect implementation/testing specifications."
+    },
+    {
+      "at": "2026-08-22T22:02:24+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Implemented agent-role binding in PlanStore with fresh-shell recovery and added store/CLI regression coverage; targeted suites are passing aside from one unrelated warning-sensitive flake that passed alone."
+    },
+    {
+      "at": "2026-08-22T22:04:24+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Implementation complete; entering independent tester stage."
+    },
+    {
+      "at": "2026-08-22T22:21:48+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Tester verification passed: targeted role suites and full 552-test suite (1 skipped)."
+    },
+    {
+      "at": "2026-08-22T23:50:05+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Final verification passed: 552 tests OK (1 skipped), guard staged clean, and cached diff check clean."
+    },
+    {
+      "at": "2026-08-23T00:07:26+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "PR https://github.com/Bokanovskii/grogu/pull/43"
+    },
+    {
+      "at": "2026-08-23T08:58:11+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-23T08:58:12+00:00",
+      "by": "charlie",
+      "event": "status",
+      "text": "active"
+    },
+    {
+      "at": "2026-08-23T08:58:12+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Refreshing PR #43 onto current origin/main while preserving review-hold and plugin changes."
+    },
+    {
+      "at": "2026-08-23T09:01:00+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Merged origin/main at d960aa3. Added semantic integration so role identity binding also protects the new clear-review operation; overlap, role, and plugin discovery tests pass."
+    },
+    {
+      "at": "2026-08-23T09:04:10+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Merged suite verified: targeted overlap coverage passed; full suite passed with 602 tests and 6 skips after the known warning-sensitive test passed in isolation."
+    },
+    {
+      "at": "2026-08-23T09:12:38+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "PR #43 refreshed onto origin/main d960aa3 at merge head 88866b9; 602 tests passed (6 skipped), PR diff guard/diff clean, and macOS/Ubuntu/Windows CI passed."
+    }
+  ]
+}

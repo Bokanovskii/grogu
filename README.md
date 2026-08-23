@@ -255,9 +255,13 @@ Five things make this more than a naming scheme:
   Questions, steering and obvious small edits route `direct`, because spending a
   model call to decide whether to spend model calls is the waste being avoided.
 * **The engineer cannot read the testing plan.** It is sealed on disk, and the
-  store refuses the read. An implementation written against its own tests only
-  proves the tests were satisfiable. Sealing stops accidents, not intent — it is
-  not a security boundary.
+  store refuses the read. An identified agent's first role claim is bound to its
+  `GROGU_AGENT` and persisted across fresh shells, so the same agent cannot
+  become a tester or architect merely by changing `--role`; genuinely distinct
+  agents use distinct identities. An implementation written against its own
+  tests only proves the tests were satisfiable. Sealing stops accidents, not a
+  determined caller that invents another identity or uses the human-only
+  `--as-user` path — it is not a cryptographic security boundary.
 * **Gates are state, not advice.** When the user asks for a plan directly,
   `--review-required` makes `grogu plan gate` refuse work until they approve.
   Autopilot does not waive user review.
