@@ -3,7 +3,7 @@
   "id": "t-20260822-1efdff",
   "title": "Bind pipeline roles to agent identity",
   "body": "Fix harness friction #35: prevent an identified GROGU_AGENT from impersonating another sealed pipeline role while preserving fresh role agents, humans, and fresh-shell recovery.",
-  "status": "active",
+  "status": "review",
   "priority": "normal",
   "labels": [
     "harness-friction"
@@ -12,8 +12,8 @@
   "assignee": "charlie",
   "created_at": "2026-08-22T21:48:22+00:00",
   "created_by": "charlie",
-  "updated_at": "2026-08-23T09:04:10+00:00",
-  "revision": 13,
+  "updated_at": "2026-08-23T09:12:38+00:00",
+  "revision": 14,
   "log": [
     {
       "at": "2026-08-22T21:48:22+00:00",
@@ -90,6 +90,12 @@
       "by": "charlie",
       "event": "note",
       "text": "Merged suite verified: targeted overlap coverage passed; full suite passed with 602 tests and 6 skips after the known warning-sensitive test passed in isolation."
+    },
+    {
+      "at": "2026-08-23T09:12:38+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "PR #43 refreshed onto origin/main d960aa3 at merge head 88866b9; 602 tests passed (6 skipped), PR diff guard/diff clean, and macOS/Ubuntu/Windows CI passed."
     }
   ]
 }
