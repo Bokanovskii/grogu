@@ -921,11 +921,21 @@ def prune_stale_grogu_worktrees() -> None:
 
     Never blocks or fails a launch: any error prunes nothing and is
     swallowed, since this is a convenience, not a correctness requirement.
+
+    Passes the launching process's own current directory as an
+    `active_paths` guard (friction #46): `ROOT` always resolves to wherever
+    the installed `grogu` launcher's own script lives -- the primary
+    checkout -- regardless of which worktree this process was actually
+    started from, so without this, an ordinary launch from inside a
+    session's own dedicated worktree could prune the very worktree it is
+    running in out from under it.
     """
     if os.environ.get("GROGU_PRUNE_WORKTREES", "1") == "0":
         return
     try:
-        pruned = grogu_worktrees.prune_stale_worktrees(ROOT)
+        pruned = grogu_worktrees.prune_stale_worktrees(
+            ROOT, active_paths=[Path.cwd()]
+        )
     except Exception:  # pragma: no cover - never let cleanup break a launch
         return
     for entry in pruned:
@@ -968,14 +978,17 @@ def worktree_list(_: argparse.Namespace) -> int:
 
 
 def worktree_prune(args: argparse.Namespace) -> int:
+    # Never prune the worktree this very command is running from (friction
+    # #46) -- explicit or not, that one is active by definition.
+    active_paths = [Path.cwd()]
     if args.dry_run:
-        stale = grogu_worktrees.stale_worktrees(ROOT)
+        stale = grogu_worktrees.stale_worktrees(ROOT, active_paths=active_paths)
         for entry in stale:
             print(f"{entry.worktree.path}  ({entry.reason})")
         if not stale:
             print("no stale worktrees")
         return 0
-    pruned = grogu_worktrees.prune_stale_worktrees(ROOT)
+    pruned = grogu_worktrees.prune_stale_worktrees(ROOT, active_paths=active_paths)
     for entry in pruned:
         print(f"removed {entry.worktree.path}  ({entry.reason})")
     if not pruned:

@@ -73,10 +73,13 @@ paths) before assuming a code change is required.
 
 Each launch fast-forwards the primary checkout's clean `main` to `origin/main`
 (never switching branches or discarding work) and removes stale self-modification
-worktrees with no uncommitted changes. `grogu doctor` reports what is behind or
-still standing; `grogu worktree list` / `grogu worktree prune [--dry-run]`
-inspect or clean by hand, and `GROGU_SYNC_MAIN=0` / `GROGU_PRUNE_WORKTREES=0`
-disable each.
+worktrees with no uncommitted changes. A branch only counts as stale once its
+work has actually landed or closed elsewhere (merged, its remote deleted, or its
+pull request merged) -- never merely because it is new and has not diverged yet
+-- and the worktree the launch itself is running from is never a candidate,
+regardless of branch state. `grogu doctor` reports what is behind or still
+standing; `grogu worktree list` / `grogu worktree prune [--dry-run]` inspect or
+clean by hand, and `GROGU_SYNC_MAIN=0` / `GROGU_PRUNE_WORKTREES=0` disable each.
 
 For coding work, explore narrowly: inspect Git state and project instructions, locate the relevant implementation and tests, trace the smallest useful call chain, edit minimally, and run targeted validation. Do not claim success without evidence.
 

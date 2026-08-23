@@ -113,6 +113,125 @@ class GroguWorktreesTests(unittest.TestCase):
         self.assertEqual(pruned, [])
         self.assertTrue(path.exists())
 
+    # -- friction #46: a branch that never diverged is not "already merged" --
+
+    def test_fresh_zero_commit_branch_is_not_stale(self):
+        """A branch fresh off `worktree add -b`, with zero commits of its
+        own, is trivially an ancestor of `main` -- ancestry alone cannot
+        tell that apart from a branch whose real work already landed there
+        by fast-forward. Treating the first as the second is exactly the
+        bug harness friction #46 reported: a session's own just-created,
+        not-yet-touched worktree was pruned before it could make a single
+        commit."""
+        path = self.add_worktree("feature-fresh")
+
+        stale = grogu_worktrees.stale_worktrees(self.repo)
+
+        self.assertEqual(stale, [])
+        self.assertTrue(path.is_dir())
+
+    def test_fresh_branch_with_uncommitted_work_is_not_stale(self):
+        """The literal friction #46 incident: a freshly created worktree
+        with in-progress untracked and modified files, none of it committed
+        yet, must survive a staleness sweep -- both because it is dirty and
+        because its branch has zero commits so far."""
+        path = self.add_worktree("feature-in-progress")
+        (path / "scratch.txt").write_text("in progress, not yet committed\n")
+        (path / "README.md").write_text("modified but uncommitted\n")
+
+        stale = grogu_worktrees.stale_worktrees(self.repo)
+
+        self.assertEqual(stale, [])
+
+    def test_prune_does_not_remove_fresh_zero_commit_worktree(self):
+        """Same scenario through the actual removal path, not just
+        classification: a session must never find its own brand-new
+        worktree deleted out from under it before its first commit."""
+        path = self.add_worktree("feature-brand-new")
+
+        pruned = grogu_worktrees.prune_stale_worktrees(self.repo)
+
+        self.assertEqual(pruned, [])
+        self.assertTrue(path.is_dir())
+        branches = run(["git", "branch", "--list", "feature-brand-new"], self.repo)
+        # `git branch --list` marks a branch checked out in another worktree
+        # with a leading "+", so check for its presence rather than an exact
+        # match against the bare name.
+        self.assertIn("feature-brand-new", branches)
+
+    def test_genuinely_merged_branch_is_still_stale_after_the_fix(self):
+        """Regression guard for the fix itself: a branch that has advanced
+        (at least one commit of its own) and is later fast-forward merged
+        must still be reported stale -- `_branch_ever_advanced` must key off
+        the branch's own reflog, not merely "has commits now", or this would
+        quietly undo the existing merged-branch contract."""
+        path = self.add_worktree("feature-really-merged")
+        (path / "file.txt").write_text("change\n")
+        run(["git", "add", "file.txt"], path)
+        run(["git", "commit", "-m", "feature work"], path)
+        run(["git", "commit", "--allow-empty", "-m", "more feature work"], path)
+        run(["git", "merge", "feature-really-merged"], self.repo)
+
+        stale = grogu_worktrees.stale_worktrees(self.repo)
+
+        self.assertEqual(len(stale), 1)
+        self.assertEqual(stale[0].reason, "branch merged into main")
+
+    # -- friction #46: active/session-owned worktrees are never pruned ------
+
+    def test_active_path_worktree_is_never_pruned_even_if_stale(self):
+        """A worktree a live process is sitting in must never be pruned,
+        independent of the branch-history checks -- a caller names it via
+        `active_paths` (typically its own current working directory) and it
+        is exempt even when every other signal says "safe to delete"."""
+        path = self.add_worktree("feature-active")
+        (path / "file.txt").write_text("change\n")
+        run(["git", "add", "file.txt"], path)
+        run(["git", "commit", "-m", "feature work"], path)
+        run(["git", "merge", "feature-active"], self.repo)
+
+        stale = grogu_worktrees.stale_worktrees(self.repo, active_paths=[path])
+        self.assertEqual(stale, [])
+
+        pruned = grogu_worktrees.prune_stale_worktrees(self.repo, active_paths=[path])
+        self.assertEqual(pruned, [])
+        self.assertTrue(path.is_dir())
+
+    def test_active_path_nested_inside_worktree_protects_it(self):
+        """A path nested inside the worktree (e.g. a subdirectory a process
+        happens to have as its cwd) counts as active too, not just the
+        worktree's own root."""
+        path = self.add_worktree("feature-active-nested")
+        (path / "file.txt").write_text("change\n")
+        run(["git", "add", "file.txt"], path)
+        run(["git", "commit", "-m", "feature work"], path)
+        run(["git", "merge", "feature-active-nested"], self.repo)
+        nested = path / "sub"
+        nested.mkdir()
+
+        stale = grogu_worktrees.stale_worktrees(self.repo, active_paths=[nested])
+
+        self.assertEqual(stale, [])
+
+    def test_active_paths_do_not_protect_unrelated_worktrees(self):
+        """`active_paths` is scoped to the paths it is given -- it must not
+        blanket-exempt every worktree, only the ones it actually names."""
+        active_path = self.add_worktree("feature-active-only")
+        other_path = self.add_worktree("feature-unrelated-merged")
+        for path, branch in (
+            (active_path, "feature-active-only"),
+            (other_path, "feature-unrelated-merged"),
+        ):
+            (path / "file.txt").write_text("change\n")
+            run(["git", "add", "file.txt"], path)
+            run(["git", "commit", "-m", "feature work"], path)
+            run(["git", "merge", branch], self.repo)
+
+        stale = grogu_worktrees.stale_worktrees(self.repo, active_paths=[active_path])
+
+        self.assertEqual(len(stale), 1)
+        self.assertEqual(stale[0].worktree.path.resolve(), other_path.resolve())
+
 
 class GroguMainSyncTests(unittest.TestCase):
     """Tests for `sync_main_with_origin` / `main_behind_origin`, which need a
@@ -193,6 +312,101 @@ class GroguMainSyncTests(unittest.TestCase):
         run(["git", "fetch", "origin"], self.repo)
 
         self.assertFalse(grogu_worktrees.main_behind_origin(self.repo))
+
+
+class RemoteBranchStalenessTests(unittest.TestCase):
+    """`stale_worktrees`'s "remote branch deleted" and "no upstream at all"
+    paths (friction #46 regression coverage). These need a real bare
+    `origin` so a branch can actually be pushed and its remote head actually
+    deleted, unlike `GroguWorktreesTests`'s single-repo setup -- and closing
+    this gap matters here specifically because the friction #46 fix touches
+    the same `if`/`elif` chain in `stale_worktrees` that these two other
+    branches live in."""
+
+    def setUp(self):
+        self.temporary_dir = tempfile.TemporaryDirectory()
+        base = Path(self.temporary_dir.name)
+        self.bare = base / "origin.git"
+        run(["git", "init", "--bare", "-b", "main", str(self.bare)], base)
+
+        self.repo = base / "repo"
+        run(["git", "clone", str(self.bare), str(self.repo)], base)
+        run(["git", "config", "user.email", "test@example.com"], self.repo)
+        run(["git", "config", "user.name", "Test"], self.repo)
+        (self.repo / "README.md").write_text("hello\n")
+        run(["git", "add", "README.md"], self.repo)
+        run(["git", "commit", "-m", "initial"], self.repo)
+        run(["git", "push", "-u", "origin", "main"], self.repo)
+
+    def tearDown(self):
+        self.temporary_dir.cleanup()
+
+    def add_worktree(self, name):
+        path = self.repo.parent / f"worktree-{name}"
+        run(["git", "worktree", "add", str(path), "-b", name, "main"], self.repo)
+        return path
+
+    def test_squash_merged_branch_with_deleted_remote_is_stale(self):
+        """The common real-world case this signal exists for: GitHub
+        squash-merges the PR (so the branch never becomes an ancestor of
+        `main` locally) and deletes the head branch on the remote."""
+        path = self.add_worktree("feature-squashed")
+        (path / "file.txt").write_text("change\n")
+        run(["git", "add", "file.txt"], path)
+        run(["git", "commit", "-m", "feature work"], path)
+        run(["git", "push", "-u", "origin", "feature-squashed"], path)
+        run(["git", "push", "origin", "--delete", "feature-squashed"], path)
+
+        stale = grogu_worktrees.stale_worktrees(self.repo)
+
+        self.assertEqual(len(stale), 1)
+        self.assertEqual(stale[0].worktree.path.resolve(), path.resolve())
+        self.assertEqual(stale[0].reason, "remote branch deleted")
+
+    def test_prune_removes_worktree_with_deleted_remote_branch(self):
+        path = self.add_worktree("feature-squash-prune")
+        (path / "file.txt").write_text("change\n")
+        run(["git", "add", "file.txt"], path)
+        run(["git", "commit", "-m", "feature work"], path)
+        run(["git", "push", "-u", "origin", "feature-squash-prune"], path)
+        run(["git", "push", "origin", "--delete", "feature-squash-prune"], path)
+
+        pruned = grogu_worktrees.prune_stale_worktrees(self.repo)
+
+        self.assertEqual(len(pruned), 1)
+        self.assertFalse(path.exists())
+        branches = run(
+            ["git", "branch", "--list", "feature-squash-prune"], self.repo
+        )
+        self.assertEqual(branches.strip(), "")
+
+    def test_unpublished_branch_is_not_stale_even_with_origin_configured(self):
+        """Friction #46, stated explicitly: an unpublished local branch must
+        not be considered stale solely because no remote branch exists for
+        it. `_remote_branch_deleted` only fires once a remote WAS
+        configured and its branch is now gone -- never for "was never
+        pushed" -- and this must hold even in a repo that does have a real
+        `origin` for other branches, not just when there is no remote at
+        all."""
+        path = self.add_worktree("feature-never-pushed")
+        (path / "file.txt").write_text("change\n")
+        run(["git", "add", "file.txt"], path)
+        run(["git", "commit", "-m", "feature work"], path)
+
+        stale = grogu_worktrees.stale_worktrees(self.repo)
+
+        self.assertEqual(stale, [])
+
+    def test_fresh_zero_commit_branch_is_not_stale_with_origin_configured(self):
+        """Friction #46's core scenario, repeated here with a real `origin`
+        present: a brand-new, untouched, unpushed branch must not be
+        pruned, whether or not the repository happens to have a remote."""
+        path = self.add_worktree("feature-fresh-with-origin")
+
+        stale = grogu_worktrees.stale_worktrees(self.repo)
+
+        self.assertEqual(stale, [])
+        self.assertTrue(path.is_dir())
 
 
 class WorkstreamWorktreeTests(unittest.TestCase):
@@ -405,6 +619,25 @@ class WorkstreamWorktreeTests(unittest.TestCase):
         # Removing the worktree still succeeds even though the branch is not
         # safe to delete yet -- a declined optional step must not look like
         # total failure.
+        self.assertFalse(result.path.exists())
+        self.assertFalse(removed.branch_deleted)
+        self.assertNotEqual(removed.branch_kept_reason, "")
+        branches = run(
+            ["git", "branch", "--list", "workstream/p1/scaffold"], self.repo
+        )
+        self.assertEqual(branches.strip(), "workstream/p1/scaffold")
+
+    def test_remove_with_delete_branch_keeps_a_fresh_zero_commit_branch(self):
+        """Friction #46 applies equally here: a workstream branch that was
+        just created and never touched is trivially an ancestor of its
+        base, but that must not be read as "already merged, safe to
+        delete" -- it has not started, not finished."""
+        result = grogu_worktrees.ensure_workstream_worktree(self.repo, "p1", "scaffold")
+
+        removed = grogu_worktrees.remove_workstream_worktree(
+            self.repo, "p1", "scaffold", delete_branch=True
+        )
+
         self.assertFalse(result.path.exists())
         self.assertFalse(removed.branch_deleted)
         self.assertNotEqual(removed.branch_kept_reason, "")

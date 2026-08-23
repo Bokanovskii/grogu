@@ -545,9 +545,11 @@ Changes to Grogu's own source live in a dedicated `git worktree` per branch
 launch, Grogu fast-forwards the primary checkout's clean `main` to
 `origin/main` (never switching branches or discarding work; set
 `GROGU_SYNC_MAIN=0` to skip), then checks for stale worktrees — ones whose
-branch has merged into `main`, whose remote branch was deleted (the common
-case after a squash-merge), or whose pull request `gh` reports as merged —
-and removes any that have no uncommitted changes. Set
+branch has actually merged into `main` (not merely one that is new and has
+not diverged from it yet), whose remote branch was deleted (the common case
+after a squash-merge), or whose pull request `gh` reports as merged — and
+removes any that have no uncommitted changes. The worktree the running
+launch is itself in is never removed, regardless of its branch's state. Set
 `GROGU_PRUNE_WORKTREES=0` to skip the prune check.
 
 ```sh

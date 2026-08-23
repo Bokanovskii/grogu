@@ -26,6 +26,19 @@ changes, so in-progress work is never discarded. Likewise, `main` is only
 ever fast-forwarded when the primary checkout is already on a clean `main`;
 it is never switched to `main` or reset over local changes.
 
+Harness friction #46 found the "merged into main" check above too eager: a
+branch fresh off `git worktree add -b` has zero commits of its own, so it is
+trivially an ancestor of `main` -- indistinguishable, by ancestry alone,
+from a branch whose real work already landed there by fast-forward. A
+worktree created and not yet touched was being pruned as if it were one
+whose pull request had already merged. `_branch_ever_advanced` closes that
+gap by consulting the branch's own reflog, which a from-created-to-now
+untouched branch cannot fake; `stale_worktrees`'s `active_paths` closes a
+second, independent gap by letting a caller name paths -- typically its own
+current working directory -- that must never be pruned regardless of what
+the branch-history checks decide, because a worktree a live process is
+sitting in is active by definition.
+
 Harness friction #40 recorded the same problem one level up: a plan's
 declared parallel workstreams were run against one shared checkout rather
 than a worktree each, and a workstream's untracked scratch files ended up
@@ -47,7 +60,7 @@ import dataclasses
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 
 @dataclasses.dataclass
@@ -102,7 +115,40 @@ def list_worktrees(root: Path) -> list[Worktree]:
     return worktrees
 
 
+def _branch_ever_advanced(root: Path, branch: str) -> bool:
+    """Whether `branch`'s own ref has moved since the moment it was created.
+
+    Friction #46: a branch that is merged into `target` by fast-forward (the
+    common case, since `target` has usually not moved either) becomes
+    indistinguishable from a branch that was just created and never
+    touched -- ancestry alone says "yes" for both, because `target` ends up
+    sitting at the exact same commit either way. Even a non-fast-forward
+    merge commit does not help, since `target..branch` is empty once
+    `branch`'s tip is reachable from `target`, whether that happened last
+    week or a second ago.
+
+    The branch ref's own reflog is not ambiguous: creating a branch (via
+    `git branch`, `git checkout -b`, or `git worktree add -b`) writes exactly
+    one reflog entry for it, and a real commit made on that branch always
+    adds another one, which survives regardless of what `target` does
+    afterwards. So a branch stuck at a single reflog entry has not diverged
+    from its own starting point -- there is nothing on it for `target` to
+    have merged, and an ancestor result for it means "not started", not
+    "finished".
+    """
+    output = _run(["git", "reflog", "show", "--format=%gs", branch], root)
+    if not output:
+        # No reflog to consult (e.g. expired, or reflogs disabled) --
+        # fail closed: treat it as unadvanced so it is never mistaken for a
+        # completed merge rather than risk the opposite.
+        return False
+    entries = [line for line in output.splitlines() if line.strip()]
+    return len(entries) > 1
+
+
 def _is_merged_into(root: Path, branch: str, target: str) -> bool:
+    if not _branch_ever_advanced(root, branch):
+        return False
     output = _run(
         ["git", "merge-base", "--is-ancestor", branch, target], root
     )
@@ -139,6 +185,34 @@ def _worktree_is_clean(path: Path) -> bool:
 def _current_branch(path: Path) -> Optional[str]:
     output = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], path)
     return output.strip() if output is not None else None
+
+
+def _resolved_paths(paths: Optional[Iterable[Path]]) -> list[Path]:
+    resolved: list[Path] = []
+    for candidate in paths or ():
+        try:
+            resolved.append(candidate.resolve())
+        except OSError:
+            continue
+    return resolved
+
+
+def _is_active(worktree_path: Path, active: list[Path]) -> bool:
+    """Whether one of `active` sits at or inside `worktree_path`.
+
+    Friction #46: a worktree a live process is actually sitting in is active
+    by definition, not by inference from branch history -- this is what lets
+    a caller protect its own current working directory (or any other path it
+    knows is in use) regardless of what the staleness checks below decide.
+    """
+    try:
+        resolved_worktree = worktree_path.resolve()
+    except OSError:
+        return False
+    for candidate in active:
+        if candidate == resolved_worktree or resolved_worktree in candidate.parents:
+            return True
+    return False
 
 
 def main_behind_origin(root: Path) -> Optional[bool]:
@@ -178,12 +252,20 @@ def sync_main_with_origin(root: Path) -> Optional[str]:
     return f"updated main to {after.strip()[:12]}"
 
 
-def stale_worktrees(root: Path) -> list[StaleWorktree]:
+def stale_worktrees(
+    root: Path, *, active_paths: Optional[Iterable[Path]] = None
+) -> list[StaleWorktree]:
     """Return worktrees whose branch is safe to remove.
 
     Only worktrees other than the primary checkout are considered, and only
-    when the worktree has no uncommitted changes.
+    when the worktree has no uncommitted changes. `active_paths` (friction
+    #46) is an additional, independent guard: any worktree that contains one
+    of these paths -- typically the caller's own current working directory
+    -- is never reported stale no matter what the branch-history checks
+    below conclude, because a worktree a live process is sitting in is
+    active by definition, not by inference from its git state.
     """
+    active = _resolved_paths(active_paths)
     stale: list[StaleWorktree] = []
     for worktree in list_worktrees(root):
         if worktree.is_main or worktree.branch is None:
@@ -194,6 +276,8 @@ def stale_worktrees(root: Path) -> list[StaleWorktree]:
             # The directory was already removed outside of Grogu; git still
             # tracks it until `git worktree prune` runs.
             stale.append(StaleWorktree(worktree, "directory missing"))
+            continue
+        if _is_active(worktree.path, active):
             continue
         if not _worktree_is_clean(worktree.path):
             continue
@@ -206,10 +290,12 @@ def stale_worktrees(root: Path) -> list[StaleWorktree]:
     return stale
 
 
-def prune_stale_worktrees(root: Path) -> list[StaleWorktree]:
+def prune_stale_worktrees(
+    root: Path, *, active_paths: Optional[Iterable[Path]] = None
+) -> list[StaleWorktree]:
     """Remove stale worktrees (and their local branches) and report them."""
     pruned: list[StaleWorktree] = []
-    for entry in stale_worktrees(root):
+    for entry in stale_worktrees(root, active_paths=active_paths):
         removed = _run(
             ["git", "worktree", "remove", str(entry.worktree.path)], root
         )
