@@ -129,7 +129,14 @@ harness friction — not pull request or issue bodies, commit messages, search
 queries or transcripts — so it catches recognisable mistakes in three places
 and does not replace deciding what is fit to publish.
 
-When a web interface or browser behavior needs validation, use the configured Playwright MCP capability when available. Prefer isolated/headless checks and targeted assertions; browser access does not authorize external side effects.
+When a web interface or browser behavior needs validation, use the configured
+Playwright MCP capability when available. Always use a fresh automation-owned
+browser context and temporary profile; never attach to or drive the user's
+current browser window, tabs, profile, or remote-debugging session. Prefer
+headless checks. If a headed browser is necessary, launch a separate
+automation-only window and target it through Playwright handles rather than
+active-window, focus, mouse, or keyboard state. Browser access does not
+authorize external side effects.
 
 Shared Grogu behavior changes belong in a branch and pull request. When Grogu
 modifies its own source checkout, do the work in a dedicated `git worktree`
