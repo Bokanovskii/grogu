@@ -2533,6 +2533,43 @@ class WorkstreamWorktreeStoreTests(unittest.TestCase):
         self.assertFalse((Path(scaffold["path"]) / ".listing.xml").exists())
         self.assertFalse((self.root / ".listing.xml").exists())
 
+    def test_multi_word_workstream_name_gets_its_own_worktree(self):
+        """`workstream_branch` slugifies a name to build its Git ref, but
+        `workstream_worktree` itself must still accept and honour the raw,
+        unslugified name declared on the plan."""
+        self.store.add_workstream(self.plan, name="api gateway", paths=["src/api/**"])
+
+        result = self.store.workstream_worktree(self.plan, "api gateway")
+
+        self.assertTrue(result["created"])
+        self.assertNotEqual(Path(result["path"]).resolve(), self.root.resolve())
+        self.assertTrue(Path(result["path"]).is_dir())
+
+    def test_list_workstream_worktrees_recovers_the_raw_multi_word_name(self):
+        """Regression: listing used to derive the name back from the
+        slugified branch (`api-gateway`), which never matched the declared
+        `api gateway` workstream and so always reported it as no longer
+        declared, even right after it was created."""
+        self.store.add_workstream(self.plan, name="api gateway", paths=["src/api/**"])
+        self.store.workstream_worktree(self.plan, "api gateway")
+
+        entries = {
+            entry["name"]: entry for entry in self.store.list_workstream_worktrees(self.plan)
+        }
+
+        self.assertIn("api gateway", entries)
+        self.assertNotIn("api-gateway", entries)
+        self.assertTrue(entries["api gateway"]["declared"])
+
+    def test_remove_workstream_worktree_works_for_a_multi_word_name(self):
+        self.store.add_workstream(self.plan, name="api gateway", paths=["src/api/**"])
+        created = self.store.workstream_worktree(self.plan, "api gateway")
+
+        removed = self.store.remove_workstream_worktree(self.plan, "api gateway")
+
+        self.assertEqual(removed["removed"], created["path"])
+        self.assertFalse(Path(created["path"]).exists())
+
 
 class CommissionTests(unittest.TestCase):
     """The architect could open a design stage it could not brief."""

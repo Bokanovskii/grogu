@@ -9,6 +9,7 @@ import datetime as dt
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import sqlite3
@@ -2278,7 +2279,7 @@ def plan_workstreams(args: argparse.Namespace) -> int:
                 else:
                     print(
                         f"      worktree: not created yet -- grogu plan "
-                        f"workstream-worktree {plan_id} --name {name}"
+                        f"workstream-worktree {plan_id} --name {shlex.quote(name)}"
                     )
         for conflict in conflicts:
             left, right = conflict["workstreams"]

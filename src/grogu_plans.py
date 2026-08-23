@@ -3243,19 +3243,37 @@ class PlanStore:
         Read-only: it reports what `workstream_worktree` already made, and
         never creates one itself, so listing a plan's state is never the
         thing that scatters a new worktree onto disk.
+
+        `workstream_branch` slugifies a name (spaces and other unsafe
+        characters become `-`) to build a Git ref, which is lossy: recovering
+        "api gateway" from its branch by splitting on `/` alone would give
+        back "api-gateway", not the raw declared name, so it would never
+        match a declared workstream with a multi-word name and would always
+        be reported as no longer declared. Matching each worktree's branch
+        against the branch that every *currently* declared name would
+        produce (`workstream_branch(plan_id, declared_name)`) recovers the
+        exact raw name instead; the lossy split is only a fallback for a
+        worktree whose branch matches no currently declared workstream at
+        all (dropped, or never declared), where there is no raw name left to
+        recover.
         """
-        declared = {
+        declared_names = [
             stream["name"] for stream in self.load(plan_id).get("workstreams", [])
+        ]
+        branch_to_name = {
+            grogu_worktrees.workstream_branch(plan_id, declared_name): declared_name
+            for declared_name in declared_names
         }
         entries = []
         for entry in grogu_worktrees.list_workstream_worktrees(self.root, plan_id):
-            name = entry.branch.rsplit("/", 1)[-1]
+            declared_name = branch_to_name.get(entry.branch)
+            name = declared_name if declared_name is not None else entry.branch.rsplit("/", 1)[-1]
             entries.append(
                 {
                     "name": name,
                     "path": str(entry.path),
                     "branch": entry.branch,
-                    "declared": name in declared,
+                    "declared": declared_name is not None,
                 }
             )
         return entries

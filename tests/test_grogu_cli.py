@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import sqlite3
@@ -3221,3 +3222,94 @@ class WorkstreamWorktreeCliTests(unittest.TestCase):
         self.assertTrue(by_name["scaffold"]["worktree_ready"])
         self.assertFalse(by_name["ingest"]["worktree_ready"])
         self.assertTrue(by_name["scaffold"]["worktree"])
+
+    def _plan_with_a_multi_word_workstream(self):
+        plan = self.run_cli("plan", "new", "air quality").stdout.strip()
+        self.run_cli(
+            "plan", "workstream", plan, "--name", "api gateway", "--path", "src/api/**",
+            role="architect",
+        )
+        return plan
+
+    def test_multi_word_workstream_name_can_be_created_and_is_listed_by_its_raw_name(self):
+        """Regression: a multi-word name used to round-trip through its
+        slugified branch (`api-gateway`), so a freshly created worktree for
+        it was reported as belonging to an undeclared workstream."""
+        plan = self._plan_with_a_multi_word_workstream()
+        created = json.loads(
+            self.run_cli(
+                "plan", "workstream-worktree", plan, "--name", "api gateway", "--json",
+                role="engineer",
+            ).stdout
+        )
+        self.assertTrue(created["created"])
+        self.assertEqual(created["name"], "api gateway")
+
+        payload = json.loads(
+            self.run_cli("plan", "workstream-worktree", plan, "--list", "--json").stdout
+        )
+        by_name = {entry["name"]: entry for entry in payload["worktrees"]}
+        self.assertIn("api gateway", by_name)
+        self.assertTrue(by_name["api gateway"]["declared"])
+
+    def test_multi_word_workstream_name_list_human_output_is_not_flagged_undeclared(self):
+        plan = self._plan_with_a_multi_word_workstream()
+        self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "api gateway", role="engineer"
+        )
+        result = self.run_cli("plan", "workstream-worktree", plan, "--list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("api gateway:", result.stdout)
+        self.assertNotIn("no longer declared", result.stdout)
+
+    def test_plan_workstreams_worktree_ready_is_true_for_a_multi_word_name(self):
+        plan = self._plan_with_a_multi_word_workstream()
+        self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "api gateway", role="engineer"
+        )
+        payload = json.loads(self.run_cli("plan", "workstreams", plan, "--json").stdout)
+        by_name = {stream["name"]: stream for stream in payload["workstreams"]}
+        self.assertTrue(by_name["api gateway"]["worktree_ready"])
+        self.assertTrue(by_name["api gateway"]["worktree"])
+
+    def test_plan_workstreams_human_output_shows_the_path_for_a_multi_word_name(self):
+        plan = self._plan_with_a_multi_word_workstream()
+        created = json.loads(
+            self.run_cli(
+                "plan", "workstream-worktree", plan, "--name", "api gateway", "--json",
+                role="engineer",
+            ).stdout
+        )
+        result = self.run_cli("plan", "workstreams", plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(created["path"], result.stdout)
+        self.assertNotIn("not created yet", result.stdout)
+
+    def test_plan_workstreams_human_hint_safely_quotes_a_multi_word_name(self):
+        """The remediation line is meant to be copy-pasted into a shell; an
+        unquoted multi-word name would be split into extra positional
+        arguments there instead of being read as a single --name value."""
+        plan = self._plan_with_a_multi_word_workstream()
+        result = self.run_cli("plan", "workstreams", plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--name 'api gateway'", result.stdout)
+        hint = next(
+            line for line in result.stdout.splitlines() if "workstream-worktree" in line
+        )
+        self.assertEqual(shlex.split(hint)[-2:], ["--name", "api gateway"])
+
+    def test_remove_cleans_up_the_worktree_for_a_multi_word_name(self):
+        plan = self._plan_with_a_multi_word_workstream()
+        created = json.loads(
+            self.run_cli(
+                "plan", "workstream-worktree", plan, "--name", "api gateway", "--json",
+                role="engineer",
+            ).stdout
+        )
+        result = self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "api gateway", "--remove", "--json",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["removed"], created["path"])
+        self.assertFalse(Path(created["path"]).exists())
