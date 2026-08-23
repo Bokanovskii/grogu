@@ -1800,6 +1800,10 @@ def plan_shape(args: argparse.Namespace) -> int:
     store = plan_store(args)
     plan_id = store.resolve(args.id)
     role = getattr(args, "role", "") or ""
+    if args.as_user and not args.clear_review:
+        raise grogu_plans.PlanError(
+            "plan shape --as-user is only valid with --clear-review"
+        )
     if args.add:
         store.add_stage(plan_id, args.add, role=role)
         print(f"{plan_id}: added a {args.add} stage")
@@ -1811,6 +1815,15 @@ def plan_shape(args: argparse.Namespace) -> int:
     if args.decline:
         store.decline_stage(plan_id, args.decline, args.why or "", role=role)
         print(f"{plan_id}: recorded that no {args.decline} stage is warranted")
+        return 0
+    if args.clear_review:
+        store.clear_review_requirement(
+            plan_id, args.why or "", role=role, as_user=args.as_user
+        )
+        print(
+            f"{plan_id}: cleared the unapproved review requirement; "
+            "other plan state is unchanged"
+        )
         return 0
     manifest = store.require_review(plan_id, role=role)
     for warning in manifest.get("warnings", []):
@@ -3897,7 +3910,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan_shape_parser = plan_subparsers.add_parser(
         "shape",
-        help="add, decline or hold stages of an existing plan (architect only)",
+        help="change stages or the review hold of an existing plan (architect only)",
         parents=[plan_common, role_common],
     )
     plan_shape_parser.add_argument("id", nargs="?", default="")
@@ -3918,7 +3931,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="hold work until the user approves the plan",
     )
-    plan_shape_parser.add_argument("--why", help="reason, required with --decline")
+    plan_shape_group.add_argument(
+        "--clear-review",
+        action="store_true",
+        help=(
+            "clear an unapproved review requirement "
+            "(declared architect or --as-user; requires --why)"
+        ),
+    )
+    plan_shape_parser.add_argument(
+        "--why", help="reason, required with --decline or --clear-review"
+    )
+    plan_shape_parser.add_argument(
+        "--as-user",
+        action="store_true",
+        help=(
+            "you are the user, not an agent; permits --clear-review without "
+            "an architect role"
+        ),
+    )
     plan_shape_parser.add_argument(
         "--reset",
         choices=grogu_plans.STAGES,
