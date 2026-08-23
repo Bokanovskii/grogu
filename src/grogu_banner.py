@@ -13,7 +13,6 @@ intercepts its terminal output.
 from __future__ import annotations
 
 import base64
-import fcntl
 import hashlib
 import json
 import os
@@ -23,6 +22,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+
+import grogu_platform
 
 RESET = "\033[0m"
 TRANSPARENT = None
@@ -322,21 +323,14 @@ def _locked(state_dir: Path) -> Iterator[None]:
     lock = state_dir / "banner.lock"
     handle = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        yield
+        with grogu_platform.exclusive_lock(handle):
+            yield
     finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
         os.close(handle)
 
 
 def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return grogu_platform.process_alive(pid)
 
 
 def _state_file(state_dir: Path) -> Path:

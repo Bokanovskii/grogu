@@ -13,8 +13,8 @@
   "assignee": "charlie",
   "created_at": "2026-08-22T21:48:16+00:00",
   "created_by": "charlie",
-  "updated_at": "2026-08-22T22:00:55+00:00",
-  "revision": 5,
+  "updated_at": "2026-08-23T04:45:07+00:00",
+  "revision": 10,
   "log": [
     {
       "at": "2026-08-22T21:48:16+00:00",
@@ -44,6 +44,35 @@
       "by": "charlie",
       "event": "release",
       "text": "PR #42; full suite and live Copilot skill invocation passed."
+    },
+    {
+      "at": "2026-08-23T03:50:58+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-23T03:51:08+00:00",
+      "by": "charlie",
+      "event": "status",
+      "text": "active"
+    },
+    {
+      "at": "2026-08-23T03:51:08+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Reclaimed to merge current origin/main with Windows support into PR #42 and re-run full/live verification."
+    },
+    {
+      "at": "2026-08-23T04:45:06+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Merged origin/main including PR #39 Windows support with no conflicts. Targeted Windows/skill tests, 552-test full suite, and live external-CWD Copilot skill invocation pass."
+    },
+    {
+      "at": "2026-08-23T04:45:07+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "PR #42 refreshed with current main; ready for CI/review."
     }
   ]
 }

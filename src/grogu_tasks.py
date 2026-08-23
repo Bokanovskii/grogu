@@ -17,7 +17,6 @@ read-modify-write.
 from __future__ import annotations
 
 import datetime as dt
-import fcntl
 import json
 import os
 import secrets
@@ -26,6 +25,8 @@ import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
+
+import grogu_platform
 
 SCHEMA_VERSION = 1
 STORE_DIRNAME = ".grogu"
@@ -138,10 +139,9 @@ class TaskStore:
         self._ensure_state()
         handle = os.open(self.state_dir / "store.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX)
-            yield
+            with grogu_platform.exclusive_lock(handle):
+                yield
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
             os.close(handle)
 
     def _write_json(self, path: Path, payload: dict) -> None:
@@ -498,15 +498,7 @@ class TaskStore:
 
 
 def _process_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return grogu_platform.process_alive(pid)
 
 
 def issue_payload(number: int, repository: Optional[str] = None) -> dict:

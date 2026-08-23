@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -146,6 +147,7 @@ class StagedScanTests(unittest.TestCase):
     def _git(self, *arguments):
         return subprocess.run(
             ["git", *arguments], cwd=str(self.repo), capture_output=True, text=True,
+            encoding="utf8",
             check=False,
         )
 
@@ -193,6 +195,18 @@ class StagedScanTests(unittest.TestCase):
         self._git("add", "-A")
         allowed = self._git("commit", "-m", "add settings")
         self.assertEqual(allowed.returncode, 0, allowed.stdout + allowed.stderr)
+
+    def test_hook_arguments_survive_windows_paths_and_spaces(self):
+        python = r"C:\Program Files\Python\python.exe"
+        script = r"C:\work trees\grogu\grogu_cli.py"
+        path = grogu_privacy.install_hook(
+            self.repo, python=python, script=script
+        )
+        command = path.read_text(encoding="utf8").splitlines()[-1]
+        self.assertEqual(
+            shlex.split(command),
+            ["exec", python, script, "guard", "staged", "--quiet"],
+        )
 
 
 class PipelineEgressTests(unittest.TestCase):
@@ -258,7 +272,7 @@ class WorktreeHookTests(unittest.TestCase):
         def git(*arguments, cwd=None):
             return subprocess.run(
                 ["git", *arguments], cwd=str(cwd or repo), check=True,
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="utf8",
             )
 
         git("init", "-q", "-b", "main", ".")
