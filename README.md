@@ -134,7 +134,11 @@ Environment variables:
 Grogu also exports `GROGU_SESSION_ID`, `GROGU_SESSION_PID`, and
 `GROGU_PERSONAL_MEMORY_DIR` into the Copilot environment, and appends its
 `.github` directory to `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Existing values are
-preserved.
+preserved. Custom instruction directories carry instructions only; Copilot does
+not discover skills from them. Grogu therefore also passes its checkout as a
+session-scoped Copilot plugin using `--plugin-dir`. The plugin manifest exposes
+`.github/skills` without registering a personal skill directory or changing the
+user's persistent Copilot configuration.
 
 ## Messaging skills
 
@@ -211,7 +215,8 @@ so Grogu can start a separate remote session without replacing the current one.
 * **Instructions** live in `.github/AGENTS.md`; they are added to Copilot's
   instruction directories, not substituted for the user's own.
 * **Skills** live in `.github/skills/<name>/SKILL.md`. Add a directory, add a
-  skill; nothing needs to be registered.
+  skill; `plugin.json` exposes the directory to every Grogu launch, including
+  launches outside this source repository, without a personal installation.
 * **Agents** live in `.github/agents/<role>.md`. The architect, designer,
   engineer and tester roles are defined there, and `grogu plan brief` uses the same files as
   the base of each role's prompt.

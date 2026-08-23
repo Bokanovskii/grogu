@@ -1056,11 +1056,12 @@ def wants_autopilot_default(arguments: list[str]) -> bool:
 
 def copilot_arguments(arguments: list[str]) -> list[str]:
     """The Copilot argument vector for a Grogu launch."""
-    if not wants_autopilot_default(arguments):
-        return list(arguments)
-    # Leading position keeps user arguments, including any trailing `--`
-    # separator, exactly as they were typed.
-    return ["--autopilot", *arguments]
+    prepared = list(arguments)
+    if wants_autopilot_default(arguments):
+        # Leading position keeps user arguments, including any trailing `--`
+        # separator, exactly as they were typed.
+        prepared = ["--autopilot", *prepared]
+    return ["--plugin-dir", str(ROOT), *prepared]
 
 
 def task_store(args: argparse.Namespace) -> grogu_tasks.TaskStore:
