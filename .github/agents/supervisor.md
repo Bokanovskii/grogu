@@ -92,9 +92,22 @@ cd <repo> && GROGU_ROLE=engineer GROGU_AGENT=<name> GROGU_PLAN=<id> \
 mailbox; an agent with no name is identified by its working directory, which is
 right until two of them share one.
 
-For a fan-out, give each workstream its own name and check `grogu watch` shows
-them separately. If it shows one line where you spawned three agents, the
-steering you send will reach one of them.
+For a fan-out, resolve each workstream's own worktree first and spawn there
+instead of `<repo>` — running two workstreams from the same working directory
+is what harness friction #40 found: a workstream's own untracked scratch files
+landed in the shared checkout outside any workstream's declared paths, because
+nothing separated the checkouts, only the (disjoint, but not enforced) path
+globs:
+
+```sh
+grogu plan workstream-worktree <id> --name <stream>   # last line: cd <path>
+cd <the path that command printed> && GROGU_ROLE=engineer GROGU_AGENT=<name> \
+  GROGU_PLAN=<id> GROGU_WORKSTREAM=<stream> grogu <command>
+```
+
+Give each workstream its own name and check `grogu watch` shows them
+separately. If it shows one line where you spawned three agents, the steering
+you send will reach one of them.
 
 ## Harvesting friction
 

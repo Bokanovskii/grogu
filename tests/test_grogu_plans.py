@@ -2436,6 +2436,141 @@ class FinalizeArtifactTests(unittest.TestCase):
         self.assertIn("use decimal", record)
 
 
+class WorkstreamWorktreeStoreTests(unittest.TestCase):
+    """Harness friction #40, at the `PlanStore` layer: a workstream's
+    dedicated worktree has to be reachable through the same plan/workstream
+    vocabulary architects and engineers already use, not just the lower-level
+    `grogu_worktrees` functions."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"], cwd=self.root, check=True
+        )
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.root, check=True)
+        (self.root / "README.md").write_text("hello\n")
+        subprocess.run(["git", "add", "README.md"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=self.root, check=True)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.addCleanup(self.temporary.cleanup)
+        self.plan = self.store.create("ship it")["id"]
+        self.store.add_workstream(
+            self.plan, name="scaffold", paths=["src/scaffold/**"]
+        )
+        self.store.add_workstream(
+            self.plan, name="ingest", paths=["src/ingest/**"]
+        )
+
+    def test_workstream_worktree_is_outside_the_primary_checkout(self):
+        result = self.store.workstream_worktree(self.plan, "scaffold")
+
+        self.assertTrue(result["created"])
+        self.assertNotEqual(Path(result["path"]).resolve(), self.root.resolve())
+        self.assertTrue(Path(result["path"]).is_dir())
+
+    def test_two_declared_workstreams_get_distinct_worktrees(self):
+        scaffold = self.store.workstream_worktree(self.plan, "scaffold")
+        ingest = self.store.workstream_worktree(self.plan, "ingest")
+
+        self.assertNotEqual(scaffold["path"], ingest["path"])
+        self.assertNotEqual(scaffold["branch"], ingest["branch"])
+
+    def test_workstream_worktree_is_idempotent(self):
+        first = self.store.workstream_worktree(self.plan, "scaffold")
+        second = self.store.workstream_worktree(self.plan, "scaffold")
+
+        self.assertTrue(first["created"])
+        self.assertFalse(second["created"])
+        self.assertEqual(first["path"], second["path"])
+
+    def test_undeclared_workstream_is_rejected(self):
+        with self.assertRaises(grogu_plans.PlanError) as failure:
+            self.store.workstream_worktree(self.plan, "no-such-workstream")
+        self.assertIn("scaffold", str(failure.exception))
+        self.assertIn("ingest", str(failure.exception))
+
+    def test_list_workstream_worktrees_reports_declared_flag(self):
+        self.store.workstream_worktree(self.plan, "scaffold")
+        entries = {entry["name"]: entry for entry in self.store.list_workstream_worktrees(self.plan)}
+
+        self.assertIn("scaffold", entries)
+        self.assertTrue(entries["scaffold"]["declared"])
+
+    def test_list_workstream_worktrees_flags_a_dropped_workstream(self):
+        self.store.workstream_worktree(self.plan, "ingest")
+        self.store.drop_workstream(self.plan, "ingest")
+
+        entries = {entry["name"]: entry for entry in self.store.list_workstream_worktrees(self.plan)}
+
+        self.assertIn("ingest", entries)
+        self.assertFalse(entries["ingest"]["declared"])
+
+    def test_remove_workstream_worktree_works_after_drop(self):
+        result = self.store.workstream_worktree(self.plan, "ingest")
+        self.store.drop_workstream(self.plan, "ingest")
+
+        removed = self.store.remove_workstream_worktree(self.plan, "ingest")
+
+        self.assertEqual(removed["removed"], result["path"])
+        self.assertFalse(Path(result["path"]).exists())
+
+    def test_remove_workstream_worktree_reports_nothing_to_remove(self):
+        removed = self.store.remove_workstream_worktree(self.plan, "scaffold")
+        self.assertEqual(removed["removed"], "")
+        self.assertFalse(removed["branch_deleted"])
+
+    def test_scratch_files_stay_confined_to_their_own_worktree(self):
+        """The exact regression friction #40 describes: an untracked scratch
+        file written while working on one workstream must not appear in
+        another workstream's worktree, or in the shared primary checkout."""
+        scaffold = self.store.workstream_worktree(self.plan, "scaffold")
+        ingest = self.store.workstream_worktree(self.plan, "ingest")
+
+        (Path(ingest["path"]) / ".listing.xml").write_text("scratch\n")
+
+        self.assertFalse((Path(scaffold["path"]) / ".listing.xml").exists())
+        self.assertFalse((self.root / ".listing.xml").exists())
+
+    def test_multi_word_workstream_name_gets_its_own_worktree(self):
+        """`workstream_branch` slugifies a name to build its Git ref, but
+        `workstream_worktree` itself must still accept and honour the raw,
+        unslugified name declared on the plan."""
+        self.store.add_workstream(self.plan, name="api gateway", paths=["src/api/**"])
+
+        result = self.store.workstream_worktree(self.plan, "api gateway")
+
+        self.assertTrue(result["created"])
+        self.assertNotEqual(Path(result["path"]).resolve(), self.root.resolve())
+        self.assertTrue(Path(result["path"]).is_dir())
+
+    def test_list_workstream_worktrees_recovers_the_raw_multi_word_name(self):
+        """Regression: listing used to derive the name back from the
+        slugified branch (`api-gateway`), which never matched the declared
+        `api gateway` workstream and so always reported it as no longer
+        declared, even right after it was created."""
+        self.store.add_workstream(self.plan, name="api gateway", paths=["src/api/**"])
+        self.store.workstream_worktree(self.plan, "api gateway")
+
+        entries = {
+            entry["name"]: entry for entry in self.store.list_workstream_worktrees(self.plan)
+        }
+
+        self.assertIn("api gateway", entries)
+        self.assertNotIn("api-gateway", entries)
+        self.assertTrue(entries["api gateway"]["declared"])
+
+    def test_remove_workstream_worktree_works_for_a_multi_word_name(self):
+        self.store.add_workstream(self.plan, name="api gateway", paths=["src/api/**"])
+        created = self.store.workstream_worktree(self.plan, "api gateway")
+
+        removed = self.store.remove_workstream_worktree(self.plan, "api gateway")
+
+        self.assertEqual(removed["removed"], created["path"])
+        self.assertFalse(Path(created["path"]).exists())
+
+
 class CommissionTests(unittest.TestCase):
     """The architect could open a design stage it could not brief."""
 

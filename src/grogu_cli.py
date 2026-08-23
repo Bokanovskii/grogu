@@ -9,6 +9,7 @@ import datetime as dt
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import sqlite3
@@ -921,11 +922,21 @@ def prune_stale_grogu_worktrees() -> None:
 
     Never blocks or fails a launch: any error prunes nothing and is
     swallowed, since this is a convenience, not a correctness requirement.
+
+    Passes the launching process's own current directory as an
+    `active_paths` guard (friction #46): `ROOT` always resolves to wherever
+    the installed `grogu` launcher's own script lives -- the primary
+    checkout -- regardless of which worktree this process was actually
+    started from, so without this, an ordinary launch from inside a
+    session's own dedicated worktree could prune the very worktree it is
+    running in out from under it.
     """
     if os.environ.get("GROGU_PRUNE_WORKTREES", "1") == "0":
         return
     try:
-        pruned = grogu_worktrees.prune_stale_worktrees(ROOT)
+        pruned = grogu_worktrees.prune_stale_worktrees(
+            ROOT, active_paths=[Path.cwd()]
+        )
     except Exception:  # pragma: no cover - never let cleanup break a launch
         return
     for entry in pruned:
@@ -968,14 +979,17 @@ def worktree_list(_: argparse.Namespace) -> int:
 
 
 def worktree_prune(args: argparse.Namespace) -> int:
+    # Never prune the worktree this very command is running from (friction
+    # #46) -- explicit or not, that one is active by definition.
+    active_paths = [Path.cwd()]
     if args.dry_run:
-        stale = grogu_worktrees.stale_worktrees(ROOT)
+        stale = grogu_worktrees.stale_worktrees(ROOT, active_paths=active_paths)
         for entry in stale:
             print(f"{entry.worktree.path}  ({entry.reason})")
         if not stale:
             print("no stale worktrees")
         return 0
-    pruned = grogu_worktrees.prune_stale_worktrees(ROOT)
+    pruned = grogu_worktrees.prune_stale_worktrees(ROOT, active_paths=active_paths)
     for entry in pruned:
         print(f"removed {entry.worktree.path}  ({entry.reason})")
     if not pruned:
@@ -2207,15 +2221,33 @@ def plan_workstreams(args: argparse.Namespace) -> int:
     plan_id = store.resolve(args.id)
     conflicts = store.workstream_conflicts(plan_id)
     batches = store.parallel_batches(plan_id)
+    # Read-only: this reports whichever dedicated worktrees already exist
+    # (via `plan workstream-worktree`) without ever creating one itself, so a
+    # supervisor or engineer can see at a glance which workstreams still need
+    # `grogu plan workstream-worktree <id> --name <name>` run for them.
+    worktrees = {
+        entry["name"]: entry for entry in store.list_workstream_worktrees(plan_id)
+    }
+
+    def worktree_path(name: str) -> str:
+        existing = worktrees.get(name)
+        if existing:
+            return existing["path"]
+        return str(grogu_worktrees.workstream_worktree_path(store.root, plan_id, name))
+
     if args.json:
         # An orchestrator fans out from this. Returning only the wave names
         # meant the one caller that has to honour --model, --brief and
         # --review had to scrape them out of the pretty output.
+        streams = store.summary(plan_id)["workstreams"]
+        for stream in streams:
+            stream["worktree"] = worktree_path(stream["name"])
+            stream["worktree_ready"] = stream["name"] in worktrees
         print_json(
             {
                 "batches": batches,
                 "conflicts": conflicts,
-                "workstreams": store.summary(plan_id)["workstreams"],
+                "workstreams": streams,
             }
         )
     else:
@@ -2242,12 +2274,80 @@ def plan_workstreams(args: argparse.Namespace) -> int:
                 print(f"    {name}: {'; '.join(bits)}")
                 if stream.get("brief"):
                     print(f"      {stream['brief']}")
+                if name in worktrees:
+                    print(f"      worktree: {worktrees[name]['path']}")
+                else:
+                    print(
+                        f"      worktree: not created yet -- grogu plan "
+                        f"workstream-worktree {plan_id} --name {shlex.quote(name)}"
+                    )
         for conflict in conflicts:
             left, right = conflict["workstreams"]
             print(f"conflict: {left} and {right} both claim {' / '.join(conflict['paths'])}")
         if not conflicts and len(batches) and max(len(batch) for batch in batches) > 1:
-            print("file sets are disjoint; these waves may run in parallel worktrees")
+            print(
+                "file sets are disjoint; these waves may run in parallel -- "
+                "`grogu plan workstream-worktree <id> --name <name>` gives each "
+                "one its own worktree"
+            )
     return 3 if (conflicts and args.check) else 0
+
+
+def plan_workstream_worktree(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id)
+    if getattr(args, "list", False):
+        entries = store.list_workstream_worktrees(plan_id)
+        if args.json:
+            print_json({"plan": plan_id, "worktrees": entries})
+            return 0
+        if not entries:
+            print(f"no workstream worktrees created yet for {plan_id}")
+            return 0
+        for entry in entries:
+            flag = "" if entry["declared"] else "  (workstream no longer declared)"
+            print(f"{entry['name']}: {entry['path']}  [{entry['branch']}]{flag}")
+        return 0
+    if not args.name:
+        print(
+            "grogu: --name is required unless you pass --list",
+            file=sys.stderr,
+        )
+        return 2
+    if getattr(args, "remove", False):
+        result = store.remove_workstream_worktree(
+            plan_id,
+            args.name,
+            force=args.force,
+            delete_branch=args.delete_branch,
+            base=args.base,
+        )
+        if args.json:
+            print_json(result)
+            return 0
+        if not result["removed"]:
+            print(f"no worktree to remove for workstream {args.name!r}")
+            return 0
+        detail = (
+            " and deleted its branch"
+            if result["branch_deleted"]
+            else f" (branch kept: {result['branch_kept_reason']})"
+            if result["branch_kept_reason"]
+            else ""
+        )
+        print(f"removed {result['removed']}{detail}")
+        return 0
+    result = store.workstream_worktree(plan_id, args.name, base=args.base)
+    if args.json:
+        print_json(result)
+        return 0
+    state = "created" if result["created"] else "already there"
+    print(f"workstream {args.name}: worktree {state} at {result['path']} (branch {result['branch']})")
+    # The whole point is that this is directly usable: the caller -- an
+    # engineer or the supervisor spawning one -- runs this line rather than
+    # `cd`-ing into the shared checkout the way friction #40 described.
+    print(f"cd {result['path']}")
+    return 0
 
 
 def plan_review(args: argparse.Namespace) -> int:
@@ -4209,6 +4309,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_workstreams_parser.add_argument("--json", action="store_true")
     plan_workstreams_parser.set_defaults(handler=plan_workstreams)
+
+    plan_workstream_worktree_parser = plan_subparsers.add_parser(
+        "workstream-worktree",
+        help="get, create, list or remove a workstream's dedicated git worktree",
+        parents=[plan_common],
+    )
+    _plan_id_argument(plan_workstream_worktree_parser)
+    plan_workstream_worktree_parser.add_argument(
+        "--name", help="the declared workstream (required unless --list)"
+    )
+    plan_workstream_worktree_parser.add_argument(
+        "--base",
+        help="branch or commit the worktree forks from when created (default: "
+        "whatever branch this checkout is currently on)",
+    )
+    plan_workstream_worktree_parser.add_argument(
+        "--list",
+        action="store_true",
+        help="report every workstream worktree already created for this plan",
+    )
+    plan_workstream_worktree_parser.add_argument(
+        "--remove",
+        action="store_true",
+        help="remove this workstream's dedicated worktree",
+    )
+    plan_workstream_worktree_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="remove even if the worktree has uncommitted changes",
+    )
+    plan_workstream_worktree_parser.add_argument(
+        "--delete-branch",
+        action="store_true",
+        help="with --remove, also delete the branch, only if it looks merged or closed",
+    )
+    plan_workstream_worktree_parser.add_argument("--json", action="store_true")
+    plan_workstream_worktree_parser.set_defaults(handler=plan_workstream_worktree)
 
     plan_review_parser = plan_subparsers.add_parser(
         "review", help="record a review the architect asked for"

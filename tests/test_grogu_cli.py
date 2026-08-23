@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import sqlite3
@@ -3025,3 +3026,290 @@ class SupervisorRoleTests(ArchitectFrictionTests):
         audit = self.run_cli("plan", "steering", "--plan", plan, "--audit", "1")
         self.assertIn("engineer@live", audit.stdout)
         self.assertIn("last seen", audit.stdout)
+
+
+class WorkstreamWorktreeCliTests(unittest.TestCase):
+    """Harness friction #40, end to end: `grogu plan workstream-worktree`
+    is the concrete replacement for "fan out into worktrees by convention",
+    and its output has to be directly usable, not just informative."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name) / "repo"
+        self.repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.repo, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"], cwd=self.repo, check=True
+        )
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.repo, check=True)
+        (self.repo / "README.md").write_text("hello\n")
+        subprocess.run(["git", "add", "README.md"], cwd=self.repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=self.repo, check=True)
+
+    def run_cli(self, *arguments, role=""):
+        environment = os.environ.copy()
+        environment["GROGU_HOME"] = str(self.repo / "home")
+        if role:
+            environment["GROGU_ROLE"] = role
+        else:
+            environment.pop("GROGU_ROLE", None)
+        return subprocess.run(
+            [sys.executable, str(CLI), *arguments, "--repo", str(self.repo)],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def _plan_with_workstreams(self):
+        plan = self.run_cli("plan", "new", "air quality").stdout.strip()
+        self.run_cli(
+            "plan", "workstream", plan, "--name", "scaffold", "--path", "src/scaffold/**",
+            role="architect",
+        )
+        self.run_cli(
+            "plan", "workstream", plan, "--name", "ingest", "--path", "src/ingest/**",
+            role="architect",
+        )
+        return plan
+
+    def test_creating_a_worktree_prints_a_directly_usable_cd_line(self):
+        plan = self._plan_with_workstreams()
+        result = self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "scaffold", role="engineer"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        last_line = result.stdout.strip().splitlines()[-1]
+        self.assertTrue(last_line.startswith("cd "))
+        path = Path(last_line[len("cd "):])
+        self.assertTrue(path.is_dir())
+        self.assertNotEqual(path.resolve(), self.repo.resolve())
+
+    def test_json_output_reports_path_branch_and_created(self):
+        plan = self._plan_with_workstreams()
+        result = self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "scaffold", "--json",
+            role="engineer",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["name"], "scaffold")
+        self.assertTrue(payload["created"])
+        self.assertIn("workstream/", payload["branch"])
+        self.assertTrue(Path(payload["path"]).is_dir())
+
+    def test_two_workstreams_never_share_a_checkout(self):
+        plan = self._plan_with_workstreams()
+        scaffold = json.loads(
+            self.run_cli(
+                "plan", "workstream-worktree", plan, "--name", "scaffold", "--json",
+                role="engineer",
+            ).stdout
+        )
+        ingest = json.loads(
+            self.run_cli(
+                "plan", "workstream-worktree", plan, "--name", "ingest", "--json",
+                role="engineer",
+            ).stdout
+        )
+        self.assertNotEqual(scaffold["path"], ingest["path"])
+
+        # The exact friction #40 scenario: a scratch file dropped by one
+        # workstream must not appear in the other, or in the shared repo.
+        Path(scaffold["path"], ".hourly_test.dat").write_text("scratch\n")
+        self.assertFalse((Path(ingest["path"]) / ".hourly_test.dat").exists())
+        self.assertFalse((self.repo / ".hourly_test.dat").exists())
+
+    def test_repeat_call_reuses_the_same_worktree(self):
+        plan = self._plan_with_workstreams()
+        first = json.loads(
+            self.run_cli(
+                "plan", "workstream-worktree", plan, "--name", "scaffold", "--json",
+                role="engineer",
+            ).stdout
+        )
+        second = json.loads(
+            self.run_cli(
+                "plan", "workstream-worktree", plan, "--name", "scaffold", "--json",
+                role="engineer",
+            ).stdout
+        )
+        self.assertTrue(first["created"])
+        self.assertFalse(second["created"])
+        self.assertEqual(first["path"], second["path"])
+
+    def test_undeclared_workstream_is_a_plan_error(self):
+        plan = self.run_cli("plan", "new", "air quality").stdout.strip()
+        result = self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "no-such-workstream",
+            role="engineer",
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("no workstream", result.stderr)
+
+    def test_name_is_required_unless_listing(self):
+        plan = self._plan_with_workstreams()
+        result = self.run_cli("plan", "workstream-worktree", plan, role="engineer")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--name", result.stderr)
+        self.assertIn("--list", result.stderr)
+
+    def test_list_reports_every_worktree_created_so_far(self):
+        plan = self._plan_with_workstreams()
+        self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "scaffold", role="engineer"
+        )
+        result = self.run_cli("plan", "workstream-worktree", plan, "--list", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        names = {entry["name"] for entry in payload["worktrees"]}
+        self.assertEqual(names, {"scaffold"})
+
+    def test_remove_cleans_up_the_worktree(self):
+        plan = self._plan_with_workstreams()
+        created = json.loads(
+            self.run_cli(
+                "plan", "workstream-worktree", plan, "--name", "scaffold", "--json",
+                role="engineer",
+            ).stdout
+        )
+        result = self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "scaffold", "--remove", "--json",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["removed"], created["path"])
+        self.assertFalse(Path(created["path"]).exists())
+
+    def test_remove_is_idempotent(self):
+        plan = self._plan_with_workstreams()
+        self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "scaffold", role="engineer"
+        )
+        self.run_cli("plan", "workstream-worktree", plan, "--name", "scaffold", "--remove")
+        second = self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "scaffold", "--remove",
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn("no worktree to remove", second.stdout)
+
+    def test_plan_workstreams_hints_at_the_command_before_a_worktree_exists(self):
+        plan = self._plan_with_workstreams()
+        result = self.run_cli("plan", "workstreams", plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("not created yet -- grogu plan workstream-worktree", result.stdout)
+
+    def test_plan_workstreams_shows_the_path_once_created(self):
+        plan = self._plan_with_workstreams()
+        created = json.loads(
+            self.run_cli(
+                "plan", "workstream-worktree", plan, "--name", "scaffold", "--json",
+                role="engineer",
+            ).stdout
+        )
+        result = self.run_cli("plan", "workstreams", plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(created["path"], result.stdout)
+
+    def test_plan_workstreams_json_includes_worktree_fields(self):
+        plan = self._plan_with_workstreams()
+        self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "scaffold", role="engineer"
+        )
+        payload = json.loads(self.run_cli("plan", "workstreams", plan, "--json").stdout)
+        by_name = {stream["name"]: stream for stream in payload["workstreams"]}
+        self.assertTrue(by_name["scaffold"]["worktree_ready"])
+        self.assertFalse(by_name["ingest"]["worktree_ready"])
+        self.assertTrue(by_name["scaffold"]["worktree"])
+
+    def _plan_with_a_multi_word_workstream(self):
+        plan = self.run_cli("plan", "new", "air quality").stdout.strip()
+        self.run_cli(
+            "plan", "workstream", plan, "--name", "api gateway", "--path", "src/api/**",
+            role="architect",
+        )
+        return plan
+
+    def test_multi_word_workstream_name_can_be_created_and_is_listed_by_its_raw_name(self):
+        """Regression: a multi-word name used to round-trip through its
+        slugified branch (`api-gateway`), so a freshly created worktree for
+        it was reported as belonging to an undeclared workstream."""
+        plan = self._plan_with_a_multi_word_workstream()
+        created = json.loads(
+            self.run_cli(
+                "plan", "workstream-worktree", plan, "--name", "api gateway", "--json",
+                role="engineer",
+            ).stdout
+        )
+        self.assertTrue(created["created"])
+        self.assertEqual(created["name"], "api gateway")
+
+        payload = json.loads(
+            self.run_cli("plan", "workstream-worktree", plan, "--list", "--json").stdout
+        )
+        by_name = {entry["name"]: entry for entry in payload["worktrees"]}
+        self.assertIn("api gateway", by_name)
+        self.assertTrue(by_name["api gateway"]["declared"])
+
+    def test_multi_word_workstream_name_list_human_output_is_not_flagged_undeclared(self):
+        plan = self._plan_with_a_multi_word_workstream()
+        self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "api gateway", role="engineer"
+        )
+        result = self.run_cli("plan", "workstream-worktree", plan, "--list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("api gateway:", result.stdout)
+        self.assertNotIn("no longer declared", result.stdout)
+
+    def test_plan_workstreams_worktree_ready_is_true_for_a_multi_word_name(self):
+        plan = self._plan_with_a_multi_word_workstream()
+        self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "api gateway", role="engineer"
+        )
+        payload = json.loads(self.run_cli("plan", "workstreams", plan, "--json").stdout)
+        by_name = {stream["name"]: stream for stream in payload["workstreams"]}
+        self.assertTrue(by_name["api gateway"]["worktree_ready"])
+        self.assertTrue(by_name["api gateway"]["worktree"])
+
+    def test_plan_workstreams_human_output_shows_the_path_for_a_multi_word_name(self):
+        plan = self._plan_with_a_multi_word_workstream()
+        created = json.loads(
+            self.run_cli(
+                "plan", "workstream-worktree", plan, "--name", "api gateway", "--json",
+                role="engineer",
+            ).stdout
+        )
+        result = self.run_cli("plan", "workstreams", plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(created["path"], result.stdout)
+        self.assertNotIn("not created yet", result.stdout)
+
+    def test_plan_workstreams_human_hint_safely_quotes_a_multi_word_name(self):
+        """The remediation line is meant to be copy-pasted into a shell; an
+        unquoted multi-word name would be split into extra positional
+        arguments there instead of being read as a single --name value."""
+        plan = self._plan_with_a_multi_word_workstream()
+        result = self.run_cli("plan", "workstreams", plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--name 'api gateway'", result.stdout)
+        hint = next(
+            line for line in result.stdout.splitlines() if "workstream-worktree" in line
+        )
+        self.assertEqual(shlex.split(hint)[-2:], ["--name", "api gateway"])
+
+    def test_remove_cleans_up_the_worktree_for_a_multi_word_name(self):
+        plan = self._plan_with_a_multi_word_workstream()
+        created = json.loads(
+            self.run_cli(
+                "plan", "workstream-worktree", plan, "--name", "api gateway", "--json",
+                role="engineer",
+            ).stdout
+        )
+        result = self.run_cli(
+            "plan", "workstream-worktree", plan, "--name", "api gateway", "--remove", "--json",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["removed"], created["path"])
+        self.assertFalse(Path(created["path"]).exists())

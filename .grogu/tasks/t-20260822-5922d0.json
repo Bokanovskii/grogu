@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "id": "t-20260822-5922d0",
+  "title": "Isolate parallel workstreams in dedicated git worktrees (friction #40)",
+  "body": "Harness friction #40: two declared-parallel workstreams ran in one shared checkout; disjoint path globs mostly held, but untracked scratch files still crossed ownership. Give each workstream a deterministic, dedicated git worktree (create/list/cleanup, collision-safe) via grogu_worktrees, wire into PlanStore and the CLI (plan workstream-worktree), make engineer/supervisor output directly cd-able, and update docs/skills/agent instructions. Branch: fix/workstream-isolation.",
+  "status": "review",
+  "priority": "normal",
+  "labels": [
+    "friction"
+  ],
+  "issue": null,
+  "assignee": "charlie",
+  "created_at": "2026-08-22T22:05:39+00:00",
+  "created_by": "charlie",
+  "updated_at": "2026-08-23T09:39:29+00:00",
+  "revision": 8,
+  "log": [
+    {
+      "at": "2026-08-22T22:05:39+00:00",
+      "by": "charlie",
+      "event": "created",
+      "text": "Isolate parallel workstreams in dedicated git worktrees (friction #40)"
+    },
+    {
+      "at": "2026-08-22T22:05:44+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-23T01:52:29+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Core grogu_worktrees/grogu_plans/grogu_cli plumbing done, tests added (worktrees/plans/cli, all passing), docs+skill+agent instructions updated. Next: run full suite, resolve friction #40, commit/push/PR."
+    },
+    {
+      "at": "2026-08-23T04:11:14+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "PR #44: https://github.com/Bokanovskii/grogu/pull/44 -- grogu plan workstream-worktree (get/create/list/remove), wired into PlanStore + CLI + docs/skill/agent instructions. Friction #40 resolved. Full suite 588 tests, 0 failures. Not merged, awaiting review."
+    },
+    {
+      "at": "2026-08-23T09:01:06+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-23T09:01:12+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "Friction #46 addendum: startup pruning was deleting this task's own dedicated worktree while it had zero commits and no upstream. Fixed in PR #44 commit bb41f09 -- _is_merged_into now requires _branch_ever_advanced (reflog-based) before treating a branch as merged, and stale_worktrees/prune_stale_worktrees/worktree_prune gained an active_paths guard so the calling process's own cwd is never pruned. 12 new regression tests (tests/test_grogu_worktrees.py); full suite 630 tests, 0 failures; 3-OS CI green; guard staged/scan clean. Friction #46 resolved. Not merged, awaiting review."
+    },
+    {
+      "at": "2026-08-23T09:34:19+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-23T09:39:29+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "Review follow-up: list_workstream_worktrees derived a workstream's name from its slugified branch, which is lossy for multi-word names (e.g. 'api gateway' -> 'api-gateway'), so a declared multi-word workstream with a live worktree was reported as no longer declared / not ready, and the printed remediation command embedded the name unquoted. Fixed in PR #44 commit 485f7c8 -- list_workstream_worktrees now matches each worktree's branch against workstream_branch(plan_id, name) for every currently declared name and recovers the exact raw name (lossy fallback only for undeclared/dropped worktrees); plan_workstreams now shlex.quote()s the name in its remediation hint. 9 new regression tests (3 in test_grogu_plans.py, 6 end-to-end in test_grogu_cli.py) for an 'api gateway' workstream, all confirmed to fail before the fix and pass after. Full suite 664 tests, 0 failures, 6 skipped; guard staged/scan clean. Not merged, awaiting re-review."
+    }
+  ]
+}
