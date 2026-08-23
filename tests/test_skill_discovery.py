@@ -23,6 +23,7 @@ class SkillDiscoveryTests(unittest.TestCase):
         self.assertEqual(skills, ROOT / ".github" / "skills")
         self.assertTrue((skills / "grogu-pipeline" / "SKILL.md").is_file())
 
+    @unittest.skipIf(os.name == "nt", "setup.sh requires a POSIX shell")
     def test_installed_launcher_keeps_the_skill_plugin_with_the_checkout(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -72,9 +73,7 @@ class SkillDiscoveryTests(unittest.TestCase):
             capture = base / "capture.json"
             fake_bin.mkdir()
             outside.mkdir()
-            fake_copilot = fake_bin / "copilot"
-            fake_copilot.write_text(
-                """#!/usr/bin/env python3
+            capture_program = """#!/usr/bin/env python3
 import json
 import os
 import sys
@@ -89,10 +88,20 @@ with open(os.environ["CAPTURE"], "w", encoding="utf8") as handle:
         },
         handle,
     )
-""",
-                encoding="utf8",
-            )
-            fake_copilot.chmod(0o755)
+"""
+            if os.name == "nt":
+                capture_script = fake_bin / "capture_copilot.py"
+                capture_script.write_text(capture_program, encoding="utf8")
+                fake_copilot = fake_bin / "copilot.cmd"
+                fake_copilot.write_text(
+                    f'@echo off\r\n"{sys.executable}" '
+                    '"%~dp0capture_copilot.py" %*\r\n',
+                    encoding="utf8",
+                )
+            else:
+                fake_copilot = fake_bin / "copilot"
+                fake_copilot.write_text(capture_program, encoding="utf8")
+                fake_copilot.chmod(0o755)
             copilot_home = base / "copilot-home"
             user_instructions = base / "user-instructions"
             user_plugin = base / "user-plugin"

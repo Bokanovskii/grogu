@@ -13,8 +13,8 @@
   "assignee": "charlie",
   "created_at": "2026-08-22T21:48:16+00:00",
   "created_by": "charlie",
-  "updated_at": "2026-08-23T04:45:07+00:00",
-  "revision": 10,
+  "updated_at": "2026-08-23T05:29:26+00:00",
+  "revision": 15,
   "log": [
     {
       "at": "2026-08-22T21:48:16+00:00",
@@ -73,6 +73,35 @@
       "by": "charlie",
       "event": "release",
       "text": "PR #42 refreshed with current main; ready for CI/review."
+    },
+    {
+      "at": "2026-08-23T04:55:26+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-23T04:55:26+00:00",
+      "by": "charlie",
+      "event": "status",
+      "text": "active"
+    },
+    {
+      "at": "2026-08-23T04:55:26+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Windows CI exposed two pre-Windows assumptions in the skill-discovery tests: direct setup.sh execution and an extensionless fake Copilot. Updating only the test harness to respect the merged platform contract."
+    },
+    {
+      "at": "2026-08-23T05:29:25+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Windows CI failure was limited to skill-discovery test harness assumptions. setup.sh coverage now skips Windows by contract, and the fake Copilot uses a .cmd wrapper there. Local 552-test suite and live E2E pass."
+    },
+    {
+      "at": "2026-08-23T05:29:26+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "PR #42 updated after Windows CI integration fix; awaiting rerun."
     }
   ]
 }
