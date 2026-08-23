@@ -274,6 +274,15 @@ class GroguCliTests(unittest.TestCase):
             with self.assertRaises(grogu_imessage.ConfirmationRequiredError):
                 adapter.send(draft.recipient, draft.body)
 
+    def test_imessage_draft_records_submission_without_claiming_delivery(self):
+        with tempfile.TemporaryDirectory() as home:
+            store = grogu_imessage.DraftStore(Path(home))
+            draft = store.create(
+                grogu_imessage.Recipient("+15551234567"), "Hello"
+            )
+            submitted = store.mark_submitted(draft.id)
+            self.assertEqual(submitted.status, "submitted")
+
     def test_confirmed_imessage_send_still_requires_mac_os(self):
         adapter = grogu_imessage.MacOSIMessageAdapter()
         with mock.patch.object(adapter, "supported", return_value=False):
@@ -283,6 +292,39 @@ class GroguCliTests(unittest.TestCase):
                     "Hello",
                     confirmed=True,
                 )
+
+    def test_confirmed_imessage_send_rejects_an_unresolved_name(self):
+        runner = mock.Mock()
+        adapter = grogu_imessage.MacOSIMessageAdapter(runner=runner)
+        with mock.patch.object(adapter, "supported", return_value=True):
+            with self.assertRaises(grogu_imessage.RecipientResolutionError):
+                adapter.send(
+                    grogu_imessage.Recipient("Sam Rivera"),
+                    "Hello",
+                    confirmed=True,
+                )
+        runner.assert_not_called()
+
+    def test_confirmed_imessage_send_reports_submission_not_delivery(self):
+        runner = mock.Mock()
+        runner.return_value.returncode = 0
+        runner.return_value.stderr = ""
+        runner.return_value.stdout = ""
+        adapter = grogu_imessage.MacOSIMessageAdapter(runner=runner)
+        with mock.patch.object(adapter, "supported", return_value=True):
+            result = adapter.send(
+                grogu_imessage.Recipient("+15551234567"),
+                "Hello",
+                confirmed=True,
+            )
+        self.assertEqual(
+            result,
+            {
+                "submitted": True,
+                "delivery_confirmed": False,
+                "recipient": "+15551234567",
+            },
+        )
 
     def test_gmail_is_disabled_by_default_and_drafts_are_local(self):
         adapter = grogu_gmail.GmailAdapter(access_token="token", enabled=False)
@@ -1338,6 +1380,113 @@ class ImessageSeaglassIntegrationTests(unittest.TestCase):
         results = adapter.search("dinner plans")
         self.assertEqual(len(results), 3)
         self.assertIn("dinner plans", results[0]["text"])
+
+    def recipient_database(self, handles):
+        chat_db = Path(self.directory.name) / f"recipient-{len(handles)}.db"
+        connection = sqlite3.connect(chat_db)
+        connection.executescript(
+            """
+            CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, date INTEGER, handle_id INTEGER);
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
+            """
+        )
+        for index, handle in enumerate(handles, start=1):
+            connection.execute(
+                "INSERT INTO handle (ROWID, id) VALUES (?, ?)", (index, handle)
+            )
+            connection.execute(
+                "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (42, ?)",
+                (index,),
+            )
+        connection.commit()
+        connection.close()
+        return chat_db
+
+    def test_contact_name_resolves_to_direct_chat_handle(self):
+        adapter = grogu_imessage.MacOSIMessageAdapter(
+            database_path=self.recipient_database(["+15551234567"])
+        )
+        original = grogu_imessage._seaglass_call
+        grogu_imessage._seaglass_call = lambda *args, **kwargs: {
+            "sessions": [
+                {
+                    "chat_id": 42,
+                    "messages": [
+                        {
+                            "sender": "Sam Rivera",
+                            "is_from_me": False,
+                        }
+                    ],
+                }
+            ]
+        }
+        try:
+            recipient = adapter.resolve_recipient("Sam")
+        finally:
+            grogu_imessage._seaglass_call = original
+        self.assertEqual(recipient.identifier, "+15551234567")
+        self.assertEqual(recipient.display_name, "Sam Rivera")
+
+    def test_concrete_recipient_does_not_require_seaglass_or_database(self):
+        adapter = grogu_imessage.MacOSIMessageAdapter(
+            database_path=Path(self.directory.name) / "missing.db"
+        )
+        self.assertEqual(
+            adapter.resolve_recipient("+15551234567", "Sam"),
+            grogu_imessage.Recipient("+15551234567", "Sam"),
+        )
+
+    def test_contact_name_requires_seaglass(self):
+        adapter = grogu_imessage.MacOSIMessageAdapter(
+            database_path=Path(self.directory.name) / "missing.db"
+        )
+        with mock.patch.object(adapter, "supported", return_value=True):
+            with mock.patch.object(
+                grogu_imessage, "seaglass_available", return_value=False
+            ):
+                with self.assertRaisesRegex(
+                    grogu_imessage.RecipientResolutionError,
+                    "configured seaglass server",
+                ):
+                    adapter.resolve_recipient("Sam")
+
+    def test_contact_name_rejects_ambiguous_conversations(self):
+        adapter = grogu_imessage.MacOSIMessageAdapter(
+            database_path=self.recipient_database(["+15551234567"])
+        )
+        with self.assertRaisesRegex(
+            grogu_imessage.RecipientResolutionError, "ambiguous"
+        ):
+            adapter.resolve_recipient("Sam")
+
+    def test_contact_name_rejects_group_conversation(self):
+        adapter = grogu_imessage.MacOSIMessageAdapter(
+            database_path=self.recipient_database(
+                ["+15551234567", "+15559999999"]
+            )
+        )
+        original = grogu_imessage._seaglass_call
+        grogu_imessage._seaglass_call = lambda *args, **kwargs: {
+            "sessions": [
+                {
+                    "chat_id": 42,
+                    "messages": [
+                        {
+                            "sender": "Sam Rivera",
+                            "is_from_me": False,
+                        }
+                    ],
+                }
+            ]
+        }
+        try:
+            with self.assertRaisesRegex(
+                grogu_imessage.RecipientResolutionError, "group conversation"
+            ):
+                adapter.resolve_recipient("Sam")
+        finally:
+            grogu_imessage._seaglass_call = original
 
     def test_adapter_search_can_force_sql_like_path(self):
         # database_path deliberately points nowhere, so the SQL LIKE path

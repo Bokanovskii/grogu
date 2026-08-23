@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import platform
+import re
 import sqlite3
 import subprocess
 import sys
@@ -390,6 +391,10 @@ class ConfirmationRequiredError(IMessageError):
     """Raised when an outbound message lacks explicit confirmation."""
 
 
+class RecipientResolutionError(IMessageError):
+    """Raised when a display name cannot resolve to one direct chat."""
+
+
 def now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
 
@@ -466,11 +471,11 @@ class DraftStore:
             )
         return None
 
-    def mark_sent(self, draft_id: str) -> MessageDraft:
+    def mark_submitted(self, draft_id: str) -> MessageDraft:
         entries = self._read()
         for value in entries:
             if value.get("id") == draft_id:
-                value["status"] = "sent"
+                value["status"] = "submitted"
                 self._write(entries)
                 result = self.get(draft_id)
                 if result is not None:
@@ -602,6 +607,81 @@ class MacOSIMessageAdapter:
             for row in rows
         ]
 
+    def resolve_recipient(
+        self, requested: str, display_name: str = ""
+    ) -> Recipient:
+        """Resolve a display name to the handle of one direct conversation.
+
+        Concrete phone numbers and email-style Apple IDs pass through.
+        Names are resolved by asking seaglass for that person's recent
+        conversation, then mapping the returned chat id to the private
+        Messages database. This keeps contact matching in seaglass while
+        ensuring drafts persist a real sendable identifier.
+        """
+        requested = requested.strip()
+        if not requested:
+            raise ValueError("recipient identifier is required")
+        if self._looks_like_handle(requested):
+            return Recipient(requested, display_name.strip())
+
+        self._require_supported()
+        if not seaglass_available():
+            raise RecipientResolutionError(
+                "recipient names require a configured seaglass server; "
+                "otherwise pass an iMessage phone number or Apple ID"
+            )
+        try:
+            payload = _seaglass_call(
+                f"latest messages from {requested}", sessions=SEAGLASS_SESSIONS
+            )
+        except Exception as error:
+            raise RecipientResolutionError(
+                f"seaglass could not resolve recipient {requested!r}: {error}"
+            ) from error
+        if not isinstance(payload, dict):
+            raise RecipientResolutionError(
+                f"seaglass could not resolve recipient {requested!r}"
+            )
+
+        matches = {}
+        for session in payload.get("sessions", []):
+            chat_id = session.get("chat_id")
+            if not isinstance(chat_id, int):
+                continue
+            names = {
+                message.get("sender", "").strip()
+                for message in session.get("messages", [])
+                if not message.get("is_from_me")
+                and isinstance(message.get("sender"), str)
+                and message.get("sender", "").strip()
+            }
+            if names:
+                matches.setdefault(chat_id, set()).update(names)
+
+        if not matches:
+            raise RecipientResolutionError(
+                f"no iMessage conversation resolved for {requested!r}"
+            )
+        if len(matches) != 1:
+            names = sorted({name for values in matches.values() for name in values})
+            detail = f": {', '.join(names)}" if names else ""
+            raise RecipientResolutionError(
+                f"recipient {requested!r} is ambiguous{detail}"
+            )
+
+        chat_id, names = next(iter(matches.items()))
+        handles = self._chat_handles(chat_id)
+        if len(handles) != 1:
+            if handles:
+                raise RecipientResolutionError(
+                    f"recipient {requested!r} resolved to a group conversation"
+                )
+            raise RecipientResolutionError(
+                f"recipient {requested!r} has no sendable iMessage handle"
+            )
+        resolved_name = display_name.strip() or sorted(names)[0]
+        return Recipient(handles[0], resolved_name)
+
     def send(self, recipient: Recipient, body: str, confirmed: bool = False) -> dict:
         if not confirmed:
             raise ConfirmationRequiredError(
@@ -610,6 +690,11 @@ class MacOSIMessageAdapter:
         self._require_supported()
         if not recipient.identifier.strip():
             raise ValueError("recipient identifier is required")
+        if not self._looks_like_handle(recipient.identifier):
+            raise RecipientResolutionError(
+                "draft recipient is not a resolved iMessage phone number or Apple ID; "
+                "create a replacement draft"
+            )
         if not body.strip():
             raise ValueError("message body is required")
         script = (
@@ -628,7 +713,25 @@ class MacOSIMessageAdapter:
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "").strip()
             raise IMessageError("Messages could not send the message" + (f": {detail}" if detail else ""))
-        return {"sent": True, "recipient": recipient.identifier}
+        return {
+            "submitted": True,
+            "delivery_confirmed": False,
+            "recipient": recipient.identifier,
+        }
+
+    def _chat_handles(self, chat_id: int) -> List[str]:
+        with self._connect() as database:
+            rows = database.execute(
+                """
+                SELECT DISTINCT handle.id
+                FROM chat_handle_join
+                JOIN handle ON handle.ROWID = chat_handle_join.handle_id
+                WHERE chat_handle_join.chat_id = ?
+                ORDER BY handle.id
+                """,
+                (chat_id,),
+            ).fetchall()
+        return [row["id"] for row in rows if row["id"]]
 
     def _connect(self) -> sqlite3.Connection:
         try:
@@ -652,3 +755,11 @@ class MacOSIMessageAdapter:
     @staticmethod
     def _escape(value: str) -> str:
         return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
+    def _looks_like_handle(value: str) -> bool:
+        value = value.strip()
+        if "@" in value and not any(character.isspace() for character in value):
+            return True
+        digits = re.sub(r"\D", "", value)
+        return len(digits) >= 7 and re.fullmatch(r"[+\d().\-\s]+", value) is not None

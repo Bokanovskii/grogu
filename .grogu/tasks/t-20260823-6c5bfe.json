@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "id": "t-20260823-6c5bfe",
+  "title": "Resolve iMessage contact names safely",
+  "body": "Resolve outbound recipient names through Seaglass/message history to a concrete Messages handle before drafting; reject unresolved or ambiguous names and avoid false-success sends.",
+  "status": "review",
+  "priority": "normal",
+  "labels": [],
+  "issue": null,
+  "assignee": "charlie",
+  "created_at": "2026-08-23T22:21:16+00:00",
+  "created_by": "charlie",
+  "updated_at": "2026-08-23T22:25:54+00:00",
+  "revision": 6,
+  "log": [
+    {
+      "at": "2026-08-23T22:21:16+00:00",
+      "by": "charlie",
+      "event": "created",
+      "text": "Resolve iMessage contact names safely"
+    },
+    {
+      "at": "2026-08-23T22:21:45+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-23T22:21:57+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "Moving implementation into the required dedicated worktree"
+    },
+    {
+      "at": "2026-08-23T22:22:18+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-23T22:23:29+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Implemented Seaglass chat-id recipient resolution, concrete-handle draft storage, ambiguous/group rejection, and asynchronous submission semantics."
+    },
+    {
+      "at": "2026-08-23T22:25:54+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "Resolved contact names through Seaglass chat identity to concrete direct-chat handles; ambiguous, group, and unresolved recipients fail before drafting. Messages submissions no longer claim confirmed delivery. Live resolution succeeded and 68 iMessage tests pass."
+    }
+  ]
+}

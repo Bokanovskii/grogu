@@ -782,8 +782,11 @@ def imessage_search(args: argparse.Namespace) -> int:
 
 
 def imessage_draft(args: argparse.Namespace) -> int:
+    recipient = imessage_adapter(args).resolve_recipient(
+        args.recipient, args.display_name
+    )
     draft = grogu_imessage.DraftStore(GROGU_HOME).create(
-        grogu_imessage.Recipient(args.recipient, args.display_name),
+        recipient,
         args.message,
     )
     print_json(dataclasses.asdict(draft))
@@ -805,7 +808,7 @@ def imessage_send(args: argparse.Namespace) -> int:
     result = imessage_adapter(args).send(
         draft.recipient, draft.body, confirmed=args.confirm
     )
-    store.mark_sent(draft.id)
+    store.mark_submitted(draft.id)
     print_json(result)
     return 0
 
