@@ -36,14 +36,18 @@ is no need to rewrite them into keyword form.
 For every outbound message, use this procedure and no other send path:
 
 1. Run `grogu imessage draft --recipient <recipient> --message <body>` and
-   retain the returned draft id. Drafting is local and non-sending.
+   retain the returned draft id. Drafting is local and non-sending. A contact
+   name is resolved through seaglass to the concrete handle of one direct
+   Messages conversation; unresolved, ambiguous, and group recipients fail
+   before a draft is created.
 2. Display the exact resolved recipient and the complete final body from that
    draft. Never infer a recipient from conversation context or search output.
 3. Wait for an unambiguous user confirmation of that exact recipient/body
    pair. Approval of a topic/tone, intent, or general idea is not approval of
    the final body.
 4. Only then run `grogu imessage send <draft-id> --confirm`. This send command
-   is the sole external side effect.
+   is the sole external side effect. Success means Messages accepted the
+   submission; delivery remains asynchronous and is not confirmed by Grogu.
 
 Never send directly from search output. If either the recipient or body changes
 after review, discard the old approval, create and display a replacement

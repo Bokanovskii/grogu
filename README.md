@@ -156,6 +156,13 @@ itself fails for any reason. Pass `--no-seaglass` to force the substring scan
 even when seaglass is configured. `grogu imessage status` reports whether
 seaglass is available via a `seaglass` boolean field.
 
+For outbound drafts, `--recipient` may be a phone number, Apple ID, or contact
+name. Contact names are resolved through seaglass to one direct Messages
+conversation and the draft stores its concrete handle; ambiguous names, group
+chats, and unresolved names are rejected before confirmation. A successful
+`send` means Messages accepted the submission, not that Apple has confirmed
+delivery.
+
 `stim` is a reusable skill layered on the existing `grogu imessage` commands;
 it does not add a `grogu stim` subcommand. Its finite workflow is: explicitly
 opt in to selected local context and an exact model/provider, derive a local
