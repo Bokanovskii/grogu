@@ -871,7 +871,7 @@ class RepositoryMessagingSkillContractTests(unittest.TestCase):
         text = " ".join(self.skill_text("imessage").split())
         ordered_steps = [
             "grogu imessage draft --recipient <recipient> --message <body>",
-            "Display the exact resolved recipient and the complete final body",
+            "Display the exact resolved recipient, complete final body, and every ordered attachment",
             "Wait for an unambiguous user confirmation",
             "grogu imessage send <draft-id> --confirm",
         ]
@@ -881,9 +881,13 @@ class RepositoryMessagingSkillContractTests(unittest.TestCase):
         self.assertIn("sole external side effect", text)
         self.assertIn("Never infer a recipient", text)
         self.assertIn(
-            "Approval of a topic/tone, intent, or general idea is not approval",
+            "Approval of a Grogu software plan, topic, tone, intent, or partial message is not confirmation",
             text,
         )
+        self.assertIn("snapshots and hashes local files only", text)
+        self.assertIn("private Messages-accessible staging", text)
+        self.assertIn("Staged files are retained", text)
+        self.assertIn("attachment set, order, path, filename, size, digest", text)
         self.assertIn("create and display a replacement", text)
         self.assertIn("obtain fresh confirmation", text)
         for excluded in (
@@ -896,6 +900,23 @@ class RepositoryMessagingSkillContractTests(unittest.TestCase):
         ):
             with self.subTest(excluded=excluded):
                 self.assertIn(excluded, text)
+
+    def test_readme_documents_safe_imessage_attachment_staging(self) -> None:
+        text = " ".join((ROOT / "README.md").read_text(encoding="utf8").split())
+        self.assertIn("`--attachment <path>` more than once", text)
+        self.assertIn("immutable private snapshot", text)
+        self.assertIn("Approving a Grogu software plan is not message confirmation", text)
+        self.assertIn("`GROGU_IMESSAGE_STAGING_ROOT`", text)
+        self.assertIn("retains that attempt's staged files", text)
+        self.assertIn(
+            "body first, waits 0.5 seconds, then receives each attachment",
+            text,
+        )
+        self.assertIn("mode `0700`", text)
+        self.assertIn("mode `0600`", text)
+        self.assertIn("waits 0.5 seconds", text)
+        self.assertIn("does not delete them automatically", text)
+        self.assertIn("does not confirm delivery", text)
 
     def test_stim_requires_complete_consent_and_provider_fidelity(self) -> None:
         text = " ".join(self.skill_text("stim").split())

@@ -788,8 +788,9 @@ def imessage_draft(args: argparse.Namespace) -> int:
     draft = grogu_imessage.DraftStore(GROGU_HOME).create(
         recipient,
         args.message,
+        args.attachment,
     )
-    print_json(dataclasses.asdict(draft))
+    print_json(draft.review())
     return 0
 
 
@@ -799,16 +800,35 @@ def imessage_send(args: argparse.Namespace) -> int:
     if draft is None:
         print(f"grogu: no iMessage draft with id {args.draft!r}", file=sys.stderr)
         return 2
-    if draft.status != "draft":
-        print(
-            f"grogu: iMessage draft {args.draft!r} is already {draft.status}",
-            file=sys.stderr,
+    store.require_draft_status(draft)
+    if not args.confirm:
+        raise grogu_imessage.ConfirmationRequiredError(
+            f"iMessage draft '{draft.id}' was not submitted because --confirm "
+            "is required; no staging copy, message, or attachment was submitted; "
+            "next: review the saved draft JSON, then run `grogu imessage send "
+            f"{draft.id} --confirm`"
         )
-        return 2
-    result = imessage_adapter(args).send(
-        draft.recipient, draft.body, confirmed=args.confirm
-    )
-    store.mark_submitted(draft.id)
+    adapter = imessage_adapter(args)
+    adapter.validate_submission(draft.recipient, draft.body, confirmed=True)
+    draft, staged = store.prepare_submission(draft.id, adapter.stage_attachments)
+    try:
+        result = adapter.send(
+            draft.recipient,
+            draft.body,
+            confirmed=True,
+            attachments=staged.paths,
+        )
+        store.mark_submitted(draft.id)
+    except Exception as error:
+        # Messages may have accepted an earlier operation and may still be
+        # consuming a staged file, so keep the unknown state and staged bytes.
+        raise grogu_imessage.IMessageError(
+            f"iMessage draft '{draft.id}' may have been partially submitted and "
+            "is now submission_unknown; private staged copies were retained for "
+            "Messages; do not retry this draft; next: inspect the conversation in "
+            "Messages, then create and review a replacement draft only for "
+            "content still unsent"
+        ) from error
     print_json(result)
     return 0
 
@@ -3832,6 +3852,13 @@ def build_parser() -> argparse.ArgumentParser:
     imessage_draft_parser.add_argument("--recipient", required=True)
     imessage_draft_parser.add_argument("--display-name", default="")
     imessage_draft_parser.add_argument("--message", required=True)
+    imessage_draft_parser.add_argument(
+        "--attachment",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="snapshot a local file; repeat in send order",
+    )
     imessage_draft_parser.set_defaults(handler=imessage_draft)
     imessage_send_parser = imessage_subparsers.add_parser("send")
     imessage_send_parser.add_argument("draft")

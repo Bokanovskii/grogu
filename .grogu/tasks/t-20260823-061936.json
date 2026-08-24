@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "id": "t-20260823-061936",
+  "title": "Support iMessage file attachments",
+  "body": "Add validated local attachments to the existing draft-review-confirm-send workflow so a user can send the generated Portugal HTML guide through Messages without uploading it elsewhere.",
+  "status": "review",
+  "priority": "high",
+  "labels": [],
+  "issue": null,
+  "assignee": "charlie",
+  "created_at": "2026-08-23T22:52:03+00:00",
+  "created_by": "charlie",
+  "updated_at": "2026-08-24T00:15:09+00:00",
+  "revision": 8,
+  "log": [
+    {
+      "at": "2026-08-23T22:52:03+00:00",
+      "by": "charlie",
+      "event": "created",
+      "text": "Support iMessage file attachments"
+    },
+    {
+      "at": "2026-08-23T22:52:08+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-23T23:02:32+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Architect wrote implementation, testing, and evaluation plans; commissioned terminal UX design; and required user review before implementation."
+    },
+    {
+      "at": "2026-08-23T23:10:56+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Text message submitted; raw HTML and ZIP attachments were rejected by Messages. Final updated PDF draft is ready and awaiting explicit confirmation before send."
+    },
+    {
+      "at": "2026-08-23T23:19:37+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Accepted amendment a1 after verifying direct source-path sending in the prototype and compiling the alias-before-tell argv script; plans now require retained confirmed-send staging under a configurable private Messages root."
+    },
+    {
+      "at": "2026-08-23T23:21:01+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Design stage is complete; amendment a1 is resolved; implementation gate is open. Plans require private retained Messages-root staging, aliases outside the tell block, argv-only AppleScript, ordered sends with a 0.5-second delay, and immutable snapshot/hash integrity."
+    },
+    {
+      "at": "2026-08-24T00:13:45+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Scrubbed email-shaped test examples and plan defect history to non-address placeholders, reran focused tests and privacy scans successfully, and finalized plan p-20260823-6e719b."
+    },
+    {
+      "at": "2026-08-24T00:15:09+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "Implemented and independently verified confirmation-gated iMessage file attachments with Messages-sandbox staging; live PDF submission accepted by Messages."
+    }
+  ]
+}
