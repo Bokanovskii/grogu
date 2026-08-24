@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import platform
 import re
+import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import uuid
-from dataclasses import asdict, dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, Iterator, List, Optional, Sequence, Tuple
 
 import grogu_mcp
+import grogu_platform
 
 # Name of the local MCP server entry (in ~/.copilot/mcp-config.json) that a
 # seaglass installation is expected to register itself under. If a user has
@@ -26,6 +31,52 @@ SEAGLASS_SERVER_NAME = "seaglass"
 # How a message the user sent themselves is labelled; seaglass leaves its
 # `sender` null, since there is no contact to resolve.
 SELF_HANDLE = "me"
+
+DRAFT_STORAGE_VERSION = 2
+SUBMISSION_UNKNOWN = "submission_unknown"
+ATTACHMENT_SEND_DELAY_SECONDS = 0.5
+IMESSAGE_SEND_SCRIPT = f"""on run argv
+    set recipientIdentifier to item 1 of argv
+    set messageBody to item 2 of argv
+    set attachmentAliases to {{}}
+    if (count of argv) > 2 then
+        repeat with attachmentPath in items 3 thru -1 of argv
+            set attachmentAlias to ((POSIX file (attachmentPath as text)) as alias)
+            set end of attachmentAliases to attachmentAlias
+        end repeat
+    end if
+    tell application "Messages"
+        set targetService to 1st service whose service type = iMessage
+        set targetBuddy to buddy recipientIdentifier of targetService
+        send messageBody to targetBuddy
+        repeat with attachmentAlias in attachmentAliases
+            delay {ATTACHMENT_SEND_DELAY_SECONDS:g}
+            send (contents of attachmentAlias) to targetBuddy
+        end repeat
+    end tell
+end run"""
+
+
+def _remove_private_tree(path: Path) -> None:
+    if path.is_symlink():
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    if not path.exists():
+        return
+
+    def retry(function, value, _error) -> None:
+        try:
+            target = Path(value)
+            target.chmod(0o700 if target.is_dir() else 0o600)
+            function(value)
+        except OSError:
+            pass
+
+    shutil.rmtree(path, ignore_errors=False, onerror=retry)
+
 
 # Apple's `message.date` column mixes seconds and nanoseconds since
 # 2001-01-01 depending on macOS version at write time -- same ambiguity
@@ -405,27 +456,78 @@ class Recipient:
     display_name: str = ""
 
 
-@dataclass
+@dataclass(frozen=True)
+class MessageAttachment:
+    index: int
+    filename: str
+    source_path: str
+    snapshot_path: str
+    size_bytes: int
+    sha256: str
+
+    def review(self) -> dict:
+        return {
+            "filename": self.filename,
+            "index": self.index,
+            "sha256": self.sha256,
+            "size_bytes": self.size_bytes,
+            "source_path": self.source_path,
+        }
+
+
+@dataclass(frozen=True)
 class MessageDraft:
     id: str
     recipient: Recipient
     body: str
     created_at: str
     status: str = "draft"
+    attachments: Tuple[MessageAttachment, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "attachments", tuple(self.attachments))
+
+    def review(self) -> dict:
+        return {
+            "attachments": [attachment.review() for attachment in self.attachments],
+            "body": self.body,
+            "created_at": self.created_at,
+            "id": self.id,
+            "recipient": {
+                "display_name": self.recipient.display_name,
+                "identifier": self.recipient.identifier,
+            },
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
+class StagedAttachments:
+    directory: Optional[Path] = None
+    paths: Tuple[str, ...] = ()
+
+    def discard(self) -> None:
+        if self.directory is not None:
+            _remove_private_tree(self.directory)
 
 
 class DraftStore:
     """Persist drafts locally under the user's Grogu home."""
 
     def __init__(self, home: Optional[Path] = None) -> None:
-        root = Path(home or Path.home() / ".grogu").expanduser()
-        self.path = root / "imessage" / "drafts.jsonl"
+        root = Path(home or Path.home() / ".grogu").expanduser().resolve()
+        self.state_root = root / "imessage"
+        self.path = self.state_root / "drafts.jsonl"
+        self.lock_path = self.state_root / "drafts.lock"
+        self.drafts_root = self.state_root / "drafts"
 
     def _read(self) -> List[dict]:
         try:
             lines = self.path.read_text(encoding="utf8").splitlines()
-        except OSError:
+        except FileNotFoundError:
             return []
+        except OSError as error:
+            raise IMessageError("local iMessage drafts could not be read") from error
         entries = []
         for line in lines:
             try:
@@ -437,50 +539,435 @@ class DraftStore:
         return entries
 
     def _write(self, entries: List[dict]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
-        temporary.write_text(
-            "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in entries),
-            encoding="utf8",
-        )
-        os.replace(temporary, self.path)
+        try:
+            self._private_directory(self.state_root)
+            temporary = self.path.with_name(
+                f".{self.path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+            )
+            descriptor = os.open(
+                temporary,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf8") as handle:
+                    handle.write(
+                        "".join(
+                            json.dumps(entry, sort_keys=True) + "\n"
+                            for entry in entries
+                        )
+                    )
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                temporary.chmod(0o600)
+                os.replace(temporary, self.path)
+            finally:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+        except OSError as error:
+            raise IMessageError("local iMessage drafts could not be saved") from error
 
-    def create(self, recipient: Recipient, body: str) -> MessageDraft:
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        self._private_directory(self.state_root)
+        if self.path.is_symlink() or self.lock_path.is_symlink():
+            raise IMessageError("private iMessage storage cannot use a symbolic link")
+        try:
+            if self.path.exists():
+                self.path.chmod(0o600)
+            descriptor = os.open(
+                self.lock_path,
+                os.O_CREAT | os.O_RDWR,
+                0o600,
+            )
+            os.chmod(self.lock_path, 0o600)
+        except OSError as error:
+            raise IMessageError(
+                "local iMessage drafts could not be protected"
+            ) from error
+        try:
+            with grogu_platform.exclusive_lock(descriptor):
+                yield
+        finally:
+            os.close(descriptor)
+
+    def create(
+        self,
+        recipient: Recipient,
+        body: str,
+        attachments: Optional[Sequence[str]] = None,
+    ) -> MessageDraft:
         if not recipient.identifier.strip():
             raise ValueError("recipient identifier is required")
         if not body.strip():
             raise ValueError("message body is required")
-        draft = MessageDraft(str(uuid.uuid4()), recipient, body, now())
-        self._write(self._read() + [asdict(draft)])
-        return draft
+        draft_id = str(uuid.uuid4())
+        captured: Tuple[MessageAttachment, ...] = ()
+        draft = MessageDraft(
+            draft_id,
+            recipient,
+            body,
+            now(),
+        )
+        try:
+            captured = self._capture_attachments(draft_id, attachments or ())
+            draft = replace(draft, attachments=captured)
+            with self._locked():
+                self._write(self._read() + [self._serialize(draft)])
+            return draft
+        except Exception:
+            if captured or (self.drafts_root / draft_id).exists():
+                _remove_private_tree(self.drafts_root / draft_id)
+            raise
 
     def get(self, draft_id: str) -> Optional[MessageDraft]:
-        for value in self._read():
-            if value.get("id") != draft_id:
-                continue
-            recipient = value.get("recipient", {})
-            return MessageDraft(
-                value["id"],
-                Recipient(
-                    recipient.get("identifier", ""),
-                    recipient.get("display_name", ""),
-                ),
-                value.get("body", ""),
-                value.get("created_at", ""),
-                value.get("status", "draft"),
+        with self._locked():
+            return self._get(draft_id, self._read())
+
+    def require_draft_status(self, draft: MessageDraft) -> None:
+        if draft.status == "draft":
+            return
+        if draft.status == SUBMISSION_UNKNOWN:
+            raise IMessageError(
+                f"iMessage draft '{draft.id}' is submission_unknown and cannot "
+                "be retried; next: inspect the conversation in Messages, then "
+                "create and review a replacement draft only for content still unsent"
             )
-        return None
+        raise IMessageError(
+            f"iMessage draft '{draft.id}' is {draft.status} and cannot be retried; "
+            "next: create and review a replacement draft"
+        )
+
+    def prepare_submission(
+        self,
+        draft_id: str,
+        stage: Callable[[MessageDraft], StagedAttachments],
+    ) -> Tuple[MessageDraft, StagedAttachments]:
+        staged: Optional[StagedAttachments] = None
+        with self._locked():
+            entries = self._read()
+            draft = self._get(draft_id, entries)
+            if draft is None:
+                raise ValueError(f"no iMessage draft with id {draft_id!r}")
+            self.require_draft_status(draft)
+            self._validate_attachments(draft)
+            try:
+                staged = stage(draft)
+                claimed = replace(draft, status=SUBMISSION_UNKNOWN)
+                self._replace(entries, claimed)
+                self._write(entries)
+            except Exception:
+                if staged is not None:
+                    staged.discard()
+                raise
+        return draft, staged
 
     def mark_submitted(self, draft_id: str) -> MessageDraft:
-        entries = self._read()
+        with self._locked():
+            entries = self._read()
+            draft = self._get(draft_id, entries)
+            if draft is None:
+                raise ValueError(f"no iMessage draft with id {draft_id!r}")
+            if draft.status != SUBMISSION_UNKNOWN:
+                self.require_draft_status(draft)
+                raise IMessageError(
+                    f"iMessage draft '{draft.id}' has not been claimed for submission"
+                )
+            submitted = replace(draft, status="submitted")
+            self._replace(entries, submitted)
+            self._write(entries)
+            return submitted
+
+    def _get(
+        self, draft_id: str, entries: Sequence[dict]
+    ) -> Optional[MessageDraft]:
         for value in entries:
             if value.get("id") == draft_id:
-                value["status"] = "submitted"
-                self._write(entries)
-                result = self.get(draft_id)
-                if result is not None:
-                    return result
-        raise ValueError(f"no iMessage draft with id {draft_id!r}")
+                return self._deserialize(value)
+        return None
+
+    def _replace(self, entries: List[dict], draft: MessageDraft) -> None:
+        for index, value in enumerate(entries):
+            if value.get("id") == draft.id:
+                entries[index] = self._serialize(draft)
+                return
+        raise ValueError(f"no iMessage draft with id {draft.id!r}")
+
+    def _serialize(self, draft: MessageDraft) -> dict:
+        return {
+            "attachments": [
+                {
+                    "filename": attachment.filename,
+                    "index": attachment.index,
+                    "sha256": attachment.sha256,
+                    "size_bytes": attachment.size_bytes,
+                    "snapshot_path": attachment.snapshot_path,
+                    "source_path": attachment.source_path,
+                }
+                for attachment in draft.attachments
+            ],
+            "body": draft.body,
+            "created_at": draft.created_at,
+            "id": draft.id,
+            "recipient": {
+                "display_name": draft.recipient.display_name,
+                "identifier": draft.recipient.identifier,
+            },
+            "status": draft.status,
+            "storage_version": DRAFT_STORAGE_VERSION,
+        }
+
+    def _deserialize(self, value: dict) -> MessageDraft:
+        draft_id = value.get("id")
+        if not isinstance(draft_id, str) or not draft_id:
+            raise ValueError("invalid local iMessage draft record")
+        raw_attachments = value.get("attachments")
+        version = value.get("storage_version")
+        if version is None and (raw_attachments is None or raw_attachments == []):
+            attachments: Tuple[MessageAttachment, ...] = ()
+        elif version != DRAFT_STORAGE_VERSION or not isinstance(
+            raw_attachments, list
+        ):
+            raise self._unsupported_attachment_record(draft_id)
+        else:
+            if Path(draft_id).name != draft_id or draft_id in {".", ".."}:
+                raise self._unsupported_attachment_record(draft_id)
+            attachments = tuple(
+                self._deserialize_attachment(draft_id, index, attachment)
+                for index, attachment in enumerate(raw_attachments, start=1)
+            )
+        recipient = value.get("recipient")
+        if not isinstance(recipient, dict):
+            recipient = {}
+        return MessageDraft(
+            id=draft_id,
+            recipient=Recipient(
+                str(recipient.get("identifier", "")),
+                str(recipient.get("display_name", "")),
+            ),
+            body=str(value.get("body", "")),
+            created_at=str(value.get("created_at", "")),
+            status=str(value.get("status", "draft")),
+            attachments=attachments,
+        )
+
+    def _deserialize_attachment(
+        self, draft_id: str, expected_index: int, value: object
+    ) -> MessageAttachment:
+        if not isinstance(value, dict):
+            raise self._unsupported_attachment_record(draft_id)
+        index = value.get("index")
+        filename = value.get("filename")
+        source_path = value.get("source_path")
+        snapshot_path = value.get("snapshot_path")
+        size_bytes = value.get("size_bytes")
+        digest = value.get("sha256")
+        expected_snapshot = (
+            self.drafts_root
+            / draft_id
+            / "attachments"
+            / f"{expected_index:04d}"
+            / str(filename)
+        )
+        if (
+            index != expected_index
+            or not isinstance(filename, str)
+            or not filename
+            or Path(filename).name != filename
+            or not isinstance(source_path, str)
+            or not Path(source_path).is_absolute()
+            or not isinstance(snapshot_path, str)
+            or Path(snapshot_path) != expected_snapshot
+            or not isinstance(size_bytes, int)
+            or isinstance(size_bytes, bool)
+            or size_bytes < 0
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise self._unsupported_attachment_record(draft_id)
+        return MessageAttachment(
+            index=index,
+            filename=filename,
+            source_path=source_path,
+            snapshot_path=snapshot_path,
+            size_bytes=size_bytes,
+            sha256=digest,
+        )
+
+    @staticmethod
+    def _unsupported_attachment_record(draft_id: str) -> ValueError:
+        return ValueError(
+            f"iMessage draft '{draft_id}' uses unsupported attachment metadata; "
+            "create and review a replacement draft"
+        )
+
+    def _capture_attachments(
+        self, draft_id: str, attachments: Sequence[str]
+    ) -> Tuple[MessageAttachment, ...]:
+        captured = []
+        for index, value in enumerate(attachments, start=1):
+            selected = Path(value).expanduser()
+            filename = selected.name
+            try:
+                source = selected.resolve(strict=True)
+                source_size, source_digest = self._file_identity(source)
+            except (OSError, RuntimeError):
+                raise self._invalid_attachment(index, value) from None
+            if not source.is_file() or not filename:
+                raise self._invalid_attachment(index, value)
+            destination = (
+                self.drafts_root
+                / draft_id
+                / "attachments"
+                / f"{index:04d}"
+                / filename
+            )
+            try:
+                draft_root = self.drafts_root / draft_id
+                attachments_root = draft_root / "attachments"
+                for directory in (
+                    self.state_root,
+                    self.drafts_root,
+                    draft_root,
+                    attachments_root,
+                    destination.parent,
+                ):
+                    self._private_directory(directory)
+                snapshot_size, snapshot_digest = self._atomic_copy(
+                    source, destination, 0o400
+                )
+                current_size, current_digest = self._file_identity(source)
+            except (OSError, RuntimeError):
+                raise self._invalid_attachment(index, value) from None
+            if (
+                (source_size, source_digest)
+                != (snapshot_size, snapshot_digest)
+                or (current_size, current_digest)
+                != (snapshot_size, snapshot_digest)
+            ):
+                raise ValueError(
+                    f"attachment {index} changed while it was being snapshotted: "
+                    f"{value}; no draft was created; next: rerun the same "
+                    "`grogu imessage draft` command"
+                )
+            captured.append(
+                MessageAttachment(
+                    index=index,
+                    filename=filename,
+                    source_path=str(source),
+                    snapshot_path=str(destination),
+                    size_bytes=snapshot_size,
+                    sha256=snapshot_digest,
+                )
+            )
+        return tuple(captured)
+
+    @staticmethod
+    def _invalid_attachment(index: int, value: str) -> ValueError:
+        return ValueError(
+            f"attachment {index} is not a readable regular file: {value}; "
+            "no draft was created; next: fix the file and rerun the same "
+            "`grogu imessage draft` command"
+        )
+
+    def _validate_attachments(self, draft: MessageDraft) -> None:
+        for attachment in draft.attachments:
+            try:
+                source_identity = self._canonical_file_identity(
+                    Path(attachment.source_path)
+                )
+            except (OSError, RuntimeError):
+                source_identity = None
+            expected = (attachment.size_bytes, attachment.sha256)
+            if source_identity != expected:
+                raise IMessageError(
+                    f"iMessage draft '{draft.id}' was not submitted because "
+                    f"attachment {attachment.index} no longer matches the reviewed "
+                    f"source {attachment.source_path}; no staging or Messages "
+                    "action occurred; next: create and review a replacement "
+                    "draft, then confirm the new draft id"
+                )
+            snapshot = Path(attachment.snapshot_path)
+            try:
+                snapshot_identity = self._canonical_file_identity(snapshot)
+            except (OSError, RuntimeError):
+                snapshot_identity = None
+            if snapshot_identity != expected:
+                raise IMessageError(
+                    f"iMessage draft '{draft.id}' was not submitted because its "
+                    f"immutable snapshot for attachment {attachment.index} is "
+                    "missing or changed; no staging or Messages action occurred; "
+                    "next: create and review a replacement draft, then confirm "
+                    "the new draft id"
+                )
+
+    @staticmethod
+    def _file_identity(path: Path) -> Tuple[int, str]:
+        if path.is_symlink() or not path.is_file():
+            raise OSError("not a readable regular file")
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                digest.update(chunk)
+        return size, digest.hexdigest()
+
+    @classmethod
+    def _canonical_file_identity(cls, path: Path) -> Tuple[int, str]:
+        if path.resolve(strict=True) != path:
+            raise OSError("file path is no longer canonical")
+        return cls._file_identity(path)
+
+    @classmethod
+    def _atomic_copy(
+        cls, source: Path, destination: Path, mode: int
+    ) -> Tuple[int, str]:
+        cls._private_directory(destination.parent)
+        temporary = destination.parent / f".snapshot.{uuid.uuid4().hex}.tmp"
+        descriptor = os.open(
+            temporary,
+            os.O_CREAT
+            | os.O_EXCL
+            | os.O_WRONLY
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as destination_handle, source.open(
+                "rb"
+            ) as source_handle:
+                shutil.copyfileobj(source_handle, destination_handle)
+                destination_handle.flush()
+                os.fsync(destination_handle.fileno())
+            size, digest = cls._file_identity(temporary)
+            temporary.chmod(mode)
+            os.replace(temporary, destination)
+            return size, digest
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+    @staticmethod
+    def _private_directory(path: Path) -> None:
+        if path.is_symlink():
+            raise IMessageError("private iMessage storage cannot use a symbolic link")
+        try:
+            path.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path.chmod(0o700)
+        except OSError as error:
+            raise IMessageError(
+                "private iMessage storage could not be prepared"
+            ) from error
+        if path.is_symlink() or not path.is_dir():
+            raise IMessageError("private iMessage storage is not a directory")
 
 
 class MacOSIMessageAdapter:
@@ -490,11 +977,18 @@ class MacOSIMessageAdapter:
         self,
         database_path: Optional[Path] = None,
         runner=subprocess.run,
+        staging_root: Optional[Path] = None,
     ) -> None:
         self.database_path = Path(
             database_path or Path.home() / "Library" / "Messages" / "chat.db"
         ).expanduser()
         self.runner = runner
+        configured_staging_root = (
+            staging_root
+            or os.environ.get("GROGU_IMESSAGE_STAGING_ROOT")
+            or Path.home() / "Library" / "Messages" / ".grogu-send-staging"
+        )
+        self.staging_root = Path(configured_staging_root).expanduser()
 
     @staticmethod
     def supported() -> bool:
@@ -682,7 +1176,46 @@ class MacOSIMessageAdapter:
         resolved_name = display_name.strip() or sorted(names)[0]
         return Recipient(handles[0], resolved_name)
 
-    def send(self, recipient: Recipient, body: str, confirmed: bool = False) -> dict:
+    def send(
+        self,
+        recipient: Recipient,
+        body: str,
+        confirmed: bool = False,
+        attachments: Optional[Sequence[str]] = None,
+    ) -> dict:
+        self.validate_submission(recipient, body, confirmed=confirmed)
+        staged_paths = self._validated_staged_paths(attachments or ())
+        completed = self.runner(
+            [
+                "osascript",
+                "-e",
+                IMESSAGE_SEND_SCRIPT,
+                "--",
+                recipient.identifier,
+                body,
+                *staged_paths,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise IMessageError("Messages could not accept the iMessage submission")
+        result = {
+            "submitted": True,
+            "delivery_confirmed": False,
+            "recipient": recipient.identifier,
+        }
+        if staged_paths:
+            result["attachment_count"] = len(staged_paths)
+        return result
+
+    def validate_submission(
+        self,
+        recipient: Recipient,
+        body: str,
+        confirmed: bool = False,
+    ) -> None:
         if not confirmed:
             raise ConfirmationRequiredError(
                 "sending an iMessage requires explicit confirmation"
@@ -697,27 +1230,202 @@ class MacOSIMessageAdapter:
             )
         if not body.strip():
             raise ValueError("message body is required")
-        script = (
-            'tell application "Messages"\n'
-            'set targetService to 1st service whose service type = iMessage\n'
-            f'set targetBuddy to buddy "{self._escape(recipient.identifier)}" of targetService\n'
-            f'send "{self._escape(body)}" to targetBuddy\n'
-            "end tell"
+
+    def stage_attachments(self, draft: MessageDraft) -> StagedAttachments:
+        if not draft.attachments:
+            return StagedAttachments()
+        root = self._prepare_staging_root(draft.id)
+        attempt = root / uuid.uuid4().hex
+        staged_paths = []
+        try:
+            try:
+                self._private_staging_directory(attempt, root)
+            except Exception as error:
+                raise self._staging_root_error(draft.id) from error
+            for attachment in draft.attachments:
+                try:
+                    directory = attempt / f"{attachment.index:04d}"
+                    self._private_staging_directory(directory, root)
+                    destination = directory / attachment.filename
+                    if (
+                        destination.parent != directory
+                        or destination.name != attachment.filename
+                    ):
+                        raise ValueError("attachment filename escaped staging")
+                    snapshot = Path(attachment.snapshot_path)
+                    size, digest = DraftStore._atomic_copy(
+                        snapshot, destination, 0o600
+                    )
+                    if (size, digest) != (
+                        attachment.size_bytes,
+                        attachment.sha256,
+                    ):
+                        raise ValueError("staged attachment identity changed")
+                    self._validate_private_staged_file(destination, root)
+                except Exception as error:
+                    raise self._staging_copy_error(
+                        draft.id, attachment.index
+                    ) from error
+                staged_paths.append(str(destination))
+        except Exception:
+            _remove_private_tree(attempt)
+            raise
+        return StagedAttachments(attempt, tuple(staged_paths))
+
+    def _prepare_staging_root(self, draft_id: str) -> Path:
+        if self.staging_root.is_symlink():
+            raise self._staging_root_error(draft_id)
+        try:
+            try:
+                self.staging_root.mkdir(parents=True, mode=0o700)
+            except FileExistsError:
+                created = False
+            else:
+                created = True
+            if created:
+                self.staging_root.chmod(0o700)
+        except (OSError, RuntimeError) as error:
+            raise self._staging_root_error(draft_id) from error
+        if not self._is_private_directory(self.staging_root):
+            raise self._staging_root_error(draft_id)
+        try:
+            return self.staging_root.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise self._staging_root_error(draft_id) from error
+
+    def _validated_staged_paths(
+        self, attachments: Sequence[str]
+    ) -> Tuple[str, ...]:
+        if not attachments:
+            return ()
+        if not self._is_private_directory(self.staging_root):
+            raise IMessageError("the private iMessage staging root is unavailable")
+        try:
+            root = self.staging_root.resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise IMessageError(
+                "the private iMessage staging root is unavailable"
+            ) from None
+        staged_paths = []
+        for value in attachments:
+            candidate = Path(value)
+            try:
+                resolved = candidate.resolve(strict=True)
+                relative = resolved.relative_to(root)
+            except (OSError, ValueError, RuntimeError):
+                raise IMessageError(
+                    "a staged iMessage attachment escaped its private root"
+                ) from None
+            if (
+                candidate != resolved
+                or len(relative.parts) != 3
+                or not self._is_private_directory(resolved.parent)
+                or not self._is_private_directory(resolved.parent.parent)
+                or not self._is_private_file(candidate, 0o600)
+            ):
+                raise IMessageError(
+                    "a staged iMessage attachment is unavailable or not private"
+                )
+            staged_paths.append(str(resolved))
+        return tuple(staged_paths)
+
+    @classmethod
+    def _private_staging_directory(cls, path: Path, root: Path) -> None:
+        path.mkdir(mode=0o700)
+        path.chmod(0o700)
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            _remove_private_tree(path)
+            raise IMessageError(
+                "an iMessage attachment staging path escaped its private root"
+            ) from None
+        if path != resolved or path.is_symlink() or not path.is_dir():
+            raise IMessageError(
+                "an iMessage attachment staging path is not a private directory"
+            )
+        if not cls._is_private_directory(path):
+            raise IMessageError(
+                "an iMessage attachment staging path is not a private directory"
+            )
+
+    @classmethod
+    def _validate_private_staged_file(cls, path: Path, root: Path) -> None:
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(root)
+        except (OSError, ValueError, RuntimeError):
+            raise IMessageError(
+                "an iMessage attachment staging path escaped its private root"
+            ) from None
+        if path != resolved or not cls._is_private_file(path, 0o600):
+            raise IMessageError(
+                "an iMessage attachment staging file is not private"
+            )
+
+    @classmethod
+    def _is_private_directory(cls, path: Path) -> bool:
+        try:
+            metadata = path.stat()
+        except OSError:
+            return False
+        return (
+            not path.is_symlink()
+            and path.is_dir()
+            and os.access(
+                path,
+                os.W_OK if os.name == "nt" else os.W_OK | os.X_OK,
+            )
+            and (
+                os.name == "nt"
+                or (
+                    stat.S_IMODE(metadata.st_mode) == 0o700
+                    and cls._owned_by_current_user(metadata.st_uid)
+                )
+            )
         )
-        completed = self.runner(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            check=False,
+
+    @classmethod
+    def _is_private_file(cls, path: Path, mode: int) -> bool:
+        try:
+            metadata = path.stat()
+        except OSError:
+            return False
+        return (
+            not path.is_symlink()
+            and path.is_file()
+            and (
+                os.name == "nt"
+                or (
+                    stat.S_IMODE(metadata.st_mode) == mode
+                    and cls._owned_by_current_user(metadata.st_uid)
+                )
+            )
         )
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "").strip()
-            raise IMessageError("Messages could not send the message" + (f": {detail}" if detail else ""))
-        return {
-            "submitted": True,
-            "delivery_confirmed": False,
-            "recipient": recipient.identifier,
-        }
+
+    @staticmethod
+    def _owned_by_current_user(owner: int) -> bool:
+        return not hasattr(os, "geteuid") or owner == os.geteuid()
+
+    def _staging_root_error(self, draft_id: str) -> IMessageError:
+        return IMessageError(
+            f"iMessage draft '{draft_id}' was not submitted because "
+            "GROGU_IMESSAGE_STAGING_ROOT is not a private writable directory: "
+            f"{self.staging_root}; no Messages action occurred; next: run "
+            '`GROGU_IMESSAGE_STAGING_ROOT="<private-messages-root>" grogu '
+            f"imessage send {draft_id} --confirm`"
+        )
+
+    @staticmethod
+    def _staging_copy_error(draft_id: str, index: int) -> IMessageError:
+        return IMessageError(
+            f"iMessage draft '{draft_id}' was not submitted because attachment "
+            f"{index} could not be staged and verified; no Messages action "
+            "occurred and incomplete staging was removed; next: fix "
+            "GROGU_IMESSAGE_STAGING_ROOT, then rerun `grogu imessage send "
+            f"{draft_id} --confirm`"
+        )
 
     def _chat_handles(self, chat_id: int) -> List[str]:
         with self._connect() as database:
@@ -751,10 +1459,6 @@ class MacOSIMessageAdapter:
             raise UnsupportedPlatformError(
                 "iMessage integration is only supported on macOS"
             )
-
-    @staticmethod
-    def _escape(value: str) -> str:
-        return value.replace("\\", "\\\\").replace('"', '\\"')
 
     @staticmethod
     def _looks_like_handle(value: str) -> bool:

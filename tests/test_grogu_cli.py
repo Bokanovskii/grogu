@@ -1,8 +1,12 @@
 import contextlib
+import dataclasses
+import hashlib
 import io
 import json
 import os
 import shlex
+import shutil
+import stat
 import subprocess
 import sys
 import sqlite3
@@ -51,6 +55,19 @@ class GroguCliTests(unittest.TestCase):
         finally:
             if temporary_home is not None:
                 temporary_home.cleanup()
+
+    def run_imessage_main(self, home, adapter, *arguments):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.object(grogu_cli, "GROGU_HOME", Path(home)):
+            with mock.patch.object(
+                grogu_cli, "imessage_adapter", return_value=adapter
+            ) as adapter_factory:
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                    stderr
+                ):
+                    returncode = grogu_cli.main(["imessage", *arguments])
+        return returncode, stdout.getvalue(), stderr.getvalue(), adapter_factory
 
     def test_version(self):
         result = self.run_cli("--version")
@@ -278,18 +295,164 @@ class GroguCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             store = grogu_imessage.DraftStore(Path(home))
             draft = store.create(
-                grogu_imessage.Recipient("+15551234567"), "Hello"
+                grogu_imessage.Recipient("0000000"),
+                "Synthetic body.",
+            )
+            self.assertEqual(draft.review()["attachments"], [])
+            self.assertFalse(store.drafts_root.exists())
+            store.prepare_submission(
+                draft.id, lambda _: grogu_imessage.StagedAttachments()
             )
             submitted = store.mark_submitted(draft.id)
             self.assertEqual(submitted.status, "submitted")
+
+    def test_imessage_draft_snapshots_immutable_attachment_metadata(self):
+        with tempfile.TemporaryDirectory() as home:
+            attachment = Path(home) / "synthetic report's \u2603.html"
+            contents = b"<html>synthetic</html>\n"
+            attachment.write_bytes(contents)
+            store = grogu_imessage.DraftStore(Path(home))
+            draft = store.create(
+                grogu_imessage.Recipient("0000000"),
+                "Synthetic attachment body.",
+                [str(attachment)],
+            )
+            loaded = store.get(draft.id)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded, draft)
+            self.assertIsInstance(draft.attachments, tuple)
+            reviewed = draft.review()
+            self.assertEqual(
+                reviewed["attachments"],
+                [
+                    {
+                        "filename": attachment.name,
+                        "index": 1,
+                        "sha256": hashlib.sha256(contents).hexdigest(),
+                        "size_bytes": len(contents),
+                        "source_path": str(attachment.resolve()),
+                    }
+                ],
+            )
+            self.assertNotIn("snapshot_path", json.dumps(reviewed))
+            snapshot = Path(draft.attachments[0].snapshot_path)
+            self.assertEqual(snapshot.read_bytes(), contents)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(snapshot.stat().st_mode), 0o400)
+                self.assertEqual(stat.S_IMODE(store.path.stat().st_mode), 0o600)
+                self.assertEqual(
+                    stat.S_IMODE(store.lock_path.stat().st_mode),
+                    0o600,
+                )
+                for directory in (
+                    store.state_root,
+                    store.drafts_root,
+                    snapshot.parent.parent.parent,
+                    snapshot.parent.parent,
+                    snapshot.parent,
+                ):
+                    self.assertEqual(
+                        stat.S_IMODE(directory.stat().st_mode),
+                        0o700,
+                    )
+            with self.assertRaises(dataclasses.FrozenInstanceError):
+                draft.body = "changed"
+            with self.assertRaises(dataclasses.FrozenInstanceError):
+                draft.attachments[0].filename = "changed.html"
+
+    def test_imessage_draft_rejects_missing_attachment_without_artifacts(self):
+        with tempfile.TemporaryDirectory() as home:
+            store = grogu_imessage.DraftStore(Path(home))
+            with self.assertRaisesRegex(
+                ValueError, "not a readable regular file"
+            ):
+                store.create(
+                    grogu_imessage.Recipient("0000000"),
+                    "Synthetic attachment body.",
+                    [str(Path(home) / "missing.synthetic")],
+                )
+            self.assertFalse(store.path.exists())
+            self.assertFalse(store.drafts_root.exists())
+
+    def test_imessage_persistence_failure_removes_new_snapshot_artifacts(self):
+        with tempfile.TemporaryDirectory() as home:
+            root = Path(home)
+            source = root / "synthetic.html"
+            source.write_bytes(b"synthetic bytes")
+            store = grogu_imessage.DraftStore(root / "grogu-home")
+            with mock.patch.object(
+                store,
+                "_write",
+                side_effect=grogu_imessage.IMessageError(
+                    "synthetic persistence failure"
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    grogu_imessage.IMessageError,
+                    "synthetic persistence failure",
+                ):
+                    store.create(
+                        grogu_imessage.Recipient("0000000"),
+                        "Synthetic body.",
+                        [str(source)],
+                    )
+            self.assertFalse(store.path.exists())
+            self.assertTrue(store.drafts_root.is_dir())
+            self.assertEqual(list(store.drafts_root.iterdir()), [])
+
+    def test_imessage_draft_cli_outputs_ordered_review_without_private_paths(self):
+        with tempfile.TemporaryDirectory() as home:
+            root = Path(home)
+            first = root / "first.synthetic"
+            second = root / "second synthetic.html"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            adapter = mock.Mock()
+            adapter.resolve_recipient.return_value = grogu_imessage.Recipient(
+                "0000000",
+                "Synthetic Recipient",
+            )
+            result = self.run_imessage_main(
+                root / "grogu-home",
+                adapter,
+                "draft",
+                "--recipient",
+                "Synthetic Recipient",
+                "--message",
+                "Synthetic body.",
+                "--attachment",
+                str(first),
+                "--attachment",
+                str(second),
+            )
+            self.assertEqual(result[0], 0)
+            self.assertEqual(result[2], "")
+            payload = json.loads(result[1])
+            self.assertEqual(
+                [attachment["filename"] for attachment in payload["attachments"]],
+                [first.name, second.name],
+            )
+            self.assertEqual(
+                [attachment["index"] for attachment in payload["attachments"]],
+                [1, 2],
+            )
+            self.assertEqual(
+                [attachment["source_path"] for attachment in payload["attachments"]],
+                [str(first.resolve()), str(second.resolve())],
+            )
+            self.assertNotIn("snapshot_path", result[1])
+            self.assertNotIn("storage_version", result[1])
+            adapter.resolve_recipient.assert_called_once_with(
+                "Synthetic Recipient", ""
+            )
 
     def test_confirmed_imessage_send_still_requires_mac_os(self):
         adapter = grogu_imessage.MacOSIMessageAdapter()
         with mock.patch.object(adapter, "supported", return_value=False):
             with self.assertRaises(grogu_imessage.UnsupportedPlatformError):
                 adapter.send(
-                    grogu_imessage.Recipient("+15551234567"),
-                    "Hello",
+                    grogu_imessage.Recipient("0000000"),
+                    "Synthetic body.",
                     confirmed=True,
                 )
 
@@ -299,8 +462,8 @@ class GroguCliTests(unittest.TestCase):
         with mock.patch.object(adapter, "supported", return_value=True):
             with self.assertRaises(grogu_imessage.RecipientResolutionError):
                 adapter.send(
-                    grogu_imessage.Recipient("Sam Rivera"),
-                    "Hello",
+                    grogu_imessage.Recipient("Synthetic Name"),
+                    "Synthetic body.",
                     confirmed=True,
                 )
         runner.assert_not_called()
@@ -313,8 +476,8 @@ class GroguCliTests(unittest.TestCase):
         adapter = grogu_imessage.MacOSIMessageAdapter(runner=runner)
         with mock.patch.object(adapter, "supported", return_value=True):
             result = adapter.send(
-                grogu_imessage.Recipient("+15551234567"),
-                "Hello",
+                grogu_imessage.Recipient("0000000"),
+                "Synthetic body.",
                 confirmed=True,
             )
         self.assertEqual(
@@ -322,9 +485,431 @@ class GroguCliTests(unittest.TestCase):
             {
                 "submitted": True,
                 "delivery_confirmed": False,
-                "recipient": "+15551234567",
+                "recipient": "0000000",
             },
         )
+
+    def test_imessage_stages_under_configured_messages_root_and_uses_static_argv(self):
+        with tempfile.TemporaryDirectory() as home:
+            root = Path(home)
+            first_source = root / "first" / "synthetic report's \u2603.html"
+            second_source = root / "second" / "synthetic report's \u2603.html"
+            first_source.parent.mkdir()
+            second_source.parent.mkdir()
+            first_source.write_bytes(b"first synthetic attachment")
+            second_source.write_bytes(b"second synthetic attachment")
+            store = grogu_imessage.DraftStore(root / "grogu-home")
+            body = 'Synthetic "body" with \\ slash\nand unicode \u2603.'
+            recipient = "+000-0000"
+            draft = store.create(
+                grogu_imessage.Recipient(recipient),
+                body,
+                [str(first_source), str(second_source)],
+            )
+            staging_root = root / "Messages" / ".grogu-send-staging"
+            runner = mock.Mock()
+            runner.return_value.returncode = 0
+            runner.return_value.stderr = ""
+            runner.return_value.stdout = ""
+            with mock.patch.dict(
+                os.environ,
+                {"GROGU_IMESSAGE_STAGING_ROOT": str(staging_root)},
+            ):
+                adapter = grogu_imessage.MacOSIMessageAdapter(runner=runner)
+            with mock.patch.object(adapter, "supported", return_value=True):
+                cli_result = self.run_imessage_main(
+                    store.state_root.parent,
+                    adapter,
+                    "send",
+                    draft.id,
+                    "--confirm",
+                )
+            self.assertEqual(cli_result[0], 0)
+            self.assertEqual(cli_result[2], "")
+            submitted = store.get(draft.id)
+            self.assertEqual(submitted.status, "submitted")
+            self.assertEqual(submitted.recipient, draft.recipient)
+            self.assertEqual(submitted.body, draft.body)
+            self.assertEqual(submitted.attachments, draft.attachments)
+            command = runner.call_args.args[0]
+            staged_paths = command[6:]
+            self.assertEqual(
+                Path(staged_paths[0]).parent.parent.parent,
+                staging_root.resolve(),
+            )
+            self.assertEqual(
+                [Path(path).name for path in staged_paths],
+                [first_source.name, second_source.name],
+            )
+            self.assertEqual(
+                [Path(path).parent.name for path in staged_paths],
+                ["0001", "0002"],
+            )
+            self.assertEqual(
+                [Path(path).read_bytes() for path in staged_paths],
+                [first_source.read_bytes(), second_source.read_bytes()],
+            )
+            if os.name != "nt":
+                self.assertEqual(
+                    stat.S_IMODE(staging_root.stat().st_mode),
+                    0o700,
+                )
+            for path in staged_paths:
+                staged_path = Path(path)
+                if os.name != "nt":
+                    self.assertEqual(
+                        stat.S_IMODE(staged_path.stat().st_mode),
+                        0o600,
+                    )
+                    self.assertEqual(
+                        stat.S_IMODE(staged_path.parent.stat().st_mode),
+                        0o700,
+                    )
+                self.assertTrue(staged_path.is_relative_to(staging_root.resolve()))
+            self.assertEqual(
+                command[:4],
+                ["osascript", "-e", grogu_imessage.IMESSAGE_SEND_SCRIPT, "--"],
+            )
+            self.assertEqual(command[4:], [recipient, body, *staged_paths])
+            for attachment in draft.attachments:
+                self.assertNotIn(attachment.source_path, command)
+                self.assertNotIn(attachment.snapshot_path, command)
+            script = command[2]
+            self.assertNotIn(recipient, script)
+            self.assertNotIn(body, script)
+            for path in staged_paths:
+                self.assertNotIn(path, script)
+            self.assertLess(
+                script.index("POSIX file"),
+                script.index('tell application "Messages"'),
+            )
+            self.assertLess(
+                script.index("send messageBody"),
+                script.index("send (contents of attachmentAlias)"),
+            )
+            self.assertIn("delay 0.5", script)
+            self.assertEqual(
+                json.loads(cli_result[1]),
+                {
+                    "attachment_count": 2,
+                    "delivery_confirmed": False,
+                    "recipient": recipient,
+                    "submitted": True,
+                },
+            )
+            self.assertTrue(all(Path(path).exists() for path in staged_paths))
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and shutil.which("osacompile"),
+        "requires the macOS AppleScript compiler",
+    )
+    def test_imessage_static_applescript_compiles(self):
+        completed = subprocess.run(
+            [
+                "osacompile",
+                "-o",
+                os.devnull,
+                "-e",
+                grogu_imessage.IMESSAGE_SEND_SCRIPT,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_imessage_legacy_jsonl_sends_text_only_without_staging(self):
+        with tempfile.TemporaryDirectory() as home:
+            root = Path(home)
+            store = grogu_imessage.DraftStore(root / "grogu-home")
+            store.state_root.mkdir(parents=True)
+            legacy = {
+                "id": "legacy-synthetic-draft",
+                "recipient": {
+                    "identifier": "0000000",
+                    "display_name": "Synthetic Recipient",
+                },
+                "body": "Synthetic legacy body.",
+                "created_at": "2026-01-02T03:04:05+00:00",
+                "status": "draft",
+            }
+            store.path.write_text(json.dumps(legacy) + "\n", encoding="utf8")
+            loaded = store.get(legacy["id"])
+            self.assertEqual(loaded.attachments, ())
+            runner = mock.Mock()
+            runner.return_value.returncode = 0
+            runner.return_value.stderr = ""
+            runner.return_value.stdout = ""
+            staging_root = root / "Messages" / ".grogu-send-staging"
+            adapter = grogu_imessage.MacOSIMessageAdapter(
+                runner=runner,
+                staging_root=staging_root,
+            )
+            with mock.patch.object(adapter, "supported", return_value=True):
+                result = self.run_imessage_main(
+                    store.state_root.parent,
+                    adapter,
+                    "send",
+                    legacy["id"],
+                    "--confirm",
+                )
+            self.assertEqual(result[0], 0)
+            self.assertEqual(
+                json.loads(result[1]),
+                {
+                    "delivery_confirmed": False,
+                    "recipient": "0000000",
+                    "submitted": True,
+                },
+            )
+            self.assertEqual(result[2], "")
+            self.assertFalse(staging_root.exists())
+            self.assertFalse(store.drafts_root.exists())
+
+    def test_imessage_rejects_prototype_string_attachment_records(self):
+        with tempfile.TemporaryDirectory() as home:
+            store = grogu_imessage.DraftStore(Path(home))
+            store.state_root.mkdir(parents=True)
+            store.path.write_text(
+                json.dumps(
+                    {
+                        "id": "prototype-synthetic-draft",
+                        "recipient": {
+                            "identifier": "0000000",
+                            "display_name": "",
+                        },
+                        "body": "Synthetic body.",
+                        "created_at": "2026-01-02T03:04:05+00:00",
+                        "status": "draft",
+                        "attachments": ["/synthetic/mutable/source"],
+                    }
+                )
+                + "\n",
+                encoding="utf8",
+            )
+            with self.assertRaisesRegex(
+                ValueError, "unsupported attachment metadata"
+            ):
+                store.get("prototype-synthetic-draft")
+
+    def test_imessage_changed_source_and_snapshot_are_rejected_before_staging(self):
+        with tempfile.TemporaryDirectory() as home:
+            root = Path(home)
+            source = root / "synthetic.html"
+            source.write_bytes(b"reviewed bytes")
+            store = grogu_imessage.DraftStore(root / "grogu-home")
+            source_draft = store.create(
+                grogu_imessage.Recipient("0000000"),
+                "Synthetic body.",
+                [str(source)],
+            )
+            source.write_bytes(b"changed source")
+            stage = mock.Mock()
+            with self.assertRaisesRegex(
+                grogu_imessage.IMessageError, "reviewed source"
+            ) as source_error:
+                store.prepare_submission(source_draft.id, stage)
+            self.assertIn(
+                "no staging or Messages action occurred",
+                str(source_error.exception),
+            )
+            stage.assert_not_called()
+            self.assertEqual(store.get(source_draft.id).status, "draft")
+
+            source.write_bytes(b"reviewed bytes")
+            snapshot_draft = store.create(
+                grogu_imessage.Recipient("0000000"),
+                "Synthetic body.",
+                [str(source)],
+            )
+            snapshot = Path(snapshot_draft.attachments[0].snapshot_path)
+            snapshot.chmod(0o600)
+            snapshot.write_bytes(b"changed snapshot")
+            stage = mock.Mock()
+            with self.assertRaisesRegex(
+                grogu_imessage.IMessageError, "immutable snapshot"
+            ) as snapshot_error:
+                store.prepare_submission(snapshot_draft.id, stage)
+            self.assertIn(
+                "no staging or Messages action occurred",
+                str(snapshot_error.exception),
+            )
+            stage.assert_not_called()
+            self.assertEqual(store.get(snapshot_draft.id).status, "draft")
+
+    def test_imessage_staging_failure_is_clean_and_retryable(self):
+        with tempfile.TemporaryDirectory() as home:
+            root = Path(home)
+            source = root / "synthetic.html"
+            source.write_bytes(b"reviewed bytes")
+            store = grogu_imessage.DraftStore(root / "grogu-home")
+            draft = store.create(
+                grogu_imessage.Recipient("0000000"),
+                "Synthetic body.",
+                [str(source)],
+            )
+            staging_root = root / "Messages" / ".grogu-send-staging"
+            adapter = grogu_imessage.MacOSIMessageAdapter(
+                staging_root=staging_root
+            )
+            with mock.patch.object(
+                grogu_imessage.DraftStore,
+                "_atomic_copy",
+                side_effect=OSError("synthetic staging failure"),
+            ):
+                with self.assertRaisesRegex(
+                    grogu_imessage.IMessageError,
+                    "could not be staged and verified",
+                ) as staging_error:
+                    store.prepare_submission(draft.id, adapter.stage_attachments)
+            self.assertIn(
+                "GROGU_IMESSAGE_STAGING_ROOT",
+                str(staging_error.exception),
+            )
+            self.assertIn(
+                "incomplete staging was removed",
+                str(staging_error.exception),
+            )
+            self.assertEqual(store.get(draft.id).status, "draft")
+            self.assertTrue(staging_root.is_dir())
+            self.assertEqual(list(staging_root.iterdir()), [])
+
+    @unittest.skipIf(os.name == "nt", "directory symlinks need elevated privileges")
+    def test_imessage_rejects_symlinked_staging_root(self):
+        with tempfile.TemporaryDirectory() as home:
+            root = Path(home)
+            source = root / "synthetic.html"
+            source.write_bytes(b"reviewed bytes")
+            store = grogu_imessage.DraftStore(root / "grogu-home")
+            draft = store.create(
+                grogu_imessage.Recipient("0000000"),
+                "Synthetic body.",
+                [str(source)],
+            )
+            actual_root = root / "actual-staging"
+            actual_root.mkdir()
+            staging_link = root / "staging-link"
+            staging_link.symlink_to(actual_root, target_is_directory=True)
+            adapter = grogu_imessage.MacOSIMessageAdapter(
+                staging_root=staging_link
+            )
+            with self.assertRaisesRegex(
+                grogu_imessage.IMessageError,
+                "GROGU_IMESSAGE_STAGING_ROOT",
+            ):
+                store.prepare_submission(draft.id, adapter.stage_attachments)
+            self.assertEqual(store.get(draft.id).status, "draft")
+            self.assertEqual(list(actual_root.iterdir()), [])
+
+    @unittest.skipIf(os.name == "nt", "POSIX directory modes are required")
+    def test_imessage_rejects_insecure_existing_staging_root_without_chmod(self):
+        with tempfile.TemporaryDirectory() as home:
+            root = Path(home)
+            source = root / "synthetic.html"
+            source.write_bytes(b"reviewed bytes")
+            store = grogu_imessage.DraftStore(root / "grogu-home")
+            draft = store.create(
+                grogu_imessage.Recipient("0000000"),
+                "Synthetic body.",
+                [str(source)],
+            )
+            staging_root = root / "Messages" / ".grogu-send-staging"
+            staging_root.mkdir(parents=True)
+            staging_root.chmod(0o755)
+            adapter = grogu_imessage.MacOSIMessageAdapter(
+                staging_root=staging_root
+            )
+            with self.assertRaisesRegex(
+                grogu_imessage.IMessageError,
+                "GROGU_IMESSAGE_STAGING_ROOT",
+            ):
+                store.prepare_submission(draft.id, adapter.stage_attachments)
+            self.assertEqual(stat.S_IMODE(staging_root.stat().st_mode), 0o755)
+            self.assertEqual(store.get(draft.id).status, "draft")
+
+    def test_imessage_no_confirm_does_not_hash_stage_or_launch(self):
+        with tempfile.TemporaryDirectory() as home:
+            root = Path(home)
+            source = root / "synthetic.html"
+            source.write_bytes(b"reviewed bytes")
+            store = grogu_imessage.DraftStore(root / "grogu-home")
+            draft = store.create(
+                grogu_imessage.Recipient("0000000"),
+                "Synthetic body.",
+                [str(source)],
+            )
+            runner = mock.Mock()
+            staging_root = root / "Messages" / ".grogu-send-staging"
+            adapter = grogu_imessage.MacOSIMessageAdapter(
+                runner=runner,
+                staging_root=staging_root,
+            )
+            with mock.patch.object(
+                grogu_imessage.DraftStore,
+                "_file_identity",
+                side_effect=AssertionError("unexpected hash"),
+            ):
+                result = self.run_imessage_main(
+                    store.state_root.parent,
+                    adapter,
+                    "send",
+                    draft.id,
+                )
+            self.assertEqual(result[0], 2)
+            self.assertEqual(result[1], "")
+            self.assertIn("--confirm is required", result[2])
+            self.assertIn("no staging copy", result[2])
+            result[3].assert_not_called()
+            runner.assert_not_called()
+            self.assertFalse(staging_root.exists())
+            self.assertEqual(store.get(draft.id).status, "draft")
+
+    def test_imessage_failed_attempt_is_unknown_and_cannot_retry(self):
+        with tempfile.TemporaryDirectory() as home:
+            root = Path(home)
+            store = grogu_imessage.DraftStore(root / "grogu-home")
+            source = root / "synthetic.html"
+            source.write_bytes(b"reviewed bytes")
+            draft = store.create(
+                grogu_imessage.Recipient("0000000"),
+                "Synthetic body.",
+                [str(source)],
+            )
+            runner = mock.Mock()
+            runner.return_value.returncode = 1
+            runner.return_value.stderr = "synthetic private failure detail"
+            runner.return_value.stdout = ""
+            adapter = grogu_imessage.MacOSIMessageAdapter(
+                runner=runner,
+                staging_root=root / "Messages" / ".grogu-send-staging",
+            )
+            with mock.patch.object(adapter, "supported", return_value=True):
+                first = self.run_imessage_main(
+                    store.state_root.parent,
+                    adapter,
+                    "send",
+                    draft.id,
+                    "--confirm",
+                )
+                second = self.run_imessage_main(
+                    store.state_root.parent,
+                    adapter,
+                    "send",
+                    draft.id,
+                    "--confirm",
+                )
+            self.assertEqual(first[0], 2)
+            self.assertIn("may have been partially submitted", first[2])
+            self.assertIn("staged copies were retained", first[2])
+            self.assertNotIn("synthetic private failure detail", first[2])
+            self.assertEqual(store.get(draft.id).status, "submission_unknown")
+            staged_paths = runner.call_args.args[0][6:]
+            self.assertEqual(len(staged_paths), 1)
+            self.assertTrue(Path(staged_paths[0]).is_file())
+            self.assertEqual(second[0], 2)
+            self.assertIn("cannot be retried", second[2])
+            second[3].assert_not_called()
+            self.assertEqual(runner.call_count, 1)
 
     def test_gmail_is_disabled_by_default_and_drafts_are_local(self):
         adapter = grogu_gmail.GmailAdapter(access_token="token", enabled=False)

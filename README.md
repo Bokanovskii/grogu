@@ -161,7 +161,32 @@ name. Contact names are resolved through seaglass to one direct Messages
 conversation and the draft stores its concrete handle; ambiguous names, group
 chats, and unresolved names are rejected before confirmation. A successful
 `send` means Messages accepted the submission, not that Apple has confirmed
-delivery.
+delivery. Add `--attachment <path>` more than once to preserve attachment
+order. Drafting copies each readable file into an immutable private snapshot
+beneath `$GROGU_HOME`, records its canonical source path, filename, byte count,
+and SHA-256, and prints that exact identity for review. It does not upload
+files, create Messages staging, open Messages, or submit anything.
+
+Approving a Grogu software plan is not message confirmation. After reviewing
+the exact resolved recipient, complete body, and ordered attachment identities,
+the only send authorization is
+`grogu imessage send <draft-id> --confirm`. Confirmed sends revalidate both the
+source and snapshot, then copy only the verified snapshot into a fresh,
+user-only directory under `GROGU_IMESSAGE_STAGING_ROOT` (default:
+`~/Library/Messages/.grogu-send-staging`). The staging base, attempt, and index
+directories use mode `0700`; files use mode `0600`. An existing configured base
+with group or other permissions is rejected rather than modified. Messages
+receives the body first, waits 0.5 seconds, then receives each attachment in
+review order with 0.5 seconds between attachment submissions. These are
+separate operations, and a successful command still does not confirm delivery.
+After submission starts, Grogu retains that attempt's staged files because
+Messages may read aliases asynchronously; it does not delete them
+automatically. Remove an old attempt directory only after checking Messages and
+deciding the attachment no longer needs it. Per-attempt staging paths stay out
+of draft review and command output. Any recipient, body, attachment set, order,
+path, filename, size, digest, or content change requires a replacement draft,
+exact re-review, and fresh confirmation. Changing only the staging
+configuration does not alter the reviewed payload.
 
 `stim` is a reusable skill layered on the existing `grogu imessage` commands;
 it does not add a `grogu stim` subcommand. Its finite workflow is: explicitly
@@ -183,7 +208,8 @@ commits, issues, or pull requests.
 ```sh
 grogu imessage status
 grogu imessage search "<query>" --limit 10
-grogu imessage draft --recipient "<recipient>" --message "<body>"
+grogu imessage draft --recipient "<recipient>" --message "<body>" \
+  [--attachment "<path>"]...
 grogu imessage send <draft-id> --confirm
 
 GROGU_GMAIL_ENABLED=1 grogu gmail status
@@ -193,9 +219,10 @@ GROGU_GMAIL_ENABLED=1 grogu gmail send <draft-id> --confirm
 ```
 
 Sending requires explicit confirmation after showing the exact resolved
-recipient and complete body. Any edit requires a replacement draft, exact
-re-review, and fresh confirmation. Message content, recipient identifiers, and
-credentials are excluded from repository files and telemetry.
+recipient, complete body, and ordered attachment identities. Any edit requires
+a replacement draft, exact re-review, and fresh confirmation. Message content,
+recipient identifiers, attachment details, and credentials are excluded from
+repository files and telemetry.
 
 ## Remote sessions
 
