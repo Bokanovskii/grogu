@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+from grogu_plans import primary_worktree
+
 SCHEMA_VERSION = 2
 INTELLIGENCE_DIRNAME = ".grogu/intelligence"
 MAX_INDEXABLE_BYTES = 2 * 1024 * 1024
@@ -133,13 +135,14 @@ class MemoryStore:
 
     def __init__(self, root: Optional[Path] = None) -> None:
         self.root = repository_root(root)
+        self.state_root = primary_worktree(self.root)
         self.is_repository = bool(_run(self.root, ["rev-parse", "--show-toplevel"]))
-        self.directory = self.root / INTELLIGENCE_DIRNAME
+        self.directory = self.state_root / INTELLIGENCE_DIRNAME
         self.manifest_path = self.directory / "manifest.json"
         self.index_path = self.directory / "index.json"
         self.inventory_path = self.directory / "inventory.json"
         self.insights_path = self.directory / "insights.jsonl"
-        self.cache_path = self.root / ".grogu/state/memory-cache.json"
+        self.cache_path = self.state_root / ".grogu/state/memory-cache.json"
 
     def initialize(self, name: Optional[str] = None) -> dict:
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -147,8 +150,8 @@ class MemoryStore:
         manifest = {
             "schema_version": SCHEMA_VERSION,
             "kind": "grogu.repository_intelligence",
-            "repository_id": existing.get("repository_id", _repository_id(self.root)),
-            "name": name or existing.get("name") or self.root.name,
+            "repository_id": existing.get("repository_id", _repository_id(self.state_root)),
+            "name": name or existing.get("name") or self.state_root.name,
             "created_at": existing.get("created_at", now()),
             "updated_at": now(),
             "derivation": "grogu-knowledge-graph-v2",
@@ -251,22 +254,21 @@ class MemoryStore:
         graph = self._load_graph()
         indexed_file_nodes = set()
         for relative, item in files.items():
-            if item["role"] in {"instructions", "manifest", "configuration", "test"}:
-                node_id = f"file:{relative}"
-                indexed_file_nodes.add(node_id)
-                node = graph["nodes"].get(node_id, {})
-                graph["nodes"][node_id] = {
-                    "id": node_id,
-                    "type": "file",
-                    "name": relative,
-                    "summary": node.get("summary", f"{item['role']} file: {relative}"),
-                    "paths": [relative],
-                    "tags": sorted(set(node.get("tags", []) + [item["role"]])),
-                    "confidence": node.get("confidence", 0.6),
-                    "provenance": node.get("provenance", [{"kind": "deterministic-index"}]),
-                    "updated_at": node.get("updated_at", now()),
-                }
-        task_dir = self.root / ".grogu/tasks"
+            node_id = f"file:{relative}"
+            indexed_file_nodes.add(node_id)
+            node = graph["nodes"].get(node_id, {})
+            graph["nodes"][node_id] = {
+                "id": node_id,
+                "type": "file",
+                "name": relative,
+                "summary": node.get("summary", f"{item['role']} file: {relative}"),
+                "paths": [relative],
+                "tags": sorted(set(node.get("tags", []) + [item["role"]])),
+                "confidence": node.get("confidence", 0.6),
+                "provenance": node.get("provenance", [{"kind": "deterministic-index"}]),
+                "updated_at": node.get("updated_at", now()),
+            }
+        task_dir = self.state_root / ".grogu/tasks"
         indexed_work_nodes = set()
         for task_path in sorted(task_dir.glob("*.json")) if task_dir.is_dir() else []:
             task = _read_json(task_path)
@@ -340,7 +342,7 @@ class MemoryStore:
             return {
                 "schema_version": SCHEMA_VERSION,
                 "kind": "grogu.knowledge_graph",
-                "repository_id": _repository_id(self.root),
+                "repository_id": _repository_id(self.state_root),
                 "nodes": {},
                 "edges": [],
                 "updated_at": now(),

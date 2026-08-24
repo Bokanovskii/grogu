@@ -220,6 +220,7 @@ class GroguCliTests(unittest.TestCase):
             self.assertEqual(first["index"]["summary"]["file_count"], 3)
             self.assertIn("app.py", first["changed"])
             self.assertNotIn("mtime_ns", first["index"]["files"]["app.py"])
+            self.assertIn("file:app.py", first["graph"]["nodes"])
             self.assertIn("work:t-demo", first["graph"]["nodes"])
             second = store.index()
             self.assertEqual(second["changed"], [])
@@ -227,6 +228,62 @@ class GroguCliTests(unittest.TestCase):
             third = store.index()
             self.assertEqual(third["changed"], ["app.py"])
             self.assertTrue((root / ".grogu/state/memory-cache.json").is_file())
+
+    def test_memory_state_and_identity_are_shared_across_linked_worktrees(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "demo"
+            linked = Path(directory) / "feature-worktree"
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.email", "test@example.com"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.name", "Test User"],
+                check=True,
+            )
+            (root / "README.md").write_text("# Demo\n")
+            (root / "app.py").write_text("print('one')\n")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-qm", "initial"],
+                check=True,
+            )
+
+            primary = grogu_memory.MemoryStore(root)
+            primary_result = primary.index()
+            primary.remember(
+                "convention",
+                "python-style",
+                "Keep Python explicit.",
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "worktree",
+                    "add",
+                    "-qb",
+                    "feature",
+                    str(linked),
+                ],
+                check=True,
+            )
+
+            worktree = grogu_memory.MemoryStore(linked)
+            result = worktree.index()
+
+            self.assertEqual(worktree.state_root, root.resolve())
+            self.assertEqual(
+                result["manifest"]["repository_id"],
+                primary_result["manifest"]["repository_id"],
+            )
+            self.assertEqual(result["manifest"]["name"], root.name)
+            self.assertIn("convention:python-style", result["graph"]["nodes"])
+            self.assertIn("file:app.py", result["graph"]["nodes"])
+            worktree.link("convention:python-style", "file:app.py", "applies-to")
+            self.assertFalse((linked / ".grogu/intelligence").exists())
 
     def test_memory_graph_traversal_returns_bounded_learning_context(self):
         with tempfile.TemporaryDirectory() as project:
