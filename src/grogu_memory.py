@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from grogu_plans import primary_worktree
+from grogu_tasks import primary_worktree
 
 SCHEMA_VERSION = 2
 INTELLIGENCE_DIRNAME = ".grogu/intelligence"
