@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "id": "t-20260824-d1ccfd",
+  "title": "Reduce STIM workflow friction",
+  "body": "Collect consent in one compact review, preserve explicit model/provider approval, and allow bounded same-day finite schedules with spacing and quiet-hour enforcement.",
+  "status": "review",
+  "priority": "normal",
+  "labels": [],
+  "issue": null,
+  "assignee": "charlie",
+  "created_at": "2026-08-24T00:20:46+00:00",
+  "created_by": "charlie",
+  "updated_at": "2026-08-24T00:21:59+00:00",
+  "revision": 5,
+  "log": [
+    {
+      "at": "2026-08-24T00:20:46+00:00",
+      "by": "charlie",
+      "event": "created",
+      "text": "Reduce STIM workflow friction"
+    },
+    {
+      "at": "2026-08-24T00:20:54+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-24T00:20:54+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Mapped STIM contract, README, and messaging skill tests. Implementing one-shot consent review plus bounded same-day cadence."
+    },
+    {
+      "at": "2026-08-24T00:21:51+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Updated consent collection and bounded same-day scheduling contract; targeted tests pass."
+    },
+    {
+      "at": "2026-08-24T00:21:59+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "Implemented one-shot consent review and up to five sends per rolling 24 hours with 60-minute spacing. All 65 skill tests pass."
+    }
+  ]
+}

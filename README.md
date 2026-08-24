@@ -190,20 +190,23 @@ configuration does not alter the reviewed payload.
 
 `stim` is a reusable skill layered on the existing `grogu imessage` commands;
 it does not add a `grogu stim` subcommand. Its finite workflow is: explicitly
-opt in to selected local context and an exact model/provider, derive a local
-draft pool, review every exact recipient/body pair, explicitly enable a bounded
-macOS-local schedule, and retain an immediate `launchctl` disable path. Grok is
-used only when it is explicitly configured and selected through Copilot's
-normal model selection. The workflow never enables `auto`, silently substitutes
-a provider, falls back to another model, or routes to Azure.
+opt in through one compact review of the selected local context, exact
+model/provider, and schedule settings; derive a local draft pool; review every
+exact recipient/body pair; explicitly enable a bounded macOS-local schedule;
+and retain an immediate `launchctl` disable path. Values already supplied in
+the request are not asked again. Grok is used only when it is explicitly
+configured and selected through Copilot's normal model selection. The workflow
+never enables `auto`, silently substitutes a provider, falls back to another
+model, or routes to Azure.
 
 All conversation context, prompts, generated pools, draft ids, schedule state,
 and logs remain outside the repository under
 `$GROGU_HOME/stim/<workflow-id>/` with user-only permissions. A schedule is
-limited to one recipient, at most seven reviewed drafts, no more than one send
-per 24 hours, and at most 30 days. It skips missed windows rather than catching
-up. None of the private inputs or local artifacts belong in telemetry, plans,
-commits, issues, or pull requests.
+limited to one recipient, at most seven reviewed drafts, no more than five
+sends in a rolling 24-hour period, at least 60 minutes between sends, and at
+most 30 days. It skips missed windows rather than catching up. None of the
+private inputs or local artifacts belong in telemetry, plans, commits, issues,
+or pull requests.
 
 ```sh
 grogu imessage status
