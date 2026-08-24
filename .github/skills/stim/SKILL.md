@@ -21,6 +21,14 @@ approves all of the following:
 - quiet hours; and
 - the exact model and provider choice.
 
+Collect these settings without a questionnaire. Extract every value already
+present in the user's request, propose reasonable concrete values for anything
+missing, and present the complete configuration in one compact confirmation.
+That confirmation must name the exact model and provider and state that the
+approved excerpts or a derived prompt will be sent to it. Do not ask for fields
+one at a time, and do not re-ask for a value the user already supplied. A single
+unambiguous approval of the complete proposal satisfies this access consent.
+
 A general request to search messages is not consent for this workflow. Sending
 the approved excerpts or derived prompt to the selected model is also part of
 the opt-in and must be stated before access.
@@ -76,9 +84,12 @@ draft and its approval.
 ## 6. Enforce bounded automation
 
 Each workflow has exactly one recipient and may schedule at most seven messages.
-Allow no more than one send in any 24-hour period and enforce a maximum 30-day
-lifetime. Do not regenerate indefinitely. A request outside these limits
-remains draft-only or manual-send only.
+Allow no more than five sends in any rolling 24-hour period, keep scheduled
+sends at least 60 minutes apart, and enforce a maximum 30-day lifetime. The
+reviewed schedule's active window is also its allowed-hours boundary, so a
+separate quiet-hours prompt is unnecessary when that window is explicit. Do not
+regenerate indefinitely. A request outside these limits remains draft-only or
+manual-send only.
 
 The scheduler may execute only already-reviewed immutable draft ids with
 `grogu imessage send <draft-id> --confirm`. It must never call a model, choose a

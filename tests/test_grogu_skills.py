@@ -852,7 +852,8 @@ class RepositoryMessagingSkillContractTests(unittest.TestCase):
         text = " ".join((ROOT / "README.md").read_text(encoding="utf8").split())
         self.assertIn("`stim` is a reusable skill", text)
         self.assertIn("does not add a `grogu stim` subcommand", text)
-        self.assertIn("explicitly opt in to selected local context", text)
+        self.assertIn("opt in through one compact review", text)
+        self.assertIn("Values already supplied in the request are not asked again", text)
         self.assertIn("derive a local draft pool", text)
         self.assertIn("review every exact recipient/body pair", text)
         self.assertIn("explicitly enable a bounded macOS-local schedule", text)
@@ -864,6 +865,8 @@ class RepositoryMessagingSkillContractTests(unittest.TestCase):
         self.assertIn("routes to Azure", text)
         self.assertIn("$GROGU_HOME/stim/<workflow-id>/", text)
         self.assertIn("outside the repository", text)
+        self.assertIn("no more than five sends in a rolling 24-hour period", text)
+        self.assertIn("at least 60 minutes between sends", text)
         self.assertIn("Sending requires explicit confirmation", text)
         self.assertIn("Any edit requires a replacement draft", text)
 
@@ -913,6 +916,11 @@ class RepositoryMessagingSkillContractTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertIn(field, text)
 
+        self.assertIn("without a questionnaire", text)
+        self.assertIn("one compact confirmation", text)
+        self.assertIn("Do not ask for fields one at a time", text)
+        self.assertIn("do not re-ask for a value", text)
+        self.assertIn("approved excerpts or a derived prompt", text)
         self.assertIn("currently active model/provider only", text)
         self.assertIn("configured Grok model", text)
         self.assertIn("Copilot's normal model selection", text)
@@ -945,7 +953,9 @@ class RepositoryMessagingSkillContractTests(unittest.TestCase):
         for contract in (
             "exactly one recipient",
             "at most seven messages",
-            "no more than one send in any 24-hour period",
+            "no more than five sends in any rolling 24-hour period",
+            "at least 60 minutes apart",
+            "active window is also its allowed-hours boundary",
             "maximum 30-day lifetime",
             "draft-only or manual-send only",
             "must never call a model",
