@@ -15,6 +15,7 @@ import _sandbox  # noqa: E402,F401  (redirects GROGU_HOME and HOME away from the
 
 import grogu_design  # noqa: E402
 import grogu_plans  # noqa: E402
+import grogu_tasks  # noqa: E402
 
 
 def valid_design_spec() -> str:
@@ -48,6 +49,53 @@ def valid_design_spec() -> str:
             )
         body.append("")
     return "\n".join(body)
+
+
+class TaskStoreWorktreeTests(unittest.TestCase):
+    def test_linked_worktree_uses_primary_task_store(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "primary"
+            linked = Path(directory) / "feature"
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.email", "test@example.com"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.name", "Test User"],
+                check=True,
+            )
+            (root / "README.md").write_text("# Demo\n")
+            subprocess.run(["git", "-C", str(root), "add", "README.md"], check=True)
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-qm", "initial"],
+                check=True,
+            )
+
+            primary = grogu_tasks.TaskStore(root)
+            task = primary.create("Shared task")
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "worktree",
+                    "add",
+                    "-qb",
+                    "feature",
+                    str(linked),
+                ],
+                check=True,
+            )
+
+            worktree = grogu_tasks.TaskStore(linked)
+
+            self.assertEqual(worktree.root, root.resolve())
+            self.assertEqual(worktree.load(task["id"])["title"], "Shared task")
+            self.assertEqual(
+                grogu_plans.PlanStore(linked).root,
+                worktree.root,
+            )
 
 
 class PlanStoreTests(unittest.TestCase):

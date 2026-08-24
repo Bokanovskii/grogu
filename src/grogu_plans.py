@@ -46,7 +46,7 @@ from typing import Iterator, Optional
 
 import grogu_platform
 import grogu_privacy
-from grogu_tasks import actor, repository_root, session_id
+from grogu_tasks import actor, primary_worktree, repository_root, session_id
 import grogu_worktrees
 
 SCHEMA_VERSION = 1
@@ -419,44 +419,6 @@ def resolve_harness_friction(seq: int, *, resolution: str) -> bool:
             return False
         _write_harness_friction(payload)
     return True
-
-
-def primary_worktree(root: Path) -> Path:
-    """The main working tree of `root`'s repository, or `root` itself.
-
-    Plan state has to be one thing per repository. The pipeline's advertised way
-    to parallelise is one worktree per workstream, and `.grogu/state` is
-    gitignored, so a per-worktree store would give each agent a private copy of
-    the manifest: two engineers would take separate locks on separate files,
-    both write, and the defects, reviews and steering acks of whichever wrote
-    first would simply vanish. Resolving to the main worktree means every agent
-    in every worktree contends for the same lock over the same file, which is
-    what the locking was for.
-
-    `--git-common-dir` is the shared `.git` for a linked worktree, so its parent
-    is the main checkout. In a plain clone it is already `<root>/.git`.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return root
-    if result.returncode != 0:
-        return root
-    common = result.stdout.strip()
-    if not common:
-        return root
-    candidate = Path(common).parent
-    # A bare repository has no working tree to put plans in.
-    try:
-        return candidate.resolve() if candidate.is_dir() else root
-    except OSError:
-        return root
 
 
 def head_commit(root: Optional[Path] = None) -> str:
