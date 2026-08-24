@@ -112,11 +112,25 @@ this template only while constructing it:
 
 `launchctl bootout gui/$(id -u) "$HOME/Library/LaunchAgents/<opaque-label>.plist"`
 
-Test that exact disable path before enabling sends: bootstrap the LaunchAgent
-with its runner hard-disabled from sending, execute the fully expanded
-`launchctl bootout` command, and verify that it is unloaded. Only after that
-test and the separate schedule confirmation may it be bootstrapped with sending
-enabled. Disabling must prevent every future send immediately. Optional cleanup
-may then remove the local LaunchAgent and
+The hard-disabled runner must first perform a non-sending permission preflight:
+run `grogu imessage status` from the exact LaunchAgent execution environment
+and record only whether Messages access is ready or blocked. It must not read a
+conversation, resolve a recipient, create a draft, or send. This catches the
+macOS privacy boundary that can authorize an interactive terminal while still
+denying the Python interpreter launched by `launchd`.
+
+If that preflight reports unavailable Messages access, unload the LaunchAgent
+and stop before enablement. Explain that the scheduled process needs Full Disk
+Access separately, show the exact interpreter or executable path used by the
+LaunchAgent, and tell the user to grant it in System Settings before rerunning
+the preflight. Never discover this only when the first scheduled send is due,
+and never enable sending while the preflight is blocked.
+
+Test the exact disable path during the same hard-disabled bootstrap: after the
+preflight result is recorded, execute the fully expanded `launchctl bootout`
+command and verify that the agent is unloaded. Only after that test, a
+successful permission preflight, and the separate schedule confirmation may it
+be bootstrapped with sending enabled. Disabling must prevent every future send
+immediately. Optional cleanup may then remove the local LaunchAgent and
 `$GROGU_HOME/stim/<workflow-id>/`; cleanup is not required for disablement to
 take effect.
