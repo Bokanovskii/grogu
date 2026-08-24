@@ -113,11 +113,41 @@ def repository_root(start: Optional[Path] = None) -> Path:
     return start
 
 
+def primary_worktree(root: Path) -> Path:
+    """The main working tree of `root`'s repository, or `root` itself.
+
+    Repository task and plan state must be shared by every linked worktree.
+    `--git-common-dir` points at the primary checkout's `.git` directory for
+    both a plain clone and its linked worktrees.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return root
+    if result.returncode != 0:
+        return root
+    common = result.stdout.strip()
+    if not common:
+        return root
+    candidate = Path(common).parent
+    try:
+        return candidate.resolve() if candidate.is_dir() else root
+    except OSError:
+        return root
+
+
 class TaskStore:
     """Task records, leases and inbox messages for one repository."""
 
     def __init__(self, root: Optional[Path] = None) -> None:
-        self.root = Path(root or repository_root()).expanduser().resolve()
+        requested_root = Path(root or repository_root()).expanduser().resolve()
+        self.root = primary_worktree(requested_root)
         self.store = self.root / STORE_DIRNAME
         self.tasks_dir = self.store / "tasks"
         self.state_dir = self.store / "state"

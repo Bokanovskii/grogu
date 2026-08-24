@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "id": "t-20260824-577528",
+  "title": "Share task state across linked worktrees",
+  "body": "Resolve harness friction #50 by making TaskStore use the same primary-worktree-aware root resolution as PlanStore and adding regression coverage.",
+  "status": "review",
+  "priority": "normal",
+  "labels": [
+    "friction"
+  ],
+  "issue": null,
+  "assignee": "charlie",
+  "created_at": "2026-08-24T02:53:54+00:00",
+  "created_by": "charlie",
+  "updated_at": "2026-08-24T03:00:44+00:00",
+  "revision": 4,
+  "log": [
+    {
+      "at": "2026-08-24T02:53:54+00:00",
+      "by": "charlie",
+      "event": "created",
+      "text": "Share task state across linked worktrees"
+    },
+    {
+      "at": "2026-08-24T02:59:21+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-08-24T02:59:21+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Aligning TaskStore root resolution with PlanStore primary-worktree behavior and adding linked-worktree regression coverage."
+    },
+    {
+      "at": "2026-08-24T03:00:44+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "Moved primary_worktree resolution into the shared task module, made TaskStore use it, and added linked-worktree parity coverage; plan suite passes."
+    }
+  ]
+}
