@@ -3422,6 +3422,12 @@ def design_template(args: argparse.Namespace) -> int:
 
 def design_html_template(args: argparse.Namespace) -> int:
     title = " ".join(args.title) if args.title else "<report title>"
+    hero_stats = None
+    if args.hero_stats:
+        hero_stats = []
+        for raw in args.hero_stats:
+            value, _, label = raw.partition(":")
+            hero_stats.append((value.strip(), label.strip()))
     sys.stdout.write(
         grogu_plans.html_report_template(
             title,
@@ -3432,6 +3438,7 @@ def design_html_template(args: argparse.Namespace) -> int:
             logo=args.logo or "",
             footnote=args.footnote,
             sections=args.sections,
+            hero_stats=hero_stats,
         )
     )
     return 0
@@ -4798,6 +4805,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="sections",
         help="a table-of-contents entry, in order (can be used multiple times)",
+    )
+    design_html_template_parser.add_argument(
+        "--hero-stat",
+        action="append",
+        dest="hero_stats",
+        metavar="VALUE:LABEL",
+        help='a hero stat as "value:label", e.g. "94pct:Hit rate" (can be used multiple times, up to four reads best)',
     )
     design_html_template_parser.set_defaults(handler=design_html_template)
 

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -88,6 +89,37 @@ class HtmlReportTemplateTests(unittest.TestCase):
     def test_storage_key_is_scoped_to_the_title(self):
         html = grogu_plans.html_report_template("Sample Report")
         self.assertIn('"sample-report-theme"', html)
+
+    def test_no_duplicate_ids_between_hero_and_first_section(self):
+        html = grogu_plans.html_report_template(
+            "Sample Report", sections=["Overview", "Topology"]
+        )
+        ids = re.findall(r'\sid="([^"]+)"', html)
+        self.assertEqual(len(ids), len(set(ids)), f"duplicate ids found: {ids}")
+        self.assertIn('id="top"', html)
+        self.assertEqual(html.count('<section id='), 2)
+
+    def test_hero_stats_are_omitted_by_default(self):
+        html = grogu_plans.html_report_template("Sample Report")
+        self.assertNotIn('<div class="hero-stats">', html)
+
+    def test_hero_stats_render_when_provided(self):
+        html = grogu_plans.html_report_template(
+            "Sample Report",
+            hero_stats=[("94.2%", "Hit rate"), ("18ms", "P50 on hit")],
+        )
+        self.assertIn('<div class="hero-stats">', html)
+        self.assertIn("<strong>94.2%</strong><span>Hit rate</span>", html)
+        self.assertIn("<strong>18ms</strong><span>P50 on hit</span>", html)
+
+    def test_table_callout_and_diagram_primitives_are_styled(self):
+        html = grogu_plans.html_report_template("Sample Report")
+        self.assertIn("th, td {", html)
+        self.assertIn(".callout.danger", html)
+        self.assertIn(".callout.success", html)
+        self.assertIn(".callout.security", html)
+        self.assertIn(".diagram {", html)
+        self.assertIn(".legend {", html)
 
 
 class TaskStoreWorktreeTests(unittest.TestCase):
