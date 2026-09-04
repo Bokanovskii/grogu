@@ -47,7 +47,7 @@ import grogu_review
 # -- the workspace's own files ------------------------------------------------
 
 WORKSPACE_DIR = Path(__file__).resolve().parent / "review_workspace"
-STATIC_FILES = ("app.js", "anchors.js", "mermaid_anchors.js", "app.css")
+STATIC_FILES = ("app.js", "format.js", "anchors.js", "mermaid_anchors.js", "app.css")
 
 # -- the optional, pinned, hash-verified Mermaid asset ------------------------
 

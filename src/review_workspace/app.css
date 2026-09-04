@@ -196,6 +196,10 @@ button {
   transition: transform var(--dur-slow) var(--ease);
   transform: translateY(0);
 }
+/* When no revision change is pending the banner must occupy no vertical space
+   at all: its `display: flex` otherwise overrides the UA `[hidden]` rule and
+   leaves an empty --color-surface strip under the header on every load. */
+.revision-banner[hidden] { display: none; }
 
 /* -- main layout -- */
 .layout {
@@ -304,6 +308,12 @@ mark.mark-code.mark-focused { box-shadow: inset 0 -2px 0 var(--color-accent); }
 .orphaned-section { margin-bottom: var(--s-5); }
 .orphaned-section .rail-section-header { color: var(--color-attention); }
 .orphaned-explain { font-size: var(--text-s); color: var(--color-ink-2); margin: 0 0 var(--s-3); }
+
+/* Placed cards are absolutely positioned within this container so each card's
+   top aligns with its mark; the container is given an explicit height by the
+   positioning sweep so the rail scrolls. */
+.rail-cards { position: relative; }
+.rail-cards .card { width: 100%; }
 
 .empty-state { font-size: var(--text-m); line-height: 22px; color: var(--color-ink-2); }
 .empty-state h2 { font-size: var(--text-m); font-weight: 600; color: var(--color-ink); margin: 0 0 var(--s-2); }
