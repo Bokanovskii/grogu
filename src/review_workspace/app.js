@@ -4,6 +4,15 @@
 
 import { offsetsFromSelection, highlight } from "/static/anchors.js";
 import { renderDiagram, elementForNode, elementForEdge } from "/static/mermaid_anchors.js";
+import {
+  textAnchor,
+  mermaidAnchor,
+  diagramHeader,
+  tabLabel,
+  drawerLabel,
+  orphanedRevisionLine,
+  movedRevisionLine,
+} from "/static/format.js";
 
 const STAGE_ORDER = ["design", "implementation", "testing", "evaluation"];
 const STAGE_LABEL = {
@@ -166,6 +175,8 @@ function renderActions() {
   const rcBtn = $("request-changes-button");
   const approved = $("header-approved");
   const refusal = $("header-refusal");
+  const drawer = $("drawer-toggle");
+  if (drawer) drawer.textContent = drawerLabel((d.summary || {}).open || 0);
   approved.hidden = true;
   refusal.hidden = true;
   approveBtn.hidden = false;
@@ -215,7 +226,7 @@ function renderTabs() {
     tab.setAttribute("aria-selected", stage === state.stage ? "true" : "false");
     tab.tabIndex = stage === state.stage ? 0 : -1;
     const count = threadsForStage(stage).filter((t) => t.status === "open").length;
-    tab.textContent = STAGE_LABEL[stage] + (count ? `·${count}` : "");
+    tab.textContent = tabLabel(STAGE_LABEL[stage], count);
     tab.addEventListener("click", () => switchStage(stage));
     list.append(tab);
 
@@ -291,6 +302,7 @@ async function renderDiagrams(info) {
     const wrap = document.createElement("div");
     wrap.className = "diagram";
     wrap.dataset.blockDigest = block.digest || "";
+    wrap.dataset.mermaidIndex = String(block.index);
     holder.replaceWith(wrap);
     let rendered = false;
     if (hasAsset) {
@@ -330,7 +342,8 @@ function renderDegraded(wrap, block) {
   })), block);
   chipRow(wrap, "Edges", (parsed.edges || []).map((e) => ({
     label: `${labelOf(parsed, e.from)} → ${labelOf(parsed, e.to)}`,
-    target: "edge", edge: e,
+    target: "edge",
+    edge: { ...e, from_label: labelOf(parsed, e.from), to_label: labelOf(parsed, e.to) },
   })), block);
   chipRow(wrap, "Subgraphs", (parsed.subgraphs || []).map((g) => ({
     label: g.title || g.id,
@@ -499,7 +512,10 @@ function renderRail() {
     rail.append(section);
   }
 
-  for (const thread of placed) rail.append(threadCard(thread, false));
+  const placedContainer = document.createElement("div");
+  placedContainer.className = "rail-cards";
+  for (const thread of placed) placedContainer.append(threadCard(thread, false));
+  rail.append(placedContainer);
 
   if (resolved.length) {
     const details = document.createElement("details");
@@ -511,10 +527,72 @@ function renderRail() {
     rail.append(details);
   }
 
+  // Position each placed card at its mark's vertical offset, de-colliding with
+  // at least 8px between cards. Runs after layout so mark rectangles are real.
+  requestAnimationFrame(positionCards);
+
   if (state.pendingRevision && orphaned.length) {
     const first = rail.querySelector(".orphaned-section .card");
     if (first) first.scrollIntoView({ block: "nearest" });
   }
+}
+
+// The rail is chosen over a drawer precisely so a card sits beside its mark.
+// Each placed card's top is aligned to its anchor's on-screen vertical offset
+// (a text mark, or the diagram block a diagram anchor belongs to), then a
+// single downward sweep pushes any overlapping card down so consecutive cards
+// keep an 8px gap. Only applied in the wide two-rail layout; in the narrow
+// drawer the cards flow naturally.
+const CARD_GAP = 8;
+
+function positionCards() {
+  const rail = $("rail");
+  const container = rail && rail.querySelector(".rail-cards");
+  if (!container) return;
+  const cards = Array.from(container.children);
+  const wide = window.matchMedia("(min-width: 1181px)").matches;
+  if (!wide) {
+    container.style.height = "";
+    for (const card of cards) {
+      card.style.position = "";
+      card.style.top = "";
+      card.style.left = "";
+      card.style.right = "";
+    }
+    return;
+  }
+  const containerTop = container.getBoundingClientRect().top;
+  const entries = cards.map((card) => ({
+    card,
+    desired: Math.max(0, anchorOffsetTop(card, containerTop)),
+  }));
+  entries.sort((a, b) => a.desired - b.desired);
+  let cursor = 0;
+  for (const entry of entries) {
+    const top = Math.max(entry.desired, cursor);
+    entry.card.style.position = "absolute";
+    entry.card.style.left = "0";
+    entry.card.style.right = "0";
+    entry.card.style.top = `${top}px`;
+    cursor = top + entry.card.offsetHeight + CARD_GAP;
+  }
+  container.style.position = "relative";
+  container.style.height = `${cursor}px`;
+}
+
+function anchorOffsetTop(card, containerTop) {
+  const id = card.dataset.thread;
+  const mark = document.querySelector(`#doc mark[data-thread="${id}"]`);
+  if (mark) return mark.getBoundingClientRect().top - containerTop;
+  // A diagram-target card has no text mark; align it to the diagram block it
+  // belongs to, keeping it at the position of its block in document order.
+  const thread = (state.data.threads || []).find((t) => t.id === id);
+  const anchor = thread && thread.anchor;
+  if (anchor && anchor.kind === "mermaid") {
+    const diagram = document.querySelector(`#doc .diagram[data-mermaid-index="${anchor.block_index}"]`);
+    if (diagram) return diagram.getBoundingClientRect().top - containerTop;
+  }
+  return card.offsetTop;
 }
 
 function emptyStateAll() {
@@ -574,7 +652,7 @@ function threadCard(thread, orphaned) {
   if (anchor.kind === "mermaid") {
     const quote = document.createElement("div");
     quote.className = "card-quote";
-    quote.textContent = diagramHeader(anchor);
+    quote.textContent = diagramHeader(anchor, (id) => resolveNodeLabel(anchor.stage, anchor.block_index, id));
     card.append(quote);
   } else if (anchor.exact) {
     const quote = document.createElement("div");
@@ -622,26 +700,16 @@ function threadCard(thread, orphaned) {
   return card;
 }
 
-function diagramHeader(anchor) {
-  if (anchor.target === "node") return `node · ${anchor.label || anchor.node_id}`;
-  if (anchor.target === "edge" && anchor.edge) {
-    const base = `edge · ${anchor.edge.from} → ${anchor.edge.to}`;
-    return anchor.label ? `${base} ("${anchor.label}")` : base;
-  }
-  if (anchor.target === "subgraph") return `subgraph · ${anchor.label || anchor.node_id}`;
-  return "diagram";
+function resolveNodeLabel(stage, blockIndex, nodeId) {
+  const info = (state.data.stages || []).find((s) => s.stage === stage);
+  const block = info && (info.mermaid || []).find((b) => b.index === blockIndex);
+  if (!block) return null;
+  return labelOf(block.parsed || {}, nodeId);
 }
 
 function revisionLine(thread, orphaned) {
-  if (orphaned) {
-    return `orphaned since revision ${thread.anchor_revision || "?"}`;
-  }
-  if (thread.anchor_state === "shifted") {
-    const history = thread.anchor_history || [];
-    const last = history[history.length - 1] || {};
-    const base = `moved · revision ${last.from_revision || "?"} to ${last.to_revision || thread.anchor_revision || "?"}`;
-    return (thread.anchor_confidence || 1) < 0.95 ? base + " · close match" : base;
-  }
+  if (orphaned) return orphanedRevisionLine(thread);
+  if (thread.anchor_state === "shifted") return movedRevisionLine(thread);
   return "";
 }
 
@@ -659,6 +727,9 @@ function focusThread(id) {
   }
   const mark = document.querySelector(`mark[data-thread="${id}"]`);
   if (mark) mark.classList.add("mark-focused");
+  // The expanded card is taller than it was when first positioned; re-run the
+  // sweep so it and everything below it keep their 8px gaps.
+  requestAnimationFrame(positionCards);
 }
 
 // -- composer ----------------------------------------------------------------
@@ -746,18 +817,13 @@ function openComposer(anchor, header) {
 }
 
 function openDiagramComposer(block, item) {
-  const anchor = {
-    kind: "mermaid",
+  const info = currentStage();
+  const anchor = mermaidAnchor(block, item, {
     stage: state.stage,
-    block_index: block.index,
-    target: item.target,
-  };
-  if (item.node_id) anchor.node_id = item.node_id;
-  if (item.edge) anchor.edge = { from: item.edge.from, to: item.edge.to, pair_ordinal: item.edge.pair_ordinal || 0, edge_index: item.edge.edge_index };
-  if (item.label) anchor.label = item.label;
-  openComposer(anchor, item.target === "edge"
-    ? `edge · ${item.label}`
-    : `${item.target} · ${item.label}`);
+    revision: info.revision,
+    bodyDigest: info.digest,
+  });
+  openComposer(anchor, diagramHeader(anchor, (id) => labelOf(block.parsed || {}, id)));
 }
 
 function commentOnSelection() {
@@ -767,15 +833,11 @@ function commentOnSelection() {
   const info = currentStage();
   const md = info.markdown || "";
   const exact = md.slice(offsets.start, offsets.end);
-  const anchor = {
-    kind: "text",
+  const anchor = textAnchor(md, offsets.start, offsets.end, {
     stage: state.stage,
-    start: offsets.start,
-    end: offsets.end,
-    exact,
-    prefix: md.slice(Math.max(0, offsets.start - 32), offsets.start),
-    suffix: md.slice(offsets.end, offsets.end + 32),
-  };
+    revision: info.revision,
+    bodyDigest: info.digest,
+  });
   openComposer(anchor, `"${exact.slice(0, 80)}"`);
 }
 
@@ -1147,6 +1209,11 @@ function boot() {
   });
   const drawer = $("drawer-toggle");
   drawer.addEventListener("click", () => $("rail").classList.toggle("rail-open"));
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(positionCards, 100);
+  });
   wireDialogs();
   setupSelectionButton();
   setupKeyboard();
