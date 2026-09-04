@@ -102,6 +102,17 @@ local session and you have not already chosen a mode, because Copilot rejects
 Set `GROGU_AUTOPILOT=0` to turn the default off everywhere. Autopilot changes
 the agent's *mode*, not its permissions; it never implies `--allow-all-tools`.
 
+**A model, context tier and reasoning effort default too.** A fresh local
+session that does not already name a `--model`, `--context` or
+`--effort`/`--reasoning-effort` gets `--model gpt-5.6-sol --context
+long_context --effort high` — the same model every pipeline role
+(`.github/agents/*.md`) already runs on, at its largest context window and
+highest reasoning effort, rather than whatever Copilot itself would otherwise
+pick. The same launches that skip the autopilot default (an explicit mode,
+`--continue`/`--resume`/`--connect`, a Copilot subcommand, `--plain`) skip this
+one too, and naming any one of the four flags yourself leaves all of them
+alone. Set `GROGU_MODEL_DEFAULT=0` to turn it off everywhere.
+
 ## Configuration boundaries
 
 Grogu touches four places, and nothing else.
@@ -123,6 +134,7 @@ Environment variables:
 | --- | --- | --- |
 | `GROGU_HOME` | `~/.grogu` | Where traces, the catalog, and personal memory live |
 | `GROGU_AUTOPILOT` | `1` | `0` stops Grogu adding `--autopilot` |
+| `GROGU_MODEL_DEFAULT` | `1` | `0` stops Grogu adding its default `--model`/`--context`/`--effort` |
 | `GROGU_BANNER` | `1` | `0` leaves `~/.copilot/settings.json` untouched |
 | `GROGU_STATUS_LINE` | `1` | `0` installs the mark without the animated status line |
 | `GROGU_TAB_COLOR` | `1` | `0` leaves the iTerm2 tab alone |
@@ -281,6 +293,20 @@ grogu plan new "Settings page" --design
 grogu design recall --scope web                    # the user's own taste
 grogu design template "Settings page"              # the required structure
 grogu plan design-review <id> --verdict pass --evidence shot.png
+```
+
+A standalone HTML report or guide — an architecture walkthrough, a set of
+options written up for review, a comparison — never enters this pipeline at
+all: `grogu plan triage` answers it `direct`, because the file handed back is
+both the spec and the build, with nothing left for a designer to draft and an
+engineer to build separately. `grogu design html-template` prints the settled
+chrome (CSS variables for a light/dark theme, a sticky sidebar table of
+contents with a mobile fallback, a print button, a hero header, and
+card/callout/grid primitives) so the only real effort left is the content:
+
+```sh
+grogu design html-template "Architecture guide" --subtitle "System walkthrough" \
+  --section Overview --section Topology --section Storage
 ```
 
 Five things make this more than a naming scheme:

@@ -44,6 +44,22 @@ repository, and route direct only when no software signal is present either.
 Being wrong toward "personal" would silently disable the pipeline on real work,
 which costs far more than an occasional needless planning cycle.
 
+A standalone HTML report or guide is a narrower carve-out inside software work
+itself. "Write me an HTML guide to the new architecture" or "an HTML file
+comparing these three options for review" names a single self-contained
+document: the file handed back is both the spec and the build, so there is no
+separate implementation to design and then build against, and nothing for a
+tester to check beyond opening it. Routing that through the full
+architect/designer/engineer/tester pipeline buys nothing but a designer's
+reasoning re-deriving chrome that was already settled the first time somebody
+liked the result. `grogu plan triage` reports this `direct`, and `grogu design
+html-template` prints that settled chrome — CSS variables for a light/dark
+theme, a sticky sidebar table of contents, a print button, a hero header, and
+card/callout/grid primitives — so the only work left is the content. The moment
+a request also names an interactive surface — a form, a login, a database-backed
+API — it stops being a document and the carve-out does not fire; that is a
+product page wearing the word "guide", and it plans like one.
+
 ## Not everything needs a plan
 
 `grogu plan triage "<request>"` decides deterministically. Spending a model call

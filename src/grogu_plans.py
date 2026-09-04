@@ -42,7 +42,7 @@ import secrets
 import zlib
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, List, Optional
 
 import grogu_platform
 import grogu_privacy
@@ -652,6 +652,40 @@ _DESIGN_PATTERNS = (
     r"\buser[- ]facing\b",
 )
 
+# A standalone HTML report or guide -- an architecture walkthrough, a set of
+# options written up for review, a comparison, a summary -- is a single
+# self-contained artifact for reading, not a product surface: there is no
+# separate implementation to build against a design spec, because the file
+# handed back *is* the spec and the build. Routing "write me an HTML guide to
+# X" through the full architect/designer/engineer/tester pipeline burns a
+# planning cycle and a designer's creative reasoning re-inventing chrome that
+# `grogu design html-template` already holds settled.
+_STATIC_HTML_DOCUMENT_PATTERNS = (
+    r"\bhtml\b[^.]{0,60}\b(report|guide|file|write.?up|writeup|summary|comparison|"
+    r"walkthrough|review|reference doc|options? (doc|page|summary))\b",
+    r"\b(report|guide|write.?up|writeup|summary|comparison|walkthrough|review)\b"
+    r"[^.]{0,60}\b(html|standalone)\b",
+    r"\bstandalone html\b",
+)
+
+# Interactivity or product-surface language means the deliverable is not a
+# static document, whatever else the request says -- "an html guide with a
+# login form" is a product page wearing the word 'guide'.
+_INTERACTIVE_SURFACE_PATTERNS = (
+    r"\b(button|form|input|toggle|checkbox|dropdown|modal|dialog)\b",
+    r"\b(endpoint|api|database|db|server|backend|deploy|auth(entication)?|login)\b",
+    r"\b(app|application|dashboard|webapp|web app)\b",
+    r"\binteractiv(e|ity)\b",
+)
+
+
+def is_static_html_document(prompt: str) -> bool:
+    """Whether this asks for a standalone HTML report or guide, not an app."""
+    lowered = " ".join(prompt.split()).lower()
+    if any(re.search(pattern, lowered) for pattern in _INTERACTIVE_SURFACE_PATTERNS):
+        return False
+    return any(re.search(pattern, lowered) for pattern in _STATIC_HTML_DOCUMENT_PATTERNS)
+
 
 def triage(prompt: str) -> dict:
     """Decide whether a request warrants a plan, deterministically.
@@ -712,6 +746,27 @@ def triage(prompt: str) -> dict:
                 "for their review."
                 if override == "plan"
                 else "The user asked for this directly; do not spend a planning cycle."
+            ),
+        }
+
+    # A standalone HTML report or guide is a document, not a product surface:
+    # the file handed back is both the spec and the build, so there is nothing
+    # for a designer to draft and an engineer to build separately. Skip that
+    # unless the user explicitly asked for a plan above.
+    if is_static_html_document(lowered):
+        return {
+            "decision": "direct",
+            "design": False,
+            "software": True,
+            "override": False,
+            "score": 0,
+            "words": len(lowered.split()),
+            "reasons": ["asks for a standalone HTML report or guide, not a product surface"],
+            "explanation": (
+                "Answer directly with `grogu design html-template` as the starting "
+                "chrome. A static report is one artifact, not a designed surface "
+                "with a separate build to test; the architect/designer/engineer/"
+                "tester pipeline would be re-deriving settled style for no benefit."
             ),
         }
 
@@ -1301,6 +1356,340 @@ this is what stops a spec from being read as either gospel or a suggestion.
 
 def design_template(title: str = "<change>") -> str:
     return DESIGN_TEMPLATE.format(title=title)
+
+
+# A standalone, single-file HTML report or guide — an architecture walkthrough,
+# a set of options laid out for review, a written-up comparison — is a
+# different deliverable from a designed product surface: there is no separate
+# implementation to build against a spec, because the file *is* the artifact.
+# Routing that through the full design/build/test pipeline burns a planning
+# cycle and a designer's creative reasoning re-inventing chrome — the CSS
+# variables, the sidebar table of contents, the light/dark toggle, the card and
+# callout styles — that was already settled the first time somebody liked the
+# result. This template is that settled chrome, held once so it is copied
+# rather than re-derived: everything below `__CONTENT__` is what actually
+# varies between reports.
+HTML_REPORT_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>__TITLE__</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --surface: rgba(255, 255, 255, 0.92);
+      --surface-solid: #ffffff;
+      --surface-soft: #edf3fb;
+      --ink: #182337;
+      --muted: #637087;
+      --line: #d9e2ef;
+      --brand: #3457d5;
+      --brand-2: #00a88f;
+      --brand-3: #7c4dff;
+      --amber: #b86a00;
+      --danger: #b42318;
+      --success: #067647;
+      --shadow: 0 18px 55px rgba(28, 45, 78, 0.12);
+      --sidebar: #10182a;
+      --sidebar-ink: #dfe8fb;
+      --code: #101827;
+      --code-ink: #dbeafe;
+      --radius: 18px;
+    }
+    [data-theme="dark"] {
+      --bg: #0b1020;
+      --surface: rgba(19, 28, 48, 0.92);
+      --surface-solid: #131c30;
+      --surface-soft: #19243b;
+      --ink: #edf4ff;
+      --muted: #a8b5ca;
+      --line: #2b3852;
+      --brand: #84a2ff;
+      --brand-2: #49d7c0;
+      --brand-3: #b69cff;
+      --amber: #ffbd66;
+      --danger: #ff8f87;
+      --success: #66d9a7;
+      --shadow: 0 22px 65px rgba(0, 0, 0, 0.35);
+      --sidebar: #070b14;
+      --sidebar-ink: #dfe8fb;
+      --code: #050914;
+      --code-ink: #dbeafe;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 84% 8%, rgba(52, 87, 213, 0.12), transparent 28rem),
+        radial-gradient(circle at 35% 90%, rgba(0, 168, 143, 0.09), transparent 32rem),
+        var(--bg);
+      color: var(--ink);
+      font: 16px/1.58 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, input { font: inherit; }
+    a { color: var(--brand); }
+    code {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--surface-soft);
+      padding: 0.08rem 0.35rem;
+      font: 0.88em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    pre {
+      overflow: auto;
+      border-radius: 14px;
+      background: var(--code);
+      color: var(--code-ink);
+      padding: 1rem 1.15rem;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+    }
+    pre code { border: 0; background: none; padding: 0; color: inherit; }
+    .app { display: grid; grid-template-columns: 294px minmax(0, 1fr); min-height: 100vh; }
+    .sidebar {
+      position: sticky; top: 0; height: 100vh; overflow-y: auto;
+      background: linear-gradient(180deg, rgba(66, 93, 189, 0.2), transparent 32%), var(--sidebar);
+      color: var(--sidebar-ink);
+      padding: 1.6rem 1.15rem;
+      border-right: 1px solid rgba(255,255,255,0.08);
+    }
+    .brand-lockup { display: flex; align-items: center; gap: 0.8rem; margin-bottom: 1.5rem; padding: 0 0.35rem; }
+    .logo {
+      display: grid; place-items: center; width: 46px; height: 46px; border-radius: 14px;
+      background: linear-gradient(145deg, #6f8cff, #1cc9ab);
+      color: #07101f; font-weight: 900; letter-spacing: -0.06em;
+      box-shadow: 0 12px 30px rgba(83, 122, 255, 0.32);
+    }
+    .brand-lockup strong { display: block; font-size: 1rem; }
+    .brand-lockup span { display: block; color: #91a1bc; font-size: 0.78rem; }
+    .nav-label {
+      margin: 1.2rem 0.6rem 0.4rem; color: #7788a6; font-size: 0.7rem;
+      font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase;
+    }
+    .nav a {
+      display: flex; align-items: center; gap: 0.7rem; margin: 0.2rem 0; border-radius: 10px;
+      color: #b9c5da; padding: 0.62rem 0.75rem; text-decoration: none; transition: 160ms ease;
+    }
+    .nav a:hover, .nav a.active { color: white; background: rgba(255,255,255,0.09); transform: translateX(2px); }
+    .nav-num {
+      display: grid; place-items: center; width: 24px; height: 24px; flex: 0 0 auto;
+      border-radius: 8px; background: rgba(255,255,255,0.08); font-size: 0.72rem; font-weight: 800;
+    }
+    .sidebar-foot { margin-top: 1.5rem; border-top: 1px solid rgba(255,255,255,0.1); padding: 1rem 0.55rem 0; color: #8393ae; font-size: 0.76rem; }
+    main { width: min(1320px, 100%); padding: 2rem clamp(1.1rem, 3vw, 3.4rem) 5rem; margin: 0 auto; }
+    .mobile-nav { display: none; margin-bottom: 1rem; }
+    .mobile-nav select { width: 100%; padding: 0.6rem 0.8rem; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-solid); color: var(--ink); }
+    @media (max-width: 880px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .mobile-nav { display: block; }
+    }
+    .toolbar { position: sticky; top: 0.75rem; z-index: 20; display: flex; justify-content: flex-end; gap: 0.55rem; pointer-events: none; }
+    .toolbar button {
+      pointer-events: auto; cursor: pointer; border: 1px solid var(--line); border-radius: 999px;
+      background: var(--surface); color: var(--ink); padding: 0.55rem 0.8rem;
+      box-shadow: 0 8px 28px rgba(22, 34, 54, 0.1); backdrop-filter: blur(12px);
+    }
+    .toolbar button:hover { border-color: var(--brand); }
+    .hero {
+      position: relative; overflow: hidden; min-height: 320px; display: grid; align-items: center;
+      margin: -2.8rem -1rem 2rem; border-radius: 0 0 30px 30px; padding: 5.6rem clamp(1.4rem, 5vw, 4.4rem) 3.7rem;
+      background: linear-gradient(135deg, rgba(8, 20, 48, 0.97), rgba(30, 57, 125, 0.95) 52%, rgba(0, 113, 104, 0.92)), #102040;
+      color: white; box-shadow: var(--shadow);
+    }
+    .hero::before, .hero::after { content: ""; position: absolute; border-radius: 50%; border: 1px solid rgba(255,255,255,0.15); }
+    .hero::before { width: 420px; height: 420px; right: -90px; top: -140px; }
+    .hero::after { width: 260px; height: 260px; right: 90px; bottom: -170px; }
+    .eyebrow {
+      display: inline-flex; width: fit-content; align-items: center; gap: 0.5rem; border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 999px; background: rgba(255,255,255,0.08); padding: 0.35rem 0.72rem; color: #dfe8ff;
+      font-size: 0.75rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+    }
+    .hero h1 { max-width: 900px; margin: 1rem 0 0.8rem; font-size: clamp(2.5rem, 6vw, 5.4rem); line-height: 0.98; letter-spacing: -0.055em; }
+    .hero p { max-width: 780px; margin: 0; color: #cedaf2; font-size: clamp(1rem, 1.8vw, 1.25rem); }
+    .hero-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; margin-top: 2rem; max-width: 920px; }
+    .hero-stat { border: 1px solid rgba(255,255,255,0.14); border-radius: 14px; background: rgba(255,255,255,0.07); padding: 0.8rem 0.95rem; backdrop-filter: blur(9px); }
+    .hero-stat strong { display: block; font-size: 1.35rem; }
+    .hero-stat span { color: #aebcda; font-size: 0.75rem; }
+    section { scroll-margin-top: 1.5rem; margin: 2rem 0; }
+    .section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; margin: 3.2rem 0 1.2rem; }
+    .section-head h2 { margin: 0; font-size: clamp(1.8rem, 3vw, 2.7rem); line-height: 1.1; letter-spacing: -0.035em; }
+    .section-head p { max-width: 660px; margin: 0.5rem 0 0; color: var(--muted); }
+    .kicker { color: var(--brand); font-size: 0.73rem; font-weight: 850; letter-spacing: 0.11em; text-transform: uppercase; }
+    .card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 1.25rem; box-shadow: var(--shadow); backdrop-filter: blur(10px); }
+    .card h3 { margin: 0 0 0.55rem; }
+    .card p:last-child { margin-bottom: 0; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
+    @media (max-width: 880px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+    .callout {
+      display: grid; grid-template-columns: 44px 1fr; gap: 0.8rem; align-items: start;
+      border: 1px solid color-mix(in srgb, var(--brand) 30%, var(--line));
+      border-radius: 16px; background: color-mix(in srgb, var(--brand) 7%, var(--surface)); padding: 1rem 1.1rem;
+    }
+    .callout.warn { border-color: color-mix(in srgb, var(--amber) 38%, var(--line)); background: color-mix(in srgb, var(--amber) 8%, var(--surface)); }
+    .callout-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: var(--brand); color: white; font-weight: 900; }
+    .callout.warn .callout-icon { background: var(--amber); }
+    .callout strong { display: block; margin-bottom: 0.15rem; }
+    .callout p { margin: 0; color: var(--muted); }
+    .footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85rem; }
+    @media print { .toolbar, .mobile-nav { display: none !important; } .sidebar { display: none; } .app { display: block; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand-lockup">
+        <div class="logo">__LOGO__</div>
+        <div>
+          <strong>__TITLE__</strong>
+          <span>__SUBTITLE__</span>
+        </div>
+      </div>
+      <nav class="nav" aria-label="Report navigation">
+__NAV_ITEMS__
+      </nav>
+      <div class="sidebar-foot">
+        __FOOTNOTE__
+      </div>
+    </aside>
+
+    <main>
+      <div class="mobile-nav">
+        <select aria-label="Jump to section" onchange="location.hash=this.value">
+__NAV_OPTIONS__
+        </select>
+      </div>
+
+      <div class="toolbar">
+        <button class="print-button" onclick="window.print()" title="Print or save as PDF">Print</button>
+        <button id="themeToggle" title="Toggle color theme">Theme</button>
+      </div>
+
+      <header class="hero" id="__FIRST_ANCHOR__">
+        <div>
+          <span class="eyebrow">__EYEBROW__</span>
+          <h1>__HEADLINE__</h1>
+          <p>__DEK__</p>
+        </div>
+      </header>
+
+      __CONTENT__
+
+      <footer class="footer">
+        <strong>__TITLE__</strong><br>
+        Self-contained HTML artifact. No external JavaScript, fonts, images, or network requests are required to view it.
+      </footer>
+    </main>
+  </div>
+
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const toggle = document.getElementById("themeToggle");
+      const key = "__STORAGE_KEY__";
+      const saved = localStorage.getItem(key);
+      if (saved) {
+        root.dataset.theme = saved;
+      } else if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+        root.dataset.theme = "dark";
+      }
+      toggle.addEventListener("click", () => {
+        const next = root.dataset.theme === "dark" ? "light" : "dark";
+        root.dataset.theme = next;
+        localStorage.setItem(key, next);
+      });
+
+      const links = [...document.querySelectorAll(".nav a")];
+      const sections = links
+        .map((link) => document.querySelector(link.getAttribute("href")))
+        .filter(Boolean);
+      if (sections.length) {
+        const observer = new IntersectionObserver((entries) => {
+          const visible = entries.filter((entry) => entry.isIntersecting);
+          if (!visible.length) return;
+          const current = visible[0].target.id;
+          links.forEach((link) => link.classList.toggle("active", link.getAttribute("href") === `#${current}`));
+        }, { rootMargin: "-20% 0px -70% 0px" });
+        sections.forEach((section) => observer.observe(section));
+      }
+    })();
+  </script>
+</body>
+</html>
+"""
+
+
+def _slugify(text: str, fallback: str = "section") -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug or fallback
+
+
+def html_report_template(
+    title: str = "<report title>",
+    *,
+    subtitle: str = "Review guide",
+    eyebrow: str = "",
+    headline: str = "",
+    dek: str = "",
+    logo: str = "",
+    footnote: str = "",
+    sections: Optional[List[str]] = None,
+) -> str:
+    """The standing chrome for a standalone HTML report or guide.
+
+    This is the settled style: CSS variables for a light/dark theme, a sticky
+    sidebar table of contents with a mobile fallback, a print button, a hero
+    header, and card/callout/grid primitives. `sections` names the reader's
+    table of contents — supply the section titles in order and get back
+    numbered nav links, matching `<section id="...">` anchors, and a mobile
+    `<select>`, all wired to the same anchors; anything you write inside those
+    `<section>` tags is the actual content, which is the only part that should
+    take real design or engineering effort.
+    """
+    sections = list(sections) if sections else ["Overview"]
+    used_ids: List[str] = []
+    nav_items = []
+    nav_options = []
+    for index, name in enumerate(sections, start=1):
+        anchor = _slugify(name, fallback=f"section-{index}")
+        base_anchor = anchor
+        suffix = 2
+        while anchor in used_ids:
+            anchor = f"{base_anchor}-{suffix}"
+            suffix += 1
+        used_ids.append(anchor)
+        number = f"{index:02d}"
+        nav_items.append(f'        <a href="#{anchor}"><span class="nav-num">{number}</span> {name}</a>')
+        nav_options.append(f'          <option value="#{anchor}">{number} - {name}</option>')
+
+    content = "\n\n".join(
+        f'      <section id="{anchor}">\n        <div class="section-head">\n          <h2>{name}</h2>\n        </div>\n        <!-- content for "{name}" goes here -->\n      </section>'
+        for anchor, name in zip(used_ids, sections)
+    )
+
+    storage_key = f"{_slugify(title, fallback='report')}-theme"
+    replacements = {
+        "__TITLE__": title,
+        "__SUBTITLE__": subtitle,
+        "__EYEBROW__": eyebrow or subtitle,
+        "__HEADLINE__": headline or title,
+        "__DEK__": dek,
+        "__LOGO__": logo or (title[:3].upper() if title else "RPT"),
+        "__FOOTNOTE__": footnote,
+        "__NAV_ITEMS__": "\n".join(nav_items),
+        "__NAV_OPTIONS__": "\n".join(nav_options),
+        "__FIRST_ANCHOR__": used_ids[0],
+        "__STORAGE_KEY__": storage_key,
+        "__CONTENT__": content,
+    }
+    rendered = HTML_REPORT_TEMPLATE
+    for token, value in replacements.items():
+        rendered = rendered.replace(token, value)
+    return rendered
 
 
 class PlanStore:
