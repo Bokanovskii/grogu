@@ -295,6 +295,160 @@ def _block_kind(line: dict, following: dict | None = None) -> bool:
     )
 
 
+def _list_item(line: dict, match: re.Match) -> dict:
+    return {
+        "start": line["start"],
+        "end": line["end"],
+        "parts": [
+            {
+                "kind": "content",
+                "segments": [
+                    (
+                        line["start"] + match.start(3),
+                        line["start"] + match.end(3),
+                        line["end"],
+                    )
+                ],
+            }
+        ],
+    }
+
+
+def _append_continuation(item: dict, line: dict, content_start: int) -> None:
+    segment = (
+        line["start"] + content_start,
+        line["content_end"],
+        line["end"],
+    )
+    if item["parts"][-1]["kind"] == "content":
+        item["parts"][-1]["segments"].append(segment)
+    else:
+        item["parts"].append({"kind": "content", "segments": [segment]})
+    item["end"] = line["end"]
+
+
+def _render_list_content(source: str, segments: list) -> str:
+    content = []
+    for position, (start, end, raw_end) in enumerate(segments):
+        content.append(_inline(source, start, end))
+        if position + 1 < len(segments) and end < raw_end:
+            content.append(_literal(source, end, raw_end))
+    return "".join(content)
+
+
+def _render_list_group(source: str, group: dict) -> str:
+    parts = [
+        f"<{group['tag']}{_attrs(group['start'], group['end'])}>"
+    ]
+    for item in group["items"]:
+        parts.append(f"<li{_attrs(item['start'], item['end'])}>")
+        for item_part in item["parts"]:
+            if item_part["kind"] == "content":
+                parts.append(
+                    _render_list_content(source, item_part["segments"])
+                )
+            else:
+                parts.append(_render_list_group(source, item_part["group"]))
+        parts.append("</li>")
+    parts.append(f"</{group['tag']}>")
+    return "".join(parts)
+
+
+def _parse_list(source: str, lines: list, start_index: int) -> tuple:
+    first_line = lines[start_index]
+    first_unordered = _UL_RE.match(first_line["text"])
+    first_ordered = _OL_RE.match(first_line["text"])
+    first = first_unordered or first_ordered
+    outer_ordered = first_ordered is not None
+    base_indent = len(first.group(1))
+    group = {
+        "tag": "ol" if outer_ordered else "ul",
+        "start": first_line["start"],
+        "end": first_line["end"],
+        "items": [],
+    }
+    current_top = None
+    current_nested_group = None
+    current_nested_item = None
+    nested_indent = -1
+    index = start_index
+
+    while index < len(lines):
+        line = lines[index]
+        text = line["text"]
+        unordered = _UL_RE.match(text)
+        ordered = _OL_RE.match(text)
+        match = unordered or ordered
+
+        if match:
+            indent = len(match.group(1))
+            item_ordered = ordered is not None
+            if indent == base_indent:
+                if item_ordered != outer_ordered:
+                    break
+                current_top = _list_item(line, match)
+                group["items"].append(current_top)
+                current_nested_group = None
+                current_nested_item = None
+                nested_indent = -1
+            elif base_indent < indent <= base_indent + 4 and current_top is not None:
+                wanted_tag = "ol" if item_ordered else "ul"
+                if nested_indent < 0:
+                    nested_indent = indent
+                if indent != nested_indent:
+                    # A deeper list is outside the supported one-level nesting.
+                    content_start = len(text) - len(text.lstrip())
+                    target = current_nested_item or current_top
+                    _append_continuation(target, line, content_start)
+                    current_top["end"] = line["end"]
+                    if current_nested_group is not None:
+                        current_nested_group["end"] = line["end"]
+                    index += 1
+                    continue
+                if (
+                    current_nested_group is None
+                    or current_nested_group["tag"] != wanted_tag
+                ):
+                    current_nested_group = {
+                        "tag": wanted_tag,
+                        "start": line["start"],
+                        "end": line["end"],
+                        "items": [],
+                    }
+                    current_top["parts"].append(
+                        {"kind": "list", "group": current_nested_group}
+                    )
+                current_nested_item = _list_item(line, match)
+                current_nested_group["items"].append(current_nested_item)
+                current_nested_group["end"] = line["end"]
+                current_top["end"] = line["end"]
+            else:
+                break
+            group["end"] = line["end"]
+            index += 1
+            continue
+
+        if not text.strip():
+            break
+        indent = len(text) - len(text.lstrip())
+        if indent <= base_indent or current_top is None:
+            break
+        content_start = indent
+        if current_nested_item is not None and indent > nested_indent:
+            _append_continuation(current_nested_item, line, content_start)
+            current_nested_group["end"] = line["end"]
+        else:
+            _append_continuation(current_top, line, content_start)
+            current_nested_group = None
+            current_nested_item = None
+            nested_indent = -1
+        current_top["end"] = line["end"]
+        group["end"] = line["end"]
+        index += 1
+
+    return _render_list_group(source, group), index, group["end"]
+
+
 def render_document(source: str) -> dict:
     """Render the supported Markdown subset and return its source map."""
     if not isinstance(source, str):
@@ -458,76 +612,9 @@ def render_document(source: str) -> dict:
 
         list_match = _UL_RE.match(text) or _OL_RE.match(text)
         if list_match:
-            ordered = _OL_RE.match(text) is not None
-            list_tag = "ol" if ordered else "ul"
             start_index = index
-            base_indent = len(list_match.group(1))
-            parts = [f"<{list_tag}"]
-            item_parts = []
-            nested_tag = ""
-            top_item_open = False
-            nested_item_open = False
-            while index < len(lines):
-                current = lines[index]
-                unordered_match = _UL_RE.match(current["text"])
-                ordered_match = _OL_RE.match(current["text"])
-                match = unordered_match or ordered_match
-                if not match:
-                    break
-                indent = len(match.group(1))
-                if indent < base_indent or indent > base_indent + 4:
-                    break
-                item_ordered = ordered_match is not None
-                wanted_tag = "ol" if item_ordered else "ul"
-                if indent == base_indent and item_ordered != ordered:
-                    break
-                content_start = current["start"] + match.start(3)
-                content_end = current["start"] + match.end(3)
-                if indent > base_indent:
-                    if not top_item_open:
-                        break
-                    if not nested_tag:
-                        nested_tag = wanted_tag
-                        item_parts.append(f"<{nested_tag}>")
-                    elif nested_tag != wanted_tag:
-                        if nested_item_open:
-                            item_parts.append("</li>")
-                        item_parts.append(f"</{nested_tag}><{wanted_tag}>")
-                        nested_tag = wanted_tag
-                        nested_item_open = False
-                    if nested_item_open:
-                        item_parts.append("</li>")
-                    item_parts.append(
-                        f"<li{_attrs(current['start'], current['end'])}>"
-                        f"{_inline(source, content_start, content_end)}"
-                    )
-                    nested_item_open = True
-                else:
-                    if nested_tag:
-                        if nested_item_open:
-                            item_parts.append("</li>")
-                        item_parts.append(f"</{nested_tag}>")
-                        nested_tag = ""
-                        nested_item_open = False
-                    if top_item_open:
-                        item_parts.append("</li>")
-                    item_parts.append(
-                        f"<li{_attrs(current['start'], current['end'])}>"
-                        f"{_inline(source, content_start, content_end)}"
-                    )
-                    top_item_open = True
-                index += 1
-            if nested_tag:
-                if nested_item_open:
-                    item_parts.append("</li>")
-                item_parts.append(f"</{nested_tag}>")
-            if top_item_open:
-                item_parts.append("</li>")
-            block_end = lines[index - 1]["end"]
-            parts[0] += _attrs(lines[start_index]["start"], block_end) + ">"
-            parts.extend(item_parts)
-            parts.append(f"</{list_tag}>")
-            rendered.append("".join(parts))
+            list_html, index, block_end = _parse_list(source, lines, index)
+            rendered.append(list_html)
             add_block("list", 0, lines[start_index]["start"], block_end)
             continue
 
@@ -591,3 +678,20 @@ def render_document(source: str) -> dict:
 def render(source: str) -> str:
     """Render supported Markdown to safe HTML."""
     return render_document(source)["html"]
+
+
+def _list_continuation_regression() -> None:
+    """Keep wrapped list text and its child list inside the same list item.
+
+    >>> sample = "- Parent text\\n  continues here\\n  - Child text\\n    continues too\\n- Next\\n"
+    >>> output = render(sample)
+    >>> output.count("<ul") == 2 and output.count("<li") == 3
+    True
+    >>> output.count("<p") == 0
+    True
+    >>> output.index("continues here") < output.index("<ul", output.index("<ul") + 1)
+    True
+    >>> after_nested = render("- Parent\\n  - Child\\n  after child\\n")
+    >>> after_nested.index("Child") < after_nested.index("after child")
+    True
+    """
