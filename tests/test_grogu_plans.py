@@ -51,6 +51,45 @@ def valid_design_spec() -> str:
     return "\n".join(body)
 
 
+class HtmlReportTemplateTests(unittest.TestCase):
+    """The standing chrome for a standalone HTML report or guide."""
+
+    def test_renders_with_no_leftover_placeholder_tokens(self):
+        html = grogu_plans.html_report_template(
+            "Sample Report",
+            subtitle="System walkthrough",
+            sections=["Overview", "Topology", "Storage"],
+        )
+        self.assertNotRegex(html, r"__[A-Z_]+__")
+        self.assertIn("<!doctype html>", html)
+        self.assertIn("Sample Report", html)
+
+    def test_one_section_and_nav_entry_per_named_section(self):
+        html = grogu_plans.html_report_template(
+            "Sample Report", sections=["Overview", "Options", "Risks"]
+        )
+        self.assertEqual(html.count('<section id='), 3)
+        self.assertIn('href="#overview"', html)
+        self.assertIn('href="#options"', html)
+        self.assertIn('href="#risks"', html)
+
+    def test_duplicate_section_names_get_distinct_anchors(self):
+        html = grogu_plans.html_report_template(
+            "Sample Report", sections=["Overview", "Overview"]
+        )
+        self.assertIn('href="#overview"', html)
+        self.assertIn('href="#overview-2"', html)
+
+    def test_defaults_to_a_single_overview_section(self):
+        html = grogu_plans.html_report_template("Sample Report")
+        self.assertEqual(html.count('<section id='), 1)
+        self.assertIn('id="overview"', html)
+
+    def test_storage_key_is_scoped_to_the_title(self):
+        html = grogu_plans.html_report_template("Sample Report")
+        self.assertIn('"sample-report-theme"', html)
+
+
 class TaskStoreWorktreeTests(unittest.TestCase):
     def test_linked_worktree_uses_primary_task_store(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1364,6 +1403,43 @@ class TriageScopeTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.assertFalse(grogu_plans.is_software_work(prompt))
                 self.assertFalse(grogu_plans.triage(prompt)["software"])
+
+
+class StaticHtmlDocumentTriageTests(unittest.TestCase):
+    """A standalone HTML report or guide is a document, not a build to plan."""
+
+    DIRECT = (
+        "build me an html file for reviewing the architecture upgrade options",
+        "write an html guide to the ivy architecture",
+        "make a standalone html report comparing the two approaches",
+        "generate an html write-up summarizing the migration options for review",
+        "can you build me an html file for reviewing things and guides",
+    )
+    STILL_PLAN = (
+        "build a settings page with dark mode and overrides",
+        "add a login form to the html dashboard",
+        "create an interactive html dashboard with a database-backed api",
+        "build a review dashboard app with an api backend",
+    )
+
+    def test_static_html_report_requests_are_answered_directly(self):
+        for prompt in self.DIRECT:
+            with self.subTest(prompt=prompt):
+                result = grogu_plans.triage(prompt)
+                self.assertEqual(result["decision"], "direct", prompt)
+                self.assertTrue(result["software"], prompt)
+                self.assertFalse(result["design"], prompt)
+
+    def test_interactive_surfaces_still_plan_even_when_html_is_mentioned(self):
+        for prompt in self.STILL_PLAN:
+            with self.subTest(prompt=prompt):
+                self.assertEqual(grogu_plans.triage(prompt)["decision"], "plan", prompt)
+
+    def test_explicit_plan_request_still_wins_over_the_static_document_carveout(self):
+        result = grogu_plans.triage(
+            "please make me a plan for an html guide to the new architecture"
+        )
+        self.assertEqual(result["decision"], "plan")
 
 
 class HarnessFrictionConcurrencyTests(unittest.TestCase):

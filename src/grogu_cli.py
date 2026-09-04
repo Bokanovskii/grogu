@@ -1065,6 +1065,39 @@ def autopilot_default_enabled() -> bool:
     return os.environ.get("GROGU_AUTOPILOT", "1") != "0"
 
 
+# The model every pipeline role already runs on (see `.github/agents/*.md`);
+# a bare launch used to fall through to whatever Copilot itself defaults to,
+# which is a different, weaker model than the one doing the actual work.
+DEFAULT_MODEL = "gpt-5.6-sol"
+DEFAULT_MODEL_CONTEXT = "long_context"
+DEFAULT_MODEL_EFFORT = "high"
+
+# Flags that mean the user, not Grogu, is choosing what the session runs on.
+MODEL_CHOICE_FLAGS = frozenset({"--model", "--context", "--effort", "--reasoning-effort"})
+
+
+def model_default_enabled() -> bool:
+    return os.environ.get("GROGU_MODEL_DEFAULT", "1") != "0"
+
+
+def wants_model_default(arguments: list[str]) -> bool:
+    """True when Grogu should supply its own default model, context and effort.
+
+    Mirrors `wants_autopilot_default`: skip subcommands, resumed or connected
+    sessions, and anything where the user already named a model, context tier
+    or reasoning effort, so an explicit choice is never overridden or
+    duplicated.
+    """
+    if not model_default_enabled():
+        return False
+    if any(argument in COPILOT_SUBCOMMANDS for argument in arguments):
+        return False
+    names = _flags(arguments)
+    if names & NON_DEFAULTABLE_FLAGS:
+        return False
+    return not (names & MODEL_CHOICE_FLAGS)
+
+
 def _flags(arguments: list[str]) -> set[str]:
     """Option names in `arguments`, with `--name=value` reduced to `--name`."""
     names = set()
@@ -1098,6 +1131,13 @@ def copilot_arguments(arguments: list[str]) -> list[str]:
         # Leading position keeps user arguments, including any trailing `--`
         # separator, exactly as they were typed.
         prepared = ["--autopilot", *prepared]
+    if wants_model_default(arguments):
+        prepared = [
+            "--model", DEFAULT_MODEL,
+            "--context", DEFAULT_MODEL_CONTEXT,
+            "--effort", DEFAULT_MODEL_EFFORT,
+            *prepared,
+        ]
     return ["--plugin-dir", str(ROOT), *prepared]
 
 
@@ -3380,6 +3420,23 @@ def design_template(args: argparse.Namespace) -> int:
     return 0
 
 
+def design_html_template(args: argparse.Namespace) -> int:
+    title = " ".join(args.title) if args.title else "<report title>"
+    sys.stdout.write(
+        grogu_plans.html_report_template(
+            title,
+            subtitle=args.subtitle,
+            eyebrow=args.eyebrow or "",
+            headline=args.headline or "",
+            dek=args.dek or "",
+            logo=args.logo or "",
+            footnote=args.footnote,
+            sections=args.sections,
+        )
+    )
+    return 0
+
+
 def design_seed(args: argparse.Namespace) -> int:
     added = design_store(args).seed_apple()
     print(f"recorded {len(added)} principle(s)")
@@ -4724,6 +4781,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     design_template_parser.add_argument("title", nargs="*")
     design_template_parser.set_defaults(handler=design_template)
+
+    design_html_template_parser = design_subparsers.add_parser(
+        "html-template",
+        help="print the standing chrome for a standalone HTML report or guide",
+    )
+    design_html_template_parser.add_argument("title", nargs="*")
+    design_html_template_parser.add_argument("--subtitle", default="Review guide")
+    design_html_template_parser.add_argument("--eyebrow")
+    design_html_template_parser.add_argument("--headline")
+    design_html_template_parser.add_argument("--dek")
+    design_html_template_parser.add_argument("--logo")
+    design_html_template_parser.add_argument("--footnote", default="")
+    design_html_template_parser.add_argument(
+        "--section",
+        action="append",
+        dest="sections",
+        help="a table-of-contents entry, in order (can be used multiple times)",
+    )
+    design_html_template_parser.set_defaults(handler=design_html_template)
 
     design_seed_parser = design_subparsers.add_parser(
         "seed", help="record the baseline Apple-leaning principles"

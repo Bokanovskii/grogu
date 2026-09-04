@@ -83,11 +83,36 @@ class GroguCliTests(unittest.TestCase):
         )
         self.assertIn("mcp_available", payload)
 
+    def test_design_html_template_prints_a_populated_document(self):
+        result = self.run_cli(
+            "design",
+            "html-template",
+            "Sample",
+            "Report",
+            "--subtitle",
+            "Review guide",
+            "--section",
+            "Overview",
+            "--section",
+            "Details",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("<!doctype html>", result.stdout)
+        self.assertIn("Sample Report", result.stdout)
+        self.assertIn('href="#overview"', result.stdout)
+        self.assertIn('href="#details"', result.stdout)
+        self.assertNotRegex(result.stdout, r"__[A-Z_]+__")
+
     def test_bare_launch_defaults_to_autopilot(self):
         plugin = ["--plugin-dir", str(ROOT)]
+        model_default = [
+            "--model", grogu_cli.DEFAULT_MODEL,
+            "--context", grogu_cli.DEFAULT_MODEL_CONTEXT,
+            "--effort", grogu_cli.DEFAULT_MODEL_EFFORT,
+        ]
         self.assertEqual(
             grogu_cli.copilot_arguments([]),
-            [*plugin, "--autopilot"],
+            [*plugin, *model_default, "--autopilot"],
         )
         self.assertEqual(
             grogu_cli.copilot_arguments(["--model", "gpt-5.4"]),
@@ -95,16 +120,53 @@ class GroguCliTests(unittest.TestCase):
         )
 
     def test_launch_preserves_explicit_plugin_directories(self):
+        model_default = [
+            "--model", grogu_cli.DEFAULT_MODEL,
+            "--context", grogu_cli.DEFAULT_MODEL_CONTEXT,
+            "--effort", grogu_cli.DEFAULT_MODEL_EFFORT,
+        ]
         self.assertEqual(
             grogu_cli.copilot_arguments(["--plugin-dir", "/user/plugin"]),
             [
                 "--plugin-dir",
                 str(ROOT),
+                *model_default,
                 "--autopilot",
                 "--plugin-dir",
                 "/user/plugin",
             ],
         )
+
+    def test_bare_launch_defaults_model_context_and_effort(self):
+        self.assertEqual(
+            grogu_cli.wants_model_default([]), True
+        )
+        self.assertEqual(
+            grogu_cli.wants_model_default(["--model", "gpt-5.4"]), False
+        )
+        self.assertEqual(
+            grogu_cli.wants_model_default(["--context", "default"]), False
+        )
+        self.assertEqual(
+            grogu_cli.wants_model_default(["--effort", "low"]), False
+        )
+        self.assertEqual(
+            grogu_cli.wants_model_default(["--resume"]), False
+        )
+        self.assertEqual(
+            grogu_cli.wants_model_default(["--connect"]), False
+        )
+        self.assertEqual(
+            grogu_cli.wants_model_default(["--continue"]), False
+        )
+
+    def test_model_default_disabled_by_environment(self):
+        with mock.patch.dict(os.environ, {"GROGU_MODEL_DEFAULT": "0"}):
+            self.assertEqual(grogu_cli.wants_model_default([]), False)
+            self.assertEqual(
+                grogu_cli.copilot_arguments([]),
+                ["--plugin-dir", str(ROOT), "--autopilot"],
+            )
 
     def test_trace_record_and_list(self):
         with tempfile.TemporaryDirectory() as home:
