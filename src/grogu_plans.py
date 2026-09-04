@@ -1533,10 +1533,12 @@ HTML_REPORT_TEMPLATE = """<!doctype html>
     }
     .callout.warn { border-color: color-mix(in srgb, var(--amber) 38%, var(--line)); background: color-mix(in srgb, var(--amber) 8%, var(--surface)); }
     .callout.danger { border-color: color-mix(in srgb, var(--danger) 38%, var(--line)); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
+    .callout.security { border-color: color-mix(in srgb, var(--danger) 38%, var(--line)); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
     .callout.success { border-color: color-mix(in srgb, var(--success) 38%, var(--line)); background: color-mix(in srgb, var(--success) 8%, var(--surface)); }
     .callout-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: var(--brand); color: white; font-weight: 900; }
     .callout.warn .callout-icon { background: var(--amber); }
     .callout.danger .callout-icon { background: var(--danger); }
+    .callout.security .callout-icon { background: var(--danger); }
     .callout.success .callout-icon { background: var(--success); }
     .callout strong { display: block; margin-bottom: 0.15rem; }
     .callout p { margin: 0; color: var(--muted); }

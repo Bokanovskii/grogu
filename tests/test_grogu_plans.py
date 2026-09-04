@@ -117,6 +117,7 @@ class HtmlReportTemplateTests(unittest.TestCase):
         self.assertIn("th, td {", html)
         self.assertIn(".callout.danger", html)
         self.assertIn(".callout.success", html)
+        self.assertIn(".callout.security", html)
         self.assertIn(".diagram {", html)
         self.assertIn(".legend {", html)
 
