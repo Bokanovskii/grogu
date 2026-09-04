@@ -1349,7 +1349,11 @@ class PlanStore:
     # and the revisions directory holds superseded drafts. That was enforced by
     # a comment in one function, which a user or an agent running `git add -A`
     # walks straight past, in a repository that is public.
-    _LOCAL_ONLY = "manifest.json\nrevisions/\n*.sealed\n"
+    #
+    # `review.json` carries the user's unfiltered words about the plan (the
+    # review workspace's threads and covering notes), so it is local-only for
+    # the same reason and by the same enforcement as the manifest.
+    _LOCAL_ONLY = "manifest.json\nrevisions/\n*.sealed\nreview.json\n"
 
     def _protect_working_state(self) -> None:
         try:
@@ -1357,6 +1361,25 @@ class PlanStore:
             marker = self.plans_dir / ".gitignore"
             if not marker.exists():
                 marker.write_text(self._LOCAL_ONLY, encoding="utf8")
+                return
+            # A marker already written by an older Grogu never gained
+            # `review.json`, and that gap is a privacy failure, not a cosmetic
+            # one: a `git add -A` would stage the user's review comments in a
+            # public repository. Append whatever entry is missing, preserving
+            # every line already there.
+            existing = marker.read_text(encoding="utf8")
+            lines = existing.splitlines()
+            present = {line.strip() for line in lines}
+            missing = [
+                entry
+                for entry in self._LOCAL_ONLY.splitlines()
+                if entry and entry not in present
+            ]
+            if missing:
+                suffix = "" if existing.endswith("\n") or not existing else "\n"
+                marker.write_text(
+                    existing + suffix + "\n".join(missing) + "\n", encoding="utf8"
+                )
         except OSError:
             return
 
