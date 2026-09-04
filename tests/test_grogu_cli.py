@@ -103,6 +103,22 @@ class GroguCliTests(unittest.TestCase):
         self.assertIn('href="#details"', result.stdout)
         self.assertNotRegex(result.stdout, r"__[A-Z_]+__")
 
+    def test_design_html_template_wires_hero_stats(self):
+        result = self.run_cli(
+            "design",
+            "html-template",
+            "Sample",
+            "Report",
+            "--hero-stat",
+            "94.2%:Hit rate",
+            "--hero-stat",
+            "18ms:P50 on hit",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('<div class="hero-stats">', result.stdout)
+        self.assertIn("<strong>94.2%</strong><span>Hit rate</span>", result.stdout)
+        self.assertIn("<strong>18ms</strong><span>P50 on hit</span>", result.stdout)
+
     def test_bare_launch_defaults_to_autopilot(self):
         plugin = ["--plugin-dir", str(ROOT)]
         model_default = [
