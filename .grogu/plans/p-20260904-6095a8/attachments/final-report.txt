@@ -1,0 +1,119 @@
+Design re-review, final pass — p-20260904-6095a8, Interactive plan review workspace
+
+Playwright 1.55.0 / Chromium 1187, headless, a fresh automation-owned context and
+temporary profile per run, viewport 1280x800 unless a scenario says otherwise.
+Subjects are three throwaway fixture plans in scratch git repositories, created for
+this run; no capture holds the user's plan text, a session token or a cookie.
+Every stage in the main fixture is written and left at progress `pending`, which is
+the case that failed last time.
+
+DEFECTS D5-D9 AND THE COMMENT-CREATION REGRESSION
+
+PASS  d5a   a written stage whose progress is `pending` renders its body
+             {"api":[{"stage":"design","state":"pending","written":true,"md":46100},{"stage":"implementation","state":"pending","written":true,"md":1960},{"stage":"testing","state":"pending","written":true,"md":792},{"stage":"evaluation","state":"pending","written":true,"md":604}],"view":{"stateBlock":null,"heading":"Interactive plan review workspace — design","spans":1436,"meta":"design · revision 1 · 45.0 KB"}}
+PASS  REG1  text and diagram comments still save on a written, not-complete stage
+             {"posts":["200 POST","200 POST","200 POST","200 POST","200 POST"],"cards":5,"marks":3,"threads":[{"id":"c1","kind":"text","digest":true,"revision":1},{"id":"c2","kind":"text","digest":true,"revision":1},{"id":"c3","kind":"text","digest":true,"revision":1},{"id":"c4","kind":"mermaid","digest":true,"revision":1},{"id":"c5","kind":"mermaid","digest":true,"revision":1}]}
+PASS  REG2  diagram composer headers name labels
+             {"nodeHeader":"node · Parse the plan","edgeHeader":"edge · Anchor comments → Review round (\"stored\")"}
+PASS  d7    the round chip carries `changes requested` in the fixed segment order
+             {"before":"round 1 · 5 open","after":"round 1 · changes requested · 5 open"}
+PASS  d8    the disabled Request-changes button gives the waiting reason, in title and aria
+             {"chip":"round 1 · changes requested · 5 open","line":"Round 1 is with the architect. Add a comment to open round 2.","lineHidden":false,"disabled":true,"title":"Round 1 is with the architect. Add a comment to open round 2.","describedby":"rc-reason","described":"Round 1 is with the architect. Add a comment to open round 2."}
+PASS  d9    rail card DOM order matches the visual/document order
+             {"dom":["c1","c2","c4","c5","c3"],"visual":["c1","c2","c4","c5","c3"]}
+PASS  d9b   every visual gap between rail cards is at least 8px
+             [8,456,8,765]
+PASS  d6a   the sealed panel names the tab's own stage and the effective role
+             {"Testing":{"heading":"Sealed","body":"The testing plan is written for the tester and is not readable by the engineer. An implementation written against its own tests only proves the tests were satisfiable."},"Evaluation":{"heading":"Sealed","body":"The evaluation plan is written for the tester and is not readable by the engineer. An implementation written against its own tests only proves the tests were satisfiable."}}
+PASS  REG5  no sealed body reaches the engineer's payload
+             {"leaked":false,"readable":["design","implementation"]}
+PASS  REG6  the engineer launch still shows the role and the approval refusal
+             {"role":"reading as engineer","approveHidden":true,"refusal":"Approval is the user's. This workspace is reading as the engineer, so it can read and comment only."}
+PASS  d6b   the unwritten panel names the tab's own stage
+             {"heading":"Not written yet","body":"The architect writes the testing plan before this stage can be reviewed."}
+
+ORPHAN PINNING AND RAIL ORDER
+
+PASS  d9c   with an orphan pinned, rail DOM order still matches visual order
+             {"dom":["c1","c3","c2","c4"],"visual":["c1","c3","c2","c4"]}
+PASS  d9d   every visual gap is at least 8px
+             [24,87,162]
+PASS  REG4  the orphaned card is pinned first and names the revision it orphaned at
+             {"orphan":{"id":"c1","domIndex":0,"top":234,"bottom":412,"markTop":null,"state":"orphaned","revision":"orphaned since revision 2","inOrphanSection":true},"header":"Orphaned — 1"}
+PASS  REG3  marked cards follow their marks' document order
+             [{"id":"c3","markTop":411,"top":436},{"id":"c2","markTop":593,"top":593}]
+PASS  REG7  the orphaned explanation is verbatim
+             "The plan was rewritten and this text is no longer in it. Your comments are kept with the words you quoted, and nothing was deleted."
+
+REGRESSION OF THE PREVIOUSLY ACCEPTED CRITERIA
+
+PASS  T1    layout is 672 / 32 / 280 at 17px/28px
+             {"docW":672,"railW":280,"gutter":32,"font":"17px","line":"28px","accent":"#0B57C7","attention":"#8A4B00","ink":"#191919","surface":"#F4F4F2","markLine":"#6092DB","ruleStrong":"#8E8E88","approveBg":"rgb(11, 87, 199)","requestBg":"rgba(0, 0, 0, 0)","privacy":"Local only. Comments are saved to .grogu/plans/p-20260905-506c17/review.json, which is git-ignored and is never sent anywhere.","img":false,"banner":0}
+PASS  T2    palette tokens are exact in light
+             {"accent":"#0B57C7","attention":"#8A4B00","ink":"#191919","surface":"#F4F4F2","markLine":"#6092DB","ruleStrong":"#8E8E88"}
+PASS  T3    Approve is the only filled accent control
+             {"approveBg":"rgb(11, 87, 199)","requestBg":"rgba(0, 0, 0, 0)"}
+PASS  T4    the privacy line names review.json and git-ignored
+             "Local only. Comments are saved to .grogu/plans/p-20260905-506c17/review.json, which is git-ignored and is never sent anywhere."
+PASS  T5    no img is rendered from Markdown and the hidden banner has no height
+             {"img":false,"banner":0}
+PASS  T6    marks are focusable buttons with the anchored 2px underline
+             [{"role":"button","tab":"0","label":"comment on \"A local, browser-based surface\"","shadow":"rgb(96, 146, 219) 0px -2px 0px 0px inset"},{"role":"button","tab":"0","label":"comment on \"role isolation is\"","shadow":"rgb(96, 146, 219) 0px -2px 0px 0px inset"}]
+PASS  T7    a focused thread tints its mark and marks its card
+             {"bg":"rgb(226, 235, 248)","shadow":"rgb(11, 87, 199) 0px -2px 0px 0px inset","border":"2px rgb(11, 87, 199)","actions":["Reply","Resolve"]}
+PASS  T8    the degraded diagram shows the notice, the source and commentable chips
+             ["Nodes","Edges"]
+PASS  T9    the focus ring is 2px solid accent at 2px offset
+             2px solid rgb(11, 87, 199) @2px
+PASS  T10   the approve-with-open-threads dialog is verbatim at 480px
+             {"open":true,"h":"Approve with 4 open comments?","body":"These comments stay open and nobody is required to answer them. Request changes instead if you want them addressed first.","confirm":"Approve anyway","w":480,"backdrop":"rgba(0, 0, 0, 0.32)"}
+PASS  T11   the keyboard dialog is native and verbatim
+             ["j = next comment","k = previous comment","o = next orphaned comment"]
+PASS  T12   dark tokens are exact
+             {"bg":"#131416","accent":"#86B4FF","attention":"#E7A94F","markLine":"#4C648A"}
+PASS  T13   the drawer toggle carries the open count
+             {"text":"Comments — 4","visible":true}
+PASS  T14   below 880px the stage control is a native select and nothing scrolls sideways
+             {"sel":"flex","label":"Stage","tablist":"none","hScroll":false}
+PASS  T15   reduced motion collapses every transition
+             {"t":"0.001s","s":"auto"}
+PASS  T16   the session-ended screen is verbatim and names the reopen command
+             {"h":"This review session has ended","body":"This review session has endedThe local server has stopped. Every comment you wrote was saved as it was written.Reopen the workspace with:grogu review p-20260905-506c17","code":"grogu review p-20260905-506c17"}
+
+NOTE: REG3/REG4 in final-results.json are excluded above. They failed only because
+that fixture had no orphaned thread (all three selections landed on one span), so
+they were re-run on a fixture built to orphan a quote; both pass under
+'Orphan pinning and rail order'.
+
+32 of 32 scenarios pass.
+
+Screenshots in the session workspace, files/evidence3/:
+  F01-written-pending-renders.png
+  F02-comments-created.png
+  F03-round-sent.png
+  F04-rail-order-with-orphan.png
+  F05-engineer-sealed-panels.png
+  F06-unwritten-panel.png
+  F07-orphan-rail-order.png
+  F10-focused-thread.png
+  F11-approve-dialog.png
+  F12-dark.png
+  F13-narrow.png
+  F14-session-ended.png
+
+OBSERVATION, NOT A DEFECT
+
+In a role-bearing launch the header's first row is crowded: the refusal sentence
+"Approval is the user's. This workspace is reading as the engineer, so it can
+read and comment only." runs at full width beside the Request changes button,
+which squeezes the identity block so the plan id wraps to two lines and the
+title truncates to "Sample plan for the fin...". Evidence
+F05-engineer-sealed-panels.png at 1280x800.
+
+The design stage says only that the refusal is shown "in place of the Approve
+button, 13px/20px, --color-ink-2"; it sets no width, no wrapping rule and no
+minimum for the identity block, so this is a gap in the specification rather
+than a divergence from it, and it appears only in an agent-launched workspace -
+never on the user's own review, where the refusal is not rendered
+(F07-orphan-rail-order.png shows the reviewer header at the same width).
+Recorded here so it is not lost; it is not routed as a defect.
