@@ -12,6 +12,13 @@ import {
   drawerLabel,
   orphanedRevisionLine,
   movedRevisionLine,
+  unwrittenBody,
+  declinedBody,
+  sealedBody,
+  roundChipSegments,
+  roundWithArchitectLine,
+  requestChangesDisabledReason,
+  orderByDocument,
 } from "/static/format.js";
 
 const STAGE_ORDER = ["design", "implementation", "testing", "evaluation"];
@@ -145,25 +152,25 @@ function renderHeader() {
 function renderRoundChip() {
   const chip = $("round-chip");
   const summary = state.data.summary || {};
-  chip.textContent = "";
-  if (!summary.threads) {
-    chip.textContent = "no comments";
-    return;
-  }
-  const parts = [`round ${summary.round || 1}`];
-  if (summary.open) parts.push(`${summary.open} open`);
-  chip.append(document.createTextNode(parts.join(" · ")));
-  if (summary.orphaned) {
-    const span = document.createElement("span");
-    span.className = "orphaned-count";
-    span.textContent = ` · ${summary.orphaned} orphaned`;
-    chip.append(span);
-  }
   const round = state.data.round;
+  const changesRequested = !!(round && round.state === "changes_requested");
+  chip.textContent = "";
+  const segments = roundChipSegments(summary, changesRequested);
+  segments.forEach((segment, index) => {
+    if (segment.attention) {
+      // The separator is part of the attention-coloured orphaned segment.
+      const span = document.createElement("span");
+      span.className = "orphaned-count";
+      span.textContent = `${index > 0 ? " · " : ""}${segment.text}`;
+      chip.append(span);
+    } else {
+      chip.append(document.createTextNode(`${index > 0 ? " · " : ""}${segment.text}`));
+    }
+  });
   const line = $("round-line");
-  if (round && round.state === "changes_requested") {
+  if (changesRequested) {
     line.hidden = false;
-    line.textContent = `Round ${round.number} is with the architect. Add a comment to open round ${round.number + 1}.`;
+    line.textContent = roundWithArchitectLine(round.number);
   } else {
     line.hidden = true;
   }
@@ -197,16 +204,19 @@ function renderActions() {
   }
   const summary = d.summary || {};
   const round = d.round;
-  if (round && round.state === "changes_requested") {
-    rcBtn.disabled = true;
-    rcBtn.title = "No open comments to send.";
-  } else if (!summary.open) {
-    rcBtn.disabled = true;
-    rcBtn.title = "No open comments to send.";
-    rcBtn.setAttribute("aria-describedby", "");
+  const changesRequested = !!(round && round.state === "changes_requested");
+  const disabled = changesRequested || !summary.open;
+  rcBtn.disabled = disabled;
+  const reasonEl = $("rc-reason");
+  if (disabled) {
+    const reason = requestChangesDisabledReason(round, summary.open || 0);
+    rcBtn.title = reason;
+    if (reasonEl) reasonEl.textContent = reason;
+    rcBtn.setAttribute("aria-describedby", "rc-reason");
   } else {
-    rcBtn.disabled = false;
     rcBtn.title = "";
+    if (reasonEl) reasonEl.textContent = "";
+    rcBtn.removeAttribute("aria-describedby");
   }
 }
 
@@ -258,21 +268,21 @@ function renderStage() {
   if (!info) return;
   if (!info.readable) {
     meta.textContent = "";
-    doc.append(stateBlock("Sealed",
-      "The testing plan is written for the tester and is not readable by the engineer. " +
-      "An implementation written against its own tests only proves the tests were satisfiable."));
-    return;
-  }
-  if (info.state === "pending") {
-    meta.textContent = "";
-    doc.append(stateBlock("Not written yet",
-      "The architect writes the implementation plan before this stage can be reviewed."));
+    doc.append(stateBlock("Sealed", sealedBody(info.stage, state.data.role)));
     return;
   }
   if (info.state === "declined") {
     meta.textContent = "";
-    doc.append(stateBlock("Not needed",
-      "The architect recorded that no evaluation stage is warranted for this plan."));
+    doc.append(stateBlock("Not needed", declinedBody(info.stage)));
+    return;
+  }
+  // `written` — not the progress `state` — is the only field that decides
+  // whether a body exists. A written stage whose progress is `pending` (the
+  // ordinary case just after the architect rewrote it) still renders its body,
+  // its marks and its threads.
+  if (!info.written) {
+    meta.textContent = "";
+    doc.append(stateBlock("Not written yet", unwrittenBody(info.stage)));
     return;
   }
   const kb = ((info.markdown || "").length / 1024).toFixed(1);
@@ -471,7 +481,7 @@ function renderRail() {
   const rail = $("rail");
   rail.replaceChildren();
   const info = currentStage();
-  if (!info || !info.readable || info.state === "pending" || info.state === "declined") {
+  if (!info || !info.readable || info.state === "declined" || !info.written) {
     return;
   }
   if (state.reanchorSummary) {
@@ -484,7 +494,9 @@ function renderRail() {
   const threads = threadsForStage(state.stage);
   const open = threads.filter((t) => t.status === "open");
   const orphaned = open.filter((t) => t.anchor_state === "orphaned");
-  const placed = open.filter((t) => t.anchor_state !== "orphaned");
+  // Placed cards follow the document, so keyboard and screen-reader order match
+  // what is on screen (the orphaned section stays pinned above them).
+  const placed = orderByDocument(open.filter((t) => t.anchor_state !== "orphaned"));
   const resolved = threads.filter((t) => t.status === "resolved");
 
   if (!state.data.threads.length) {

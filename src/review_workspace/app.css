@@ -107,6 +107,20 @@ button {
 }
 .skip-link:focus { left: var(--s-3); top: var(--s-3); }
 
+/* offscreen but available to assistive technology (aria-describedby target) */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* -- header -- */
 .header {
   position: sticky;

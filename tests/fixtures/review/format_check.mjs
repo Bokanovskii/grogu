@@ -19,6 +19,15 @@ import {
   orphanedRevision,
   orphanedRevisionLine,
   movedRevisionLine,
+  unwrittenBody,
+  declinedBody,
+  sealedBody,
+  roundChipText,
+  roundChipSegments,
+  roundWithArchitectLine,
+  requestChangesDisabledReason,
+  docPosition,
+  orderByDocument,
 } from "../../../src/review_workspace/format.js";
 
 let failures = 0;
@@ -126,6 +135,85 @@ const moved = { anchor_state: "shifted", anchor_confidence: 0.86, anchor_history
 eq("moved line with close match", movedRevisionLine(moved), "moved · revision 2 to 3 · close match");
 const movedExact = { anchor_state: "shifted", anchor_confidence: 1.0, anchor_history: [{ from_revision: 2, to_revision: 3, state: "shifted" }] };
 eq("moved line exact", movedRevisionLine(movedExact), "moved · revision 2 to 3");
+
+// d6: sealed/unwritten/declined copy parameterised by the tab's own stage and
+// the effective role — never a hard-coded stage or role.
+eq(
+  "unwritten body names the tab's stage",
+  unwrittenBody("design"),
+  "The architect writes the design plan before this stage can be reviewed."
+);
+eq(
+  "declined body names the tab's stage",
+  declinedBody("evaluation"),
+  "The architect recorded that no evaluation stage is warranted for this plan."
+);
+eq(
+  "sealed body names stage + effective role",
+  sealedBody("evaluation", "engineer"),
+  "The evaluation plan is written for the tester and is not readable by the engineer. " +
+    "An implementation written against its own tests only proves the tests were satisfiable."
+);
+
+// d7: round chip carries the `changes requested` segment in the fixed order
+// round, state, open, orphaned.
+eq(
+  "chip before request-changes",
+  roundChipText({ round: 1, threads: 6, open: 6, orphaned: 0 }, false),
+  "round 1 · 6 open"
+);
+eq(
+  "chip after request-changes",
+  roundChipText({ round: 1, threads: 6, open: 6, orphaned: 0 }, true),
+  "round 1 · changes requested · 6 open"
+);
+eq(
+  "chip full order round/state/open/orphaned",
+  roundChipText({ round: 2, threads: 4, open: 3, orphaned: 1 }, true),
+  "round 2 · changes requested · 3 open · 1 orphaned"
+);
+eq("chip no review", roundChipText({ threads: 0 }, false), "no comments");
+eq("chip open omitted at zero", roundChipText({ round: 1, threads: 1, open: 0, orphaned: 1 }, false), "round 1 · 1 orphaned");
+check(
+  "orphaned segment is flagged for the attention colour",
+  roundChipSegments({ round: 1, threads: 1, open: 0, orphaned: 1 }, false).some((s) => s.attention && s.text === "1 orphaned")
+);
+
+// d8: the disabled Request-changes reason is two strings for two reasons.
+eq("round line copy", roundWithArchitectLine(1), "Round 1 is with the architect. Add a comment to open round 2.");
+eq(
+  "disabled reason: round is out (even with open comments)",
+  requestChangesDisabledReason({ state: "changes_requested", number: 1 }, 6),
+  "Round 1 is with the architect. Add a comment to open round 2."
+);
+eq(
+  "disabled reason: nothing open",
+  requestChangesDisabledReason(null, 0),
+  "No open comments to send."
+);
+eq("enabled has no reason", requestChangesDisabledReason(null, 3), "");
+
+// d9: rail cards follow document order (text by source offset, diagram by block
+// offset), regardless of creation order.
+const threads = [
+  { id: "c1", anchor: { kind: "text", start: 100 } },
+  { id: "c2", anchor: { kind: "text", start: 900 } },
+  { id: "c3", anchor: { kind: "text", start: 950 } },
+  { id: "c4", anchor: { kind: "text", start: 300 } },
+  { id: "c5", anchor: { kind: "mermaid", block_start: 400 } },
+  { id: "c6", anchor: { kind: "text", start: 500 } },
+];
+eq(
+  "orderByDocument sorts by source position",
+  orderByDocument(threads).map((t) => t.id).join(","),
+  "c1,c4,c5,c6,c2,c3"
+);
+eq("docPosition text", docPosition({ anchor: { kind: "text", start: 42 } }), 42);
+eq("docPosition mermaid uses block_start", docPosition({ anchor: { kind: "mermaid", block_start: 77 } }), 77);
+check("orderByDocument is stable for equal positions", (() => {
+  const t = [{ id: "a", anchor: { kind: "text", start: 5 } }, { id: "b", anchor: { kind: "text", start: 5 } }];
+  return orderByDocument(t).map((x) => x.id).join(",") === "a,b";
+})());
 
 if (failures) {
   console.log(`\n${failures} FAILED`);
