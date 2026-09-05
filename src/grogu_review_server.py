@@ -194,12 +194,31 @@ class _Context:
         self.timeout = timeout
         self.token = secrets.token_urlsafe(32)
         self.cookie = secrets.token_urlsafe(32)
+        self._token_spent = False
         self.host = "127.0.0.1"
         self.port = 0
         self.assets = assets_status()
         self._last_activity = time.monotonic()
         self._lock = threading.Lock()
         self.httpd: Optional[_ReviewServer] = None
+
+    def consume_token(self, supplied: str) -> bool:
+        """Validate the launch token once, then burn it. Fails closed.
+
+        The token is single-use: after one successful exchange, every later
+        `GET /?t=<token>` — a replay from history, a referrer, or a race — is
+        refused. Comparison is constant-time and the spend is serialised under
+        the context lock, so two concurrent replays cannot both succeed. A wrong
+        guess never spends the token, so it cannot be used to lock the real
+        launch out.
+        """
+        with self._lock:
+            if self._token_spent or not self.token:
+                return False
+            if not supplied or not hmac.compare_digest(supplied, self.token):
+                return False
+            self._token_spent = True
+            return True
 
     def touch(self) -> None:
         with self._lock:
@@ -444,8 +463,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _token_exchange(self, query: dict) -> None:
         supplied = (query.get("t") or [""])[0]
-        if not hmac.compare_digest(supplied, self.context.token):
-            self._error(HTTPStatus.FORBIDDEN, "invalid launch token")
+        # Single-use: the first correct exchange burns the token, so a replay of
+        # an already-spent token fails closed with 403 rather than minting a
+        # second session cookie.
+        if not self.context.consume_token(supplied):
+            self._error(HTTPStatus.FORBIDDEN, "invalid or already-used launch token")
             return
         cookie = (
             f"grogu_review={self.context.cookie}; HttpOnly; SameSite=Strict; Path=/"
