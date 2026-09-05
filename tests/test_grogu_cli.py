@@ -4166,3 +4166,145 @@ class WorkstreamWorktreeCliTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["removed"], created["path"])
         self.assertFalse(Path(created["path"]).exists())
+
+
+class ReviewCliTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Review Tester"], cwd=self.repo, check=True)
+        subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=self.repo, check=True)
+        self.home = str(self.repo / "home")
+
+    def run_main(self, *arguments, role="", agent="", plan_env=""):
+        if not agent:
+            import secrets
+            agent = f"cli-agent-{secrets.token_hex(4)}"
+        env_patches = {
+            "GROGU_HOME": self.home,
+            "GROGU_AGENT": agent,
+        }
+        if role:
+            env_patches["GROGU_ROLE"] = role
+        else:
+            env_patches["GROGU_ROLE"] = ""
+        if plan_env:
+            env_patches["GROGU_PLAN"] = plan_env
+        else:
+            env_patches["GROGU_PLAN"] = ""
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, env_patches):
+            for k in ("GROGU_ROLE", "GROGU_PLAN"):
+                if not env_patches.get(k):
+                    os.environ.pop(k, None)
+            with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+                try:
+                    code = grogu_cli.main(list(arguments) + ["--repo", str(self.repo)])
+                except SystemExit as exit_err:
+                    code = exit_err.code if isinstance(exit_err.code, int) else 1
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_review_in_grogu_commands(self):
+        self.assertIn("review", grogu_cli.GROGU_COMMANDS)
+
+    def test_review_subcommands_parse_positional_and_flag_and_env(self):
+        code, out, err = self.run_main("plan", "new", "CLI subcommands")
+        self.assertEqual(code, 0, err)
+        plan = out.strip()
+
+        code, _, err = self.run_main("plan", "write", plan, "implementation", "--body", "# Implementation\nBody\n", role="architect", agent=f"arch-{plan}")
+        self.assertEqual(code, 0, err)
+
+        # Positional
+        code, out_pos, err = self.run_main("review", "list", plan, "--json")
+        self.assertEqual(code, 0, err)
+        data_pos = json.loads(out_pos)
+        self.assertEqual(data_pos["plan"], plan)
+
+        # Flag --plan
+        code, out_flag, err = self.run_main("review", "list", "--plan", plan, "--json")
+        self.assertEqual(code, 0, err)
+        data_flag = json.loads(out_flag)
+        self.assertEqual(data_flag["plan"], plan)
+
+        # Environment GROGU_PLAN
+        code, out_env, err = self.run_main("review", "list", "--json", plan_env=plan)
+        self.assertEqual(code, 0, err)
+        data_env = json.loads(out_env)
+        self.assertEqual(data_env["plan"], plan)
+
+        # Status positional and flag
+        code, out_st, err = self.run_main("review", "status", plan, "--json")
+        self.assertEqual(code, 0, err)
+        data_st = json.loads(out_st)
+        self.assertEqual(data_st["plan"], plan)
+        self.assertIn("summary", data_st)
+
+    def test_review_errors_and_exit_codes(self):
+        code, out, err = self.run_main("plan", "new", "CLI errors")
+        plan = out.strip()
+        self.run_main("plan", "write", plan, "implementation", "--body", "# Implementation\nFirst line with duplicate duplicate.\n", role="architect", agent=f"arch-{plan}")
+
+        # Quote absent from stage exits non-zero (3 for ReviewError) and names stage
+        code_absent, out, err_absent = self.run_main("review", "comment", plan, "--stage", "implementation", "--quote", "nonexistent text", "--body", "comment")
+        self.assertEqual(code_absent, 3)
+        self.assertIn("implementation", err_absent)
+
+        # Quote occurring twice exits non-zero and names count 2
+        code_dup, out, err_dup = self.run_main("review", "comment", plan, "--stage", "implementation", "--quote", "duplicate", "--body", "comment")
+        self.assertEqual(code_dup, 3)
+        self.assertIn("2", err_dup)
+
+        # Usage error exits 2
+        code_usage, out, err_usage = self.run_main("review", "comment", plan, "--invalid-flag")
+        self.assertEqual(code_usage, 2)
+
+    def test_plan_status_and_brief_integration_with_review(self):
+        code, out, _ = self.run_main("plan", "new", "No review")
+        plan_no_rev = out.strip()
+        self.run_main("plan", "write", plan_no_rev, "implementation", "--body", "# Implementation\nBody\n", role="architect", agent=f"arch-{plan_no_rev}")
+        _, status_no_rev, _ = self.run_main("plan", "status", plan_no_rev)
+        self.assertNotIn("review:", status_no_rev)
+
+        _, brief_no_rev, _ = self.run_main("plan", "brief", "--role", "architect", "--plan", plan_no_rev, role="architect", agent=f"arch-{plan_no_rev}")
+        self.assertNotIn("c1", brief_no_rev)
+
+        # Plan with thread
+        code, out, _ = self.run_main("plan", "new", "With review")
+        plan_rev = out.strip()
+        self.run_main("plan", "write", plan_rev, "implementation", "--body", "# Implementation\nUnique quote in body\n", role="architect", agent=f"arch-{plan_rev}")
+        code_c, out_c, err_c = self.run_main("review", "comment", plan_rev, "--stage", "implementation", "--quote", "Unique quote", "--body", "Please fix")
+        self.assertEqual(code_c, 0, err_c)
+
+        _, status_rev, _ = self.run_main("plan", "status", plan_rev)
+        self.assertIn("review:", status_rev)
+        self.assertIn("round 1", status_rev)
+        self.assertIn("1 open", status_rev)
+
+        _, brief_rev, _ = self.run_main("plan", "brief", "--role", "architect", "--plan", plan_rev, role="architect", agent=f"arch-{plan_rev}")
+        self.assertIn("c1", brief_rev)
+
+    def test_review_assets_cli(self):
+        code, out, err = self.run_main("review", "assets")
+        self.assertEqual(code, 0, err)
+
+        fixture_file = self.repo / "test_mermaid.js"
+        fixture_file.write_bytes(b"mermaid dummy bundle")
+
+        # Wrong digest refuses
+        with mock.patch("grogu_review_server.MERMAID_SHA256", "wrong_expected_digest"):
+            code_bad, out, err_bad = self.run_main("review", "assets", "--install", "--from", str(fixture_file))
+            self.assertNotEqual(code_bad, 0)
+
+        # Correct digest installs
+        expected_digest = hashlib.sha256(b"mermaid dummy bundle").hexdigest()
+        with mock.patch("grogu_review_server.MERMAID_SHA256", expected_digest):
+            code_good, out_good, err_good = self.run_main("review", "assets", "--install", "--from", str(fixture_file))
+            self.assertEqual(code_good, 0, err_good)
+            code_p, out_p, _ = self.run_main("review", "assets", "--json")
+            data_present = json.loads(out_p)
+            self.assertTrue(data_present.get("mermaid"))
