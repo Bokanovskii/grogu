@@ -1,0 +1,15 @@
+# .plan document graph and Figma-style editor
+
+Plan `p-20260905-aab017`. This is the account of how the plan changed while
+it was being carried out; the stage files next to it are the plan.
+
+## Plan changes accepted mid-flight
+
+- **a1** (raised by the engineer): Legacy Mermaid migration cannot map every parsed edge to depends_on while also enforcing the frozen no-self-edge and acyclic depends_on invariants.
+  - resolved: Verified against the code, not the report: grogu_mermaid.parse on integration/p-20260904-6095a8 emits ('Parse','Parse','arrow') for a self-loop and a full cycle for A->B->C->A, and tests/fixtures/review/stage_with_diagram.md line 17 is 'Parse -->|retry| Parse'. Importing diagram edges as depends_on would make migration of a real legacy plan impossible. The implementation stage is rewritten: diagram edges import as a new edge kind diagram_edge, exempt from acyclicity and from the self-edge rule, shown in the dependency mode as derived from a diagram, with cycles reported as information; promotion to depends_on is an explicit action that runs full validation and is refused when it would create a cycle or a self-edge. Nothing is dropped from the drawing.
+
+## Corrections from the user
+
+- The .plan system must compile each accepted revision into an excellent deterministic Markdown artifact that other agents can consume efficiently. The compiled Markdown must faithfully render every meaningful plan element, relationships, active directives, diagrams, validation criteria, provenance, and revision identity in stable order; it must be role-bounded, hashable/cacheable, and validated for semantic equivalence with the source graph rather than treated as a lossy export.
+- Evaluate whether XML should be used for any .plan package parts. Compare XML mixed-content/schema/transform strengths against JSON graph/JSON Schema/patch/web-editor ergonomics, and distinguish the DOCX OOXML ZIP-of-parts model from Figma's actual storage/API model. Choose serialization per artifact rather than assuming one format for the entire package; preserve deterministic compilation and agent efficiency.
+- Expand the .plan experience into a live Grogu planning control room. Add an always-current dashboard of every running plan subagent with role, workstream, plan/revision, state, current/last action, elapsed time, tool activity, failures, blockers, unread steering and freshness. The user must be able to drill into an agent to audit the bounded activity/evidence Grogu can actually observe, distinguish live facts from model-authored summaries, navigate to affected plan objects, and submit feedback that Grogu routes durably to the selected agent/role/plan; binding feedback must close relevant gates. Preserve privacy: never store raw tool arguments, secrets, hidden reasoning or sealed-stage content, and be explicit about observability limits. Integrate with the existing passive grogu watch/trace/session machinery rather than polling models or inventing status. Include quiet/stuck/finished/disconnected states, freshness timestamps, multi-agent filtering, and feedback delivery/acknowledgement.

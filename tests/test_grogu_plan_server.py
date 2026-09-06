@@ -264,6 +264,63 @@ class PlanPackageIntegrationTests(unittest.TestCase):
             reviewer_after["nodes"]["crit-2"]["body"], "before"
         )
 
+    def test_open_endpoint_of_hidden_cross_seal_edge_cannot_be_removed(self):
+        _plan_id, documents = self.package()
+        reviewer = documents.load(role="reviewer")
+        design = grogu_plandoc.make_node(
+            "dec-1",
+            "decision",
+            "Visible design decision",
+            stage="design",
+            revision=reviewer["revision"],
+        )
+        testing = grogu_plandoc.make_node(
+            "crit-1",
+            "criterion",
+            "Hidden test criterion",
+            stage="testing",
+            revision=reviewer["revision"],
+        )
+        documents.patch(
+            role="reviewer",
+            base=reviewer["revision"],
+            operations=[
+                {"op": "add", "path": "/nodes/dec-1", "value": design},
+                {"op": "add", "path": "/nodes/crit-1", "value": testing},
+            ],
+        )
+        edge = grogu_plandoc.make_edge(
+            "edge-1",
+            "references",
+            "dec-1",
+            "crit-1",
+            revision=documents.head(),
+        )
+        documents.patch(
+            role="reviewer",
+            base=documents.head(),
+            operations=[
+                {"op": "add", "path": "/edges/edge-1", "value": edge}
+            ],
+        )
+        engineer = documents.load(role="engineer")
+        self.assertIn("dec-1", engineer["nodes"])
+        self.assertNotIn("edge-1", engineer["edges"])
+        with self.assertRaisesRegex(
+            grogu_plans.PlanError, "referenced outside"
+        ):
+            documents.patch(
+                role="engineer",
+                base=engineer["revision"],
+                operations=[
+                    {"op": "remove", "path": "/nodes/dec-1"}
+                ],
+            )
+        reviewer_after = documents.load(role="reviewer")
+        self.assertIn("dec-1", reviewer_after["nodes"])
+        self.assertIn("edge-1", reviewer_after["edges"])
+        self.assertTrue(documents.verify(role="reviewer")["ok"])
+
     def test_warm_projection_cache_does_not_load_the_graph(self):
         _plan_id, documents = self.package()
         first = documents.projection(
