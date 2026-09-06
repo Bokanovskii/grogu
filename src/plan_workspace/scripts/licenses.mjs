@@ -150,5 +150,9 @@ if (!existsSync(distDir)) {
   console.error("dist/ does not exist; run `vite build` first.");
   process.exit(1);
 }
-writeFileSync(join(distDir, "LICENSES.txt"), lines.join("\n") + "\n", "utf8");
+// End with exactly one trailing newline: the per-package loop leaves a blank
+// separator line, and `join + "\n"` would otherwise emit a blank line at EOF,
+// which `git diff --check` rejects as a whitespace error.
+const body = lines.join("\n").replace(/\s+$/, "") + "\n";
+writeFileSync(join(distDir, "LICENSES.txt"), body, "utf8");
 console.log(`Wrote dist/LICENSES.txt covering ${names.length} runtime package(s).`);
