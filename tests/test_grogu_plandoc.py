@@ -87,6 +87,16 @@ class CanonicalJsonTests(unittest.TestCase):
         right = {"a": {"c": 3, "d": 4}, "b": 2}
         self.assertEqual(canon.digest(left), canon.digest(right))
 
+    def test_pretty_json_keeps_canonical_order_and_one_final_newline(self):
+        value = {"\ue000": 2, "\U00010000": 1, "a": {"z": 2, "b": 1}}
+        rendered = canon.pretty_dumpb(value)
+        self.assertTrue(rendered.endswith(b"\n"))
+        self.assertFalse(rendered.endswith(b"\n\n"))
+        self.assertEqual(canon.loads(rendered), canon.normalize(value))
+        text = rendered.decode("utf8")
+        self.assertLess(text.index('"a"'), text.index('"𐀀"'))
+        self.assertLess(text.index('"𐀀"'), text.index('""'))
+
 
 class PlanDocumentSchemaTests(unittest.TestCase):
     def test_fixture_satisfies_runtime_schema_and_published_schema(self):
@@ -143,6 +153,14 @@ class PlanDocumentSchemaTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(schema.SchemaError, "already has parent"):
             schema.validate_document(two_parents)
+
+    def test_higher_schema_version_names_the_reader_version_required(self):
+        graph = fixture("graph.json")
+        graph["schema_version"] = 2
+        with self.assertRaisesRegex(
+            schema.SchemaError, "requires a reader supporting version 2"
+        ):
+            schema.validate_document(graph)
 
     def test_cross_seal_edges_are_references_only(self):
         graph = fixture("graph.json")

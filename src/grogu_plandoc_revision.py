@@ -563,7 +563,7 @@ def safe_read(path: Path) -> bytes:
 
 
 def _json_bytes(value: Any) -> bytes:
-    return canon.dumpb(value) + b"\n"
+    return canon.pretty_dumpb(value)
 
 
 def _parse_head_bytes(payload: bytes) -> str:

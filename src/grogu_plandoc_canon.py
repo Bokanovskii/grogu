@@ -119,6 +119,23 @@ def dumpb(value: Any) -> bytes:
     return dumps(value).encode("utf8")
 
 
+def pretty_dumps(value: Any) -> str:
+    """Serialize canonical data as deterministic, reviewable pretty JSON."""
+    normalized = normalize(value)
+    return json.dumps(
+        normalized,
+        ensure_ascii=False,
+        allow_nan=False,
+        indent=2,
+        sort_keys=False,
+    )
+
+
+def pretty_dumpb(value: Any) -> bytes:
+    """Return deterministic pretty UTF-8 JSON ending in exactly one newline."""
+    return (pretty_dumps(value) + "\n").encode("utf8")
+
+
 def _reject_float(token: str) -> None:
     raise CanonicalError(f"$: floating-point value {token!r} is not allowed")
 

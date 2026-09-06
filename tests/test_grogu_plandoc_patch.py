@@ -380,6 +380,9 @@ class RevisionGenerationTests(unittest.TestCase):
             partitions={"graph/open.json": canon.dumpb(after_one)},
             artifacts={"implementation.md": b"compiled one\n"},
         )
+        log_bytes = (self.directory / "log" / "000001.json").read_bytes()
+        self.assertIn(b"\n  \"actor\":", log_bytes)
+        self.assertEqual(canon.loads(log_bytes), first)
         self.assertEqual(revision.read_head(self.directory), "r0001")
         self.assertEqual(
             revision.verify_package(self.directory, materialized=after_one)["revisions"],

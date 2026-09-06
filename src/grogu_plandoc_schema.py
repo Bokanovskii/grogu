@@ -199,6 +199,19 @@ def _revision(value: Any, path: str, *, empty: bool = False) -> str:
     return _string(value, path, pattern=_REVISION_ID)
 
 
+def _schema_version(value: Any, path: str) -> int:
+    version = _integer(value, path, minimum=1, maximum=MAX_SAFE_INTEGER)
+    if version > SCHEMA_VERSION:
+        _error(
+            path,
+            f"schema version {version} requires a reader supporting version "
+            f"{version}; current version is {SCHEMA_VERSION}",
+        )
+    if version != SCHEMA_VERSION:
+        _error(path, f"must equal {SCHEMA_VERSION}")
+    return version
+
+
 def _timestamp(value: Any, path: str) -> str:
     result = _string(value, path, maximum=40, pattern=_UTC_TIMESTAMP)
     try:
@@ -530,8 +543,7 @@ def validate_document(value: Any, *, path: str = "$") -> dict:
         ),
         optional=("partition", "canvas", "provenance"),
     )
-    if document["schema_version"] != SCHEMA_VERSION:
-        _error(f"{path}.schema_version", f"must equal {SCHEMA_VERSION}")
+    _schema_version(document["schema_version"], f"{path}.schema_version")
     if document["kind"] != "grogu.plan_document":
         _error(f"{path}.kind", "must equal grogu.plan_document")
     result = {
@@ -735,8 +747,7 @@ def validate_revision(value: Any, *, path: str = "$") -> dict:
             "after_digest",
         ),
     )
-    if revision["schema_version"] != SCHEMA_VERSION:
-        _error(f"{path}.schema_version", f"must equal {SCHEMA_VERSION}")
+    _schema_version(revision["schema_version"], f"{path}.schema_version")
     seq = _integer(revision["seq"], f"{path}.seq", minimum=1, maximum=MAX_SAFE_INTEGER)
     revision_id = _revision(revision["revision"], f"{path}.revision")
     if revision_id != f"r{seq:04d}":
@@ -1256,8 +1267,7 @@ def validate_dashboard_snapshot(value: Any, *, path: str = "$") -> dict:
             "next_cursor",
         ),
     )
-    if snapshot["schema_version"] != 1:
-        _error(f"{path}.schema_version", "must equal 1")
+    _schema_version(snapshot["schema_version"], f"{path}.schema_version")
     agents = _array(snapshot["agents"], f"{path}.agents")
     if len(agents) > 200:
         _error(f"{path}.agents", "must contain at most 200 agents")
@@ -1312,8 +1322,7 @@ def validate_event_page(value: Any, *, path: str = "$") -> dict:
             "truncated",
         ),
     )
-    if page["schema_version"] != 1:
-        _error(f"{path}.schema_version", "must equal 1")
+    _schema_version(page["schema_version"], f"{path}.schema_version")
     events = _array(page["events"], f"{path}.events")
     if len(events) > 100:
         _error(f"{path}.events", "must contain at most 100 events")
@@ -1409,8 +1418,7 @@ def validate_feedback_request(value: Any, *, path: str = "$") -> dict:
             "requires_replan",
         ),
     )
-    if request["schema_version"] != 1:
-        _error(f"{path}.schema_version", "must equal 1")
+    _schema_version(request["schema_version"], f"{path}.schema_version")
     scope = _enum(request["scope"], ("agent", "role", "plan"), f"{path}.scope")
     target_agent = _bounded_id(
         request["target_agent_key"], f"{path}.target_agent_key", nullable=True

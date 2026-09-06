@@ -463,6 +463,19 @@ def _scope_selection(graph: dict, spec: dict) -> tuple[set[str], set[str]]:
     relationship_stubs: set[str] = set()
     since = _revision_number(spec["since"])
     role = spec["role"]
+
+    def can_add(node_id: str) -> bool:
+        node = graph["nodes"][node_id]
+        if node["kind"] == "directive":
+            attrs = node["attrs"]
+            addressed = role in attrs["audience"] or "everyone" in attrs["audience"]
+            return addressed and (
+                attrs["status"] == "active" or bool(spec["since"])
+            )
+        if node["kind"] == "thread":
+            return node["attrs"].get("status") != "resolved"
+        return True
+
     for node_id in sorted(stage_ids, key=canon.id_sort_key):
         node = graph["nodes"][node_id]
         kind = node["kind"]
@@ -489,6 +502,16 @@ def _scope_selection(graph: dict, spec: dict) -> tuple[set[str], set[str]]:
         elif kind in {"note", "evidence", "reference"}:
             selected.add(node_id)
 
+    if spec["since"]:
+        for edge in graph["edges"].values():
+            if (
+                edge["from"] in stage_ids
+                and edge["to"] in stage_ids
+                and _revision_number(edge["created_rev"]) > since
+                and can_add(edge["from"])
+            ):
+                selected.add(edge["from"])
+
     if spec["include"] == "normative":
         for node_id in sorted(stage_ids, key=canon.id_sort_key):
             node = graph["nodes"][node_id]
@@ -499,47 +522,35 @@ def _scope_selection(graph: dict, spec: dict) -> tuple[set[str], set[str]]:
             ):
                 selected.add(node_id)
 
-        # Preserve relationships from selected facts.  Any remaining endpoint
-        # is a title/attribute stub unless --include all was requested.
-        changed = True
-        ordered_edges = sorted(
-            graph["edges"].values(),
-            key=lambda edge: canon.id_sort_key(edge["id"]),
-        )
+    # Preserve relationships from selected facts. Any remaining endpoint is a
+    # title/attribute stub, including unchanged endpoints pulled into --since.
+    changed = True
+    ordered_edges = sorted(
+        graph["edges"].values(),
+        key=lambda edge: canon.id_sort_key(edge["id"]),
+    )
 
-        def can_add(node_id: str) -> bool:
-            node = graph["nodes"][node_id]
-            if node["kind"] == "directive":
-                attrs = node["attrs"]
-                addressed = role in attrs["audience"] or "everyone" in attrs["audience"]
-                return addressed and (
-                    attrs["status"] == "active" or bool(spec["since"])
-                )
-            if node["kind"] == "thread":
-                return node["attrs"].get("status") != "resolved"
-            return True
-
-        while changed:
-            changed = False
-            for edge in ordered_edges:
-                if (
-                    edge["from"] in selected
-                    and edge["to"] in stage_ids
-                    and can_add(edge["to"])
-                ):
-                    if edge["to"] not in selected:
-                        changed = True
-                        relationship_stubs.add(edge["to"])
-                    selected.add(edge["to"])
-                if (
-                    edge["to"] in selected
-                    and edge["from"] in stage_ids
-                    and can_add(edge["from"])
-                ):
-                    if edge["from"] not in selected:
-                        changed = True
-                        relationship_stubs.add(edge["from"])
-                    selected.add(edge["from"])
+    while changed:
+        changed = False
+        for edge in ordered_edges:
+            if (
+                edge["from"] in selected
+                and edge["to"] in stage_ids
+                and can_add(edge["to"])
+            ):
+                if edge["to"] not in selected:
+                    changed = True
+                    relationship_stubs.add(edge["to"])
+                selected.add(edge["to"])
+            if (
+                edge["to"] in selected
+                and edge["from"] in stage_ids
+                and can_add(edge["from"])
+            ):
+                if edge["from"] not in selected:
+                    changed = True
+                    relationship_stubs.add(edge["from"])
+                selected.add(edge["from"])
     return selected, relationship_stubs
 
 

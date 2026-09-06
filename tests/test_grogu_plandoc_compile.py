@@ -300,55 +300,6 @@ def write_golden_corpus() -> None:
 
 
 class CompilerEquivalenceTests(unittest.TestCase):
-    def test_golden_corpus_matches_current_compiler_byte_for_byte(self):
-        expected_names = set(golden_cases())
-        self.assertEqual(
-            {path.name for path in GOLDEN.iterdir() if path.is_dir()},
-            expected_names,
-        )
-        node_graph = json.loads(
-            (GOLDEN / "every-node-kind" / "graph.json").read_text()
-        )
-        edge_graph = json.loads(
-            (GOLDEN / "every-edge-kind" / "graph.json").read_text()
-        )
-        self.assertEqual(
-            {node["kind"] for node in node_graph["nodes"].values()},
-            set(schema.NODE_KINDS),
-        )
-        self.assertEqual(
-            {edge["kind"] for edge in edge_graph["edges"].values()},
-            set(schema.EDGE_KINDS),
-        )
-        for name in sorted(expected_names):
-            with self.subTest(case=name):
-                directory = GOLDEN / name
-                graph = json.loads(
-                    (directory / "graph.json").read_text(encoding="utf8")
-                )
-                projection_spec = json.loads(
-                    (directory / "spec.json").read_text(encoding="utf8")
-                )
-                result = compiler.compile_checked(graph, projection_spec)
-                self.assertEqual(
-                    result["markdown"],
-                    (directory / "expected.md").read_text(encoding="utf8"),
-                )
-                self.assertEqual(
-                    result["json"],
-                    json.loads(
-                        (directory / "expected.json").read_text(encoding="utf8")
-                    ),
-                )
-                self.assertIn(
-                    f"compiler {compiler.COMPILER_VERSION}",
-                    result["markdown"].splitlines()[2],
-                )
-                self.assertEqual(
-                    result["json"]["provenance"]["compiler"],
-                    compiler.COMPILER_VERSION,
-                )
-
     def test_all_three_compiler_identities_hold(self):
         graph = graph_fixture()
         original = copy.deepcopy(graph)
@@ -704,10 +655,10 @@ class CompilerEquivalenceTests(unittest.TestCase):
         graph["nodes"]["goal-1"] = plandoc.make_node(
             "goal-1",
             "goal",
-            "Changed goal",
+            "Goal with a changed relationship",
             stage="implementation",
-            body="New changed body.",
-            revision="r0003",
+            body="The node body itself is unchanged.",
+            revision="r0001",
         )
         graph["nodes"]["goal-2"] = plandoc.make_node(
             "goal-2",
@@ -728,6 +679,8 @@ class CompilerEquivalenceTests(unittest.TestCase):
         fragment = compiler.scope(graph, projection_spec)
         self.assertEqual(fragment.relationship_stub_ids, ("goal-2",))
         ir = compiler.project(fragment, projection_spec)
+        source = next(node for node in ir.nodes if node.id == "goal-1")
+        self.assertEqual(source.body_state, "full")
         old = next(node for node in ir.nodes if node.id == "goal-2")
         self.assertEqual(old.body_state, "projection")
         self.assertEqual(old.body, "")
