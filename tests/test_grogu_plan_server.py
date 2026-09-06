@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -190,6 +191,77 @@ class PlanPackageIntegrationTests(unittest.TestCase):
         self.assertEqual(
             reviewer_after["nodes"]["task-1"]["title"],
             "Implementation task",
+        )
+
+    def test_partial_sealed_partition_reader_cannot_erase_cross_seal_edge(self):
+        _plan_id, documents = self.package()
+        reviewer = documents.load(role="reviewer")
+        implementation = grogu_plandoc.make_node(
+            "task-1",
+            "task",
+            "Implementation task",
+            stage="implementation",
+            revision=reviewer["revision"],
+        )
+        first = grogu_plandoc.make_node(
+            "crit-1",
+            "criterion",
+            "First criterion",
+            stage="testing",
+            revision=reviewer["revision"],
+        )
+        second = grogu_plandoc.make_node(
+            "crit-2",
+            "criterion",
+            "Second criterion",
+            stage="testing",
+            body="before",
+            revision=reviewer["revision"],
+        )
+        cross_seal = grogu_plandoc.make_edge(
+            "edge-1",
+            "references",
+            "crit-1",
+            "task-1",
+            revision=reviewer["revision"],
+        )
+        documents.patch(
+            role="reviewer",
+            base=reviewer["revision"],
+            operations=[
+                {"op": "add", "path": "/nodes/task-1", "value": implementation},
+                {"op": "add", "path": "/nodes/crit-1", "value": first},
+                {"op": "add", "path": "/nodes/crit-2", "value": second},
+            ],
+        )
+        head = documents.head()
+        documents.patch(
+            role="reviewer",
+            base=head,
+            operations=[
+                {"op": "add", "path": "/edges/edge-1", "value": cross_seal}
+            ],
+        )
+        tester = documents.load(role="tester")
+        self.assertNotIn("edge-1", tester["edges"])
+        with self.assertRaisesRegex(
+            grogu_plans.PlanError, "relationships outside"
+        ):
+            documents.patch(
+                role="tester",
+                base=tester["revision"],
+                operations=[
+                    {
+                        "op": "replace",
+                        "path": "/nodes/crit-2/body",
+                        "value": "after",
+                    }
+                ],
+            )
+        reviewer_after = documents.load(role="reviewer")
+        self.assertIn("edge-1", reviewer_after["edges"])
+        self.assertEqual(
+            reviewer_after["nodes"]["crit-2"]["body"], "before"
         )
 
     def test_warm_projection_cache_does_not_load_the_graph(self):
@@ -412,6 +484,123 @@ class PlanPackageIntegrationTests(unittest.TestCase):
                 os.environ.pop("GROGU_AGENT", None)
             else:
                 os.environ["GROGU_AGENT"] = previous
+
+    def test_sealed_proposals_are_not_listable_previewable_or_decidable(self):
+        _plan_id, documents = self.package()
+        reviewer = documents.load(role="reviewer")
+        hidden = grogu_plandoc.make_node(
+            "crit-1",
+            "criterion",
+            "SECRET PROPOSAL TARGET",
+            stage="testing",
+            body="SECRET ORIGINAL",
+            revision=reviewer["revision"],
+        )
+        documents.patch(
+            role="reviewer",
+            base=reviewer["revision"],
+            operations=[
+                {"op": "add", "path": "/nodes/crit-1", "value": hidden}
+            ],
+        )
+        tester = documents.load(role="tester")
+        proposal = documents.propose(
+            role="tester",
+            base=tester["revision"],
+            operations=[
+                {
+                    "op": "replace",
+                    "path": "/nodes/crit-1/body",
+                    "value": "SECRET PROPOSED BODY",
+                }
+            ],
+            why="SECRET PROPOSAL WHY",
+        )
+        self.assertEqual(documents.proposals(role="engineer"), [])
+        for action in (
+            lambda: documents.proposal_preview(
+                proposal["id"], role="engineer"
+            ),
+            lambda: documents.accept_proposal(
+                proposal["id"], role="engineer"
+            ),
+            lambda: documents.reject_proposal(
+                proposal["id"],
+                role="engineer",
+                why_not="not mine",
+            ),
+        ):
+            with self.assertRaisesRegex(
+                grogu_plans.PlanError, "was not found"
+            ) as raised:
+                action()
+            message = str(raised.exception)
+            self.assertNotIn("crit-1", message)
+            self.assertNotIn("SECRET", message)
+        visible = json.dumps(documents.proposals(role="tester"))
+        self.assertIn("SECRET PROPOSED BODY", visible)
+
+    def test_patch_preserves_feedback_recorded_while_compilation_is_in_flight(self):
+        _plan_id, documents = self.package()
+        base = documents.head()
+        node = grogu_plandoc.make_node(
+            "note-1",
+            "note",
+            "Slow write",
+            stage="implementation",
+            revision=base,
+        )
+        entered = threading.Event()
+        release = threading.Event()
+        original = grogu_plans.grogu_plandoc_compile.compile_checked
+
+        def delayed(*args, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(timeout=5))
+            return original(*args, **kwargs)
+
+        with mock.patch.object(
+            grogu_plans.grogu_plandoc_compile,
+            "compile_checked",
+            side_effect=delayed,
+        ):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    documents.patch,
+                    role="engineer",
+                    base=base,
+                    operations=[
+                        {
+                            "op": "add",
+                            "path": "/nodes/note-1",
+                            "value": node,
+                        }
+                    ],
+                    intent="slow patch",
+                )
+                self.assertTrue(entered.wait(timeout=5))
+                receipt = documents.route_feedback(
+                    role="reviewer",
+                    scope={
+                        "kind": "role",
+                        "role": "engineer",
+                        "label": "engineers",
+                    },
+                    text="Do not lose this binding feedback",
+                    binding=True,
+                )
+                release.set()
+                future.result(timeout=10)
+        manifest = self.store.load(documents.plan_id)
+        self.assertEqual(
+            manifest["steering"][0]["feedback_id"], receipt["seq"]
+        )
+        gate = self.store.gate(
+            documents.plan_id, grogu_plans.GATE_IMPLEMENT
+        )
+        self.assertTrue(
+            any(receipt["seq"] in blocker for blocker in gate["blockers"])
+        )
 
 
 class SecuredPlanServerTests(unittest.TestCase):

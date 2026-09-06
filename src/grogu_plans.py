@@ -5377,6 +5377,24 @@ class PlanDocumentStore:
         return values
 
     @staticmethod
+    def _partition_relationship_metadata(
+        partitions: dict[str, dict],
+    ) -> dict[str, dict[str, list[str]]]:
+        return {
+            PlanDocumentStore._PARTITION_PATHS[name]: {
+                edge_id: [
+                    str(edge.get("from", "")),
+                    str(edge.get("to", "")),
+                ]
+                for edge_id, edge in sorted(
+                    partition.get("edges", {}).items(),
+                    key=lambda item: grogu_plandoc_canon.id_sort_key(item[0]),
+                )
+            }
+            for name, partition in partitions.items()
+        }
+
+    @staticmethod
     def _artifact_bytes(stage: str, markdown: str) -> bytes:
         return (
             seal(markdown).encode("utf8")
@@ -5485,6 +5503,22 @@ class PlanDocumentStore:
                 details.get("objects", {})
                 if isinstance(details, dict)
                 and isinstance(details.get("objects", {}), dict)
+                else {}
+            )
+            for relative, details in state.items()
+            if relative in PlanDocumentStore._PARTITION_PATHS.values()
+        }
+
+    @staticmethod
+    def _manifest_relationship_metadata(
+        manifest: dict,
+    ) -> dict[str, dict[str, list[str]]]:
+        state = manifest.get("plandoc", {}).get("partition_state", {})
+        return {
+            relative: copy.deepcopy(
+                details.get("relationships", {})
+                if isinstance(details, dict)
+                and isinstance(details.get("relationships", {}), dict)
                 else {}
             )
             for relative, details in state.items()
@@ -6020,6 +6054,7 @@ class PlanDocumentStore:
         before = {}
         split = grogu_plandoc.split_partitions(document)
         object_metadata = self._partition_object_metadata(document, split)
+        relationship_metadata = self._partition_relationship_metadata(split)
         after = self._storage_state(
             partitions,
             object_metadata=object_metadata,
@@ -6068,6 +6103,7 @@ class PlanDocumentStore:
             artifacts,
             envelope,
             object_metadata=object_metadata,
+            relationship_metadata=relationship_metadata,
         )
         self.plans._write_json(self.package / "manifest.json", manifest)
         for stage, result in results.items():
@@ -6160,6 +6196,9 @@ class PlanDocumentStore:
         envelope: dict,
         *,
         object_metadata: Optional[dict[str, dict[str, list[str]]]] = None,
+        relationship_metadata: Optional[
+            dict[str, dict[str, list[str]]]
+        ] = None,
     ) -> None:
         entries = []
         for relative, payload in sorted({**partitions, **artifacts}.items()):
@@ -6191,16 +6230,22 @@ class PlanDocumentStore:
                     ],
                 }
             )
+        partition_state = self._storage_state(
+            partitions,
+            object_metadata=object_metadata,
+        )
+        if relationship_metadata is not None:
+            for relative, relationships in relationship_metadata.items():
+                partition_state.setdefault(relative, {})[
+                    "relationships"
+                ] = copy.deepcopy(relationships)
         manifest.setdefault("plandoc", {}).update(
             {
                 "schema_version": self.SCHEMA_VERSION,
                 "format": self.FORMAT,
                 "compiler_version": grogu_plandoc_compile.COMPILER_VERSION,
                 "head": envelope["revision"],
-                "partition_state": self._storage_state(
-                    partitions,
-                    object_metadata=object_metadata,
-                ),
+                "partition_state": partition_state,
                 "parts": entries,
             }
         )
@@ -6850,6 +6895,41 @@ class PlanDocumentStore:
             authorized_remove_ids=removed,
             after=True,
         )
+        relationship_metadata = self._manifest_relationship_metadata(
+            manifest
+        )
+        object_metadata = self._manifest_object_metadata(manifest)
+        removed_nodes = {
+            node_id
+            for node_id in before.get("nodes", {})
+            if node_id not in after.get("nodes", {})
+        }
+        repartitioned_nodes = {
+            node_id
+            for node_id in before.get("nodes", {})
+            if node_id in after.get("nodes", {})
+            and before["nodes"][node_id].get("stage", "")
+            != after["nodes"][node_id].get("stage", "")
+        }
+        for relative, relationships in relationship_metadata.items():
+            for edge_id, endpoints in relationships.items():
+                endpoint_set = set(endpoints)
+                edge_stages = set(
+                    object_metadata.get(relative, {}).get(edge_id, [])
+                )
+                if endpoint_set & repartitioned_nodes:
+                    raise PlanError(
+                        "move or remove relationships before changing a "
+                        "connected node's stage"
+                    )
+                if (
+                    endpoint_set & removed_nodes
+                    and edge_stages - (set(readable) | {""})
+                ):
+                    raise PlanError(
+                        f"role {effective!r} cannot remove an object that is "
+                        "referenced outside that role's view"
+                    )
         changed = self._changed_ids(operations)
         touched_partitions = self._partitions_touched(
             before, after, changed
@@ -6861,6 +6941,23 @@ class PlanDocumentStore:
             raise PlanError(
                 f"role {effective!r} cannot rewrite the shared open graph "
                 "partition without access to both design and implementation"
+            )
+        allowed_stages = set(readable) | {""}
+        manifest_objects = self._manifest_object_metadata(manifest)
+        if any(
+            set(stages) - allowed_stages
+            for partition in touched_partitions
+            for stages in manifest_objects.get(
+                self._PARTITION_PATHS[partition], {}
+            ).values()
+        ):
+            # A role-bounded materialization omits cross-seal relationships.
+            # Re-serializing that partial partition would silently delete
+            # them, while decoding them here would expose hidden ids. Refuse
+            # the write and require a role that can see the whole partition.
+            raise PlanError(
+                f"role {effective!r} cannot rewrite a graph partition that "
+                "contains relationships outside that role's view"
             )
         affected_stages = [
             stage
@@ -6912,13 +7009,33 @@ class PlanDocumentStore:
                 # An empty set is safe and tells the client to refresh.
                 error.ops_since = []
                 raise error
+            latest_manifest = self.plans.load(self.plan_id)
+            fresh_hidden_collisions = sorted(
+                (
+                    added
+                    & self._all_manifest_object_ids(latest_manifest)
+                    - visible_ids
+                ),
+                key=grogu_plandoc_canon.id_sort_key,
+            )
+            if fresh_hidden_collisions:
+                raise PlanError(
+                    "one or more requested object ids are already in use"
+                )
             current_payloads = self._current_partition_payloads()
             visible_partitions = grogu_plandoc.split_partitions(after)
             touched = touched_partitions
-            before_metadata = self._manifest_object_metadata(manifest)
+            before_metadata = self._manifest_object_metadata(latest_manifest)
             after_metadata = copy.deepcopy(before_metadata)
+            before_relationships = self._manifest_relationship_metadata(
+                latest_manifest
+            )
+            after_relationships = copy.deepcopy(before_relationships)
             visible_metadata = self._partition_object_metadata(
                 after, visible_partitions
+            )
+            visible_relationships = self._partition_relationship_metadata(
+                visible_partitions
             )
             for identifier in changed:
                 for objects in after_metadata.values():
@@ -6928,6 +7045,20 @@ class PlanDocumentStore:
                         after_metadata.setdefault(relative, {})[
                             identifier
                         ] = copy.deepcopy(objects[identifier])
+            changed_edges = {
+                identifier
+                for identifier in changed
+                if identifier in before.get("edges", {})
+                or identifier in after.get("edges", {})
+            }
+            for edge_id in changed_edges:
+                for relationships in after_relationships.values():
+                    relationships.pop(edge_id, None)
+                for relative, relationships in visible_relationships.items():
+                    if edge_id in relationships:
+                        after_relationships.setdefault(relative, {})[
+                            edge_id
+                        ] = copy.deepcopy(relationships[edge_id])
             for partition in touched:
                 value = visible_partitions[partition]
                 relative = self._PARTITION_PATHS[partition]
@@ -6968,7 +7099,7 @@ class PlanDocumentStore:
                     )
                     for stage in [
                         self._stage_relative(item)
-                        for item in manifest.get("stages", [])
+                        for item in latest_manifest.get("stages", [])
                     ]
                 },
             )
@@ -6993,23 +7124,24 @@ class PlanDocumentStore:
                     for result in checks.values()
                 ],
             )
-            plandoc_manifest = manifest.setdefault("plandoc", {})
+            plandoc_manifest = latest_manifest.setdefault("plandoc", {})
             plandoc_manifest["counters"] = self._merge_counters(
                 plandoc_manifest.get("counters", {}),
                 self._counter_state(after),
             )
             self._update_manifest_parts(
-                manifest, current_payloads, {
+                latest_manifest, current_payloads, {
                     self._stage_relative(stage): grogu_plandoc_revision.safe_read(
                         self._stage_path(stage)
                     )
-                    for stage in manifest.get("stages", [])
+                    for stage in latest_manifest.get("stages", [])
                 },
                 envelope,
                 object_metadata=after_metadata,
+                relationship_metadata=after_relationships,
             )
-            manifest["updated_at"] = now()
-            manifest.setdefault("events", []).append(
+            latest_manifest["updated_at"] = now()
+            latest_manifest.setdefault("events", []).append(
                 {
                     "at": now(),
                     "actor": actor(),
@@ -7018,7 +7150,9 @@ class PlanDocumentStore:
                     "origin": origin,
                 }
             )
-            self.plans._write_json(self.package / "manifest.json", manifest)
+            self.plans._write_json(
+                self.package / "manifest.json", latest_manifest
+            )
         for stage, result in checks.items():
             spec = self._projection_spec(REVIEWER, [stage])
             grogu_plandoc_compile.write_cache(
@@ -7989,7 +8123,7 @@ class PlanDocumentStore:
         return self.package / "proposals" / f"{proposal_id}.json"
 
     def proposals(self, *, role: str) -> list[dict]:
-        self._claim(role)
+        effective = self._claim(role)
         directory = self.package / "proposals"
         if not directory.is_dir():
             return []
@@ -7999,9 +8133,37 @@ class PlanDocumentStore:
                 value = self._read_json_file(path)
             except PlanError:
                 continue
-            if value.get("id"):
-                values.append(value)
+            if value.get("id") and self._proposal_readable(
+                value, effective
+            ):
+                values.append(self._public_proposal(value))
         return values
+
+    @staticmethod
+    def _public_proposal(proposal: dict) -> dict:
+        return {
+            key: copy.deepcopy(value)
+            for key, value in proposal.items()
+            if key != "visibility"
+        }
+
+    @staticmethod
+    def _proposal_readable(proposal: dict, role: str) -> bool:
+        operations = proposal.get("ops", [])
+        visibility = proposal.get("visibility", {})
+        entries = (
+            visibility.get("ops", [])
+            if isinstance(visibility, dict)
+            else []
+        )
+        if len(entries) != len(operations):
+            return False
+        allowed = set(ROLE_READABLE_STAGES.get(role, ())) | {""}
+        return all(
+            isinstance(entry, dict)
+            and set(entry.get("stages", [])) <= allowed
+            for entry in entries
+        )
 
     def propose(
         self,
@@ -8025,6 +8187,19 @@ class PlanDocumentStore:
             origin="proposal-preview",
             dry_run=True,
         )
+        added, removed = self._reserved_ids(operations)
+        proposed = grogu_plandoc_patch.apply_patch(
+            document,
+            operations,
+            base=base,
+            current_revision=base,
+            readable_stages=ROLE_READABLE_STAGES[effective],
+            authorized_new_ids=added,
+            authorized_remove_ids=removed,
+        )
+        visibility = self._operation_visibility(
+            document, proposed, operations
+        )
         with self.plans.locked():
             directory = self.package / "proposals"
             numbers = [
@@ -8041,6 +8216,7 @@ class PlanDocumentStore:
                 "base": base,
                 "why": str(why),
                 "ops": copy.deepcopy(list(operations or [])),
+                "visibility": visibility,
                 "status": "pending",
                 "decided_at": "",
                 "decided_by": "",
@@ -8050,14 +8226,19 @@ class PlanDocumentStore:
                 self._proposal_path(proposal_id),
                 grogu_plandoc_canon.pretty_dumpb(proposal),
             )
-        return proposal
+        return self._public_proposal(proposal)
 
     def _proposal(self, proposal_id: str, *, role: str) -> dict:
-        self._claim(role)
+        effective = self._claim(role)
         try:
-            return self._read_json_file(self._proposal_path(proposal_id))
+            proposal = self._read_json_file(
+                self._proposal_path(proposal_id)
+            )
         except PlanError as error:
             raise PlanError(f"proposal {proposal_id!r} was not found") from error
+        if not self._proposal_readable(proposal, effective):
+            raise PlanError(f"proposal {proposal_id!r} was not found")
+        return proposal
 
     def proposal_preview(self, proposal_id: str, *, role: str) -> dict:
         effective = self._claim(role)
@@ -8259,7 +8440,10 @@ class PlanDocumentStore:
             },
             proposal_guard=proposal_id,
         )
-        return {"revision": result["revision"], "proposal": decided}
+        return {
+            "revision": result["revision"],
+            "proposal": self._public_proposal(decided),
+        }
 
     def reject_proposal(
         self,
@@ -8295,7 +8479,7 @@ class PlanDocumentStore:
                 self._proposal_path(proposal_id),
                 grogu_plandoc_canon.pretty_dumpb(proposal),
             )
-        return proposal
+        return self._public_proposal(proposal)
 
     # -- explicit agent registration and the privacy-normalized board ----
 
