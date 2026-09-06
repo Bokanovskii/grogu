@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import dataclasses
 import datetime as dt
 import json
@@ -32,7 +33,12 @@ import grogu_mcp
 import grogu_memory
 import grogu_personal_memory
 import grogu_platform
+import grogu_plan_server
 import grogu_plans
+import grogu_plandoc
+import grogu_plandoc_canon
+import grogu_plandoc_patch
+import grogu_plandoc_schema
 import grogu_privacy
 import grogu_review
 import grogu_review_server
@@ -1789,7 +1795,7 @@ def plan_status(args: argparse.Namespace) -> int:
     summary = store.summary(plan_id)
     review_line = ""
     review = grogu_review.ReviewStore(store)
-    if review.path(plan_id).exists():
+    if store.is_document_plan(plan_id) or review.path(plan_id).exists():
         rsummary = review.summary(plan_id)
         if rsummary.get("threads"):
             review_line = f"review: round {rsummary.get('round')}, {rsummary.get('open', 0)} open"
@@ -1926,8 +1932,16 @@ def plan_shape(args: argparse.Namespace) -> int:
 
 def plan_write(args: argparse.Namespace) -> int:
     store = plan_store(args)
-    body = _read_body(args)
     plan_id = store.resolve(args.id)
+    if getattr(args, "file", None) and args.file != "-" and store.is_document_plan(plan_id):
+        source = Path(args.file).expanduser().resolve()
+        package = store.plan_dir(plan_id).resolve()
+        if source == package or package in source.parents:
+            raise grogu_plans.PlanError(
+                "refusing --file from inside the .plan package; stage Markdown "
+                "there is compiled output, not a writable source"
+            )
+    body = _read_body(args)
     manifest = store.write_stage(
         plan_id,
         args.stage,
@@ -2968,6 +2982,620 @@ def plan_friction(args: argparse.Namespace) -> int:
     return 0
 
 
+def _doc_role(args: argparse.Namespace) -> str:
+    return (
+        (getattr(args, "role", "") or "").strip()
+        or grogu_plans.current_role()
+        or grogu_plans.REVIEWER
+    )
+
+
+def _doc_store(
+    args: argparse.Namespace,
+    *,
+    auto_migrate: bool = True,
+) -> tuple[grogu_plans.PlanStore, grogu_plans.PlanDocumentStore]:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id)
+    if not store.is_document_plan(plan_id):
+        if not auto_migrate:
+            raise grogu_plans.PlanError(
+                f"plan {plan_id} uses the legacy layout; run "
+                f"`grogu plan doc migrate {plan_id}`"
+            )
+        result = grogu_plans.PlanDocumentStore.migrate(
+            store, plan_id, role=_doc_role(args)
+        )
+        if not getattr(args, "json", False):
+            print(
+                f"migrated {plan_id} to {result['to']} "
+                "(the verbatim legacy copy is retained)"
+            )
+    return store, grogu_plans.PlanDocumentStore.for_plan(store, plan_id)
+
+
+def _stdin_value(value: str) -> str:
+    return sys.stdin.read() if value == "-" else value
+
+
+def _json_input(
+    filename: str,
+    *,
+    service: Optional[grogu_plans.PlanDocumentStore] = None,
+) -> object:
+    if not filename:
+        raise grogu_plans.PlanError("a JSON --file is required")
+    if filename == "-":
+        raw = sys.stdin.read()
+    else:
+        path = Path(filename).expanduser().resolve()
+        if service is not None:
+            package = service.package.resolve()
+            if path == package or package in path.parents:
+                raise grogu_plans.PlanError(
+                    "refusing a patch file inside the .plan package; that "
+                    "would make compiled or private package state an input to "
+                    "its own rewrite"
+                )
+        try:
+            raw = path.read_text(encoding="utf8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise grogu_plans.PlanError(f"cannot read {path}: {error}") from error
+    if len(raw.encode("utf8")) > grogu_plans.PlanDocumentStore.MAX_REQUEST_BYTES:
+        raise grogu_plans.PlanError("JSON input exceeds 256 KB")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise grogu_plans.PlanError(
+            f"invalid JSON at line {error.lineno}, column {error.colno}"
+        ) from error
+
+
+def _patch_ops(value: object) -> list[dict]:
+    if isinstance(value, dict):
+        value = value.get("ops")
+    if not isinstance(value, list) or not all(
+        isinstance(item, dict) for item in value
+    ):
+        raise grogu_plans.PlanError(
+            "patch input must be an array of operations or an object with ops"
+        )
+    return value
+
+
+def plan_doc_create(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    manifest = grogu_plans.PlanDocumentStore.create(
+        store,
+        args.title,
+        task_id=args.task or "",
+        design=args.design,
+        evaluation=args.eval,
+        review_required=args.review_required,
+    )
+    if args.json:
+        print_json(manifest)
+    else:
+        print(manifest["id"])
+    return 0
+
+
+def plan_doc_open(args: argparse.Namespace) -> int:
+    store, documents = _doc_store(args)
+    plan_id = documents.plan_id
+
+    def on_ready(info: dict) -> None:
+        launch_url = f"{info['url']}/?t={info['token']}"
+        if args.json:
+            print_json({**info, "launch_url": launch_url})
+        elif args.no_open:
+            print(f"open {launch_url}")
+        else:
+            _open_in_browser(launch_url)
+            print(f"{info['url']}  opened in your browser")
+
+    grogu_plan_server.serve(
+        plan_id,
+        role=_doc_role(args),
+        stage=args.stage or "",
+        mode=args.mode,
+        port=args.port,
+        timeout=args.timeout,
+        store=store,
+        on_ready=on_ready,
+    )
+    return 0
+
+
+def plan_doc_show(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    result = documents.query(
+        role=_doc_role(args),
+        stage=args.stage or "",
+        kind=args.kind or "",
+        text=args.text or "",
+        identifier=args.node or "",
+    )
+    if args.json:
+        print_json(result)
+        return 0
+    for node in result["nodes"]:
+        print(f"{node['id']}  {node['kind']:<12} {node['stage'] or 'plan'}  {node['title']}")
+        if args.body and node.get("body"):
+            print(node["body"])
+    for edge in result["edges"]:
+        print(f"{edge['id']}  {edge['kind']:<12} {edge['from']} -> {edge['to']}")
+    return 0
+
+
+def plan_doc_projection(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    stages = [args.stage] if args.stage else None
+    result = documents.projection(
+        role=_doc_role(args),
+        stages=stages,
+        include=args.include,
+        budget=args.budget,
+        since=args.since or "",
+        format=args.format,
+    )
+    if args.json:
+        print_json(result)
+    elif args.format == "md":
+        sys.stdout.write(str(result["payload"]))
+    else:
+        print_json(result["payload"])
+    return 0
+
+
+def plan_doc_context(args: argparse.Namespace) -> int:
+    return plan_doc_projection(args)
+
+
+def plan_doc_query(args: argparse.Namespace) -> int:
+    return plan_doc_show(args)
+
+
+def plan_doc_lint(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    result = documents.verify(role=_doc_role(args))
+    if args.json:
+        print_json(result)
+    else:
+        print(
+            f"{result['plan']} {result['head']}: package, log, partitions and "
+            f"{len(result['projections'])} readable projection(s) verified"
+        )
+    return 0
+
+
+def plan_doc_compile(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    result = documents.compile(
+        role=_doc_role(args),
+        stages=[args.stage] if args.stage else None,
+        check=args.check,
+    )
+    if args.json:
+        print_json(result)
+    else:
+        verb = "would rewrite" if args.check else "compiled"
+        if result["changed"]:
+            print(f"{verb}: {', '.join(result['changed'])}")
+        else:
+            print(f"{result['plan']} {result['revision']}: compiled artifacts match")
+    return 0 if result["ok"] else 3
+
+
+def plan_doc_patch(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    operations = _patch_ops(_json_input(args.file, service=documents))
+    base = args.base or documents.head()
+    result = documents.patch(
+        role=_doc_role(args),
+        base=base,
+        operations=operations,
+        intent=_stdin_value(args.intent or ""),
+        origin="cli",
+        dry_run=args.dry_run,
+    )
+    if args.json:
+        print_json(result)
+    else:
+        suffix = " (dry run)" if args.dry_run else ""
+        print(f"{result['revision']}  {len(result['changed'])} object(s) changed{suffix}")
+    return 0
+
+
+def _attrs(values: list[str]) -> dict:
+    result = {}
+    for value in values or []:
+        key, separator, raw = value.partition("=")
+        if not separator or not key:
+            raise grogu_plans.PlanError("--attr values must be key=value")
+        try:
+            result[key] = json.loads(raw)
+        except json.JSONDecodeError:
+            result[key] = raw
+    return result
+
+
+def plan_doc_node_add(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    role = _doc_role(args)
+    document = documents.load(role=role, record=False)
+    manifest = documents.plans.load(documents.plan_id)
+    counter_manifest = {
+        "plandoc": {
+            "counters": copy.deepcopy(
+                manifest.get("plandoc", {}).get(
+                    "counters", documents._counter_state(document)
+                )
+            )
+        }
+    }
+    node_id = args.node or grogu_plandoc.allocate_id(
+        counter_manifest, args.kind, existing_ids=document["nodes"]
+    )
+    body = _stdin_value(args.body or "")
+    node = grogu_plandoc.make_node(
+        node_id,
+        args.kind,
+        args.title,
+        stage=args.stage or "",
+        body=body,
+        attrs=_attrs(args.attr),
+        order=args.order,
+        revision=document["revision"],
+    )
+    result = documents.patch(
+        role=role,
+        base=document["revision"],
+        operations=[{"op": "add", "path": f"/nodes/{node_id}", "value": node}],
+        intent=args.intent or f"add {node_id}",
+    )
+    print_json(result | {"node": node_id}) if args.json else print(
+        f"added {node_id} in {result['revision']}"
+    )
+    return 0
+
+
+def plan_doc_node_set(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    role = _doc_role(args)
+    document = documents.load(role=role, record=False)
+    if args.node not in document["nodes"]:
+        raise grogu_plans.PlanError(f"no node {args.node!r}")
+    operations = []
+    for field, value in (
+        ("title", args.title),
+        ("body", _stdin_value(args.body) if args.body is not None else None),
+        ("order", args.order),
+    ):
+        if value is not None:
+            operations.append(
+                {
+                    "op": "replace",
+                    "path": f"/nodes/{args.node}/{field}",
+                    "value": value,
+                }
+            )
+    for key, value in _attrs(args.attr).items():
+        op = "replace" if key in document["nodes"][args.node]["attrs"] else "add"
+        operations.append(
+            {
+                "op": op,
+                "path": f"/nodes/{args.node}/attrs/{key}",
+                "value": value,
+            }
+        )
+    if not operations:
+        raise grogu_plans.PlanError("node set needs a field to change")
+    result = documents.patch(
+        role=role,
+        base=document["revision"],
+        operations=operations,
+        intent=args.intent or f"update {args.node}",
+    )
+    print_json(result) if args.json else print(
+        f"updated {args.node} in {result['revision']}"
+    )
+    return 0
+
+
+def plan_doc_node_rm(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    role = _doc_role(args)
+    document = documents.load(role=role, record=False)
+    if args.node not in document["nodes"]:
+        raise grogu_plans.PlanError(f"no node {args.node!r}")
+    operations = [
+        {"op": "remove", "path": f"/edges/{edge_id}"}
+        for edge_id, edge in document["edges"].items()
+        if args.node in {edge["from"], edge["to"]}
+    ]
+    operations.append({"op": "remove", "path": f"/nodes/{args.node}"})
+    result = documents.patch(
+        role=role,
+        base=document["revision"],
+        operations=operations,
+        intent=args.intent or f"remove {args.node}",
+    )
+    print_json(result) if args.json else print(
+        f"removed {args.node} in {result['revision']}"
+    )
+    return 0
+
+
+def plan_doc_link(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    role = _doc_role(args)
+    document = documents.load(role=role, record=False)
+    manifest = documents.plans.load(documents.plan_id)
+    counter_manifest = {
+        "plandoc": {
+            "counters": copy.deepcopy(
+                manifest.get("plandoc", {}).get(
+                    "counters", documents._counter_state(document)
+                )
+            )
+        }
+    }
+    edge_id = args.edge or grogu_plandoc.allocate_id(
+        counter_manifest, "edge", existing_ids=document["edges"]
+    )
+    edge = grogu_plandoc.make_edge(
+        edge_id,
+        args.kind,
+        args.source,
+        args.target,
+        attrs=_attrs(args.attr),
+        revision=document["revision"],
+    )
+    result = documents.patch(
+        role=role,
+        base=document["revision"],
+        operations=[{"op": "add", "path": f"/edges/{edge_id}", "value": edge}],
+        intent=args.intent or f"link {args.source} to {args.target}",
+    )
+    print_json(result | {"edge": edge_id}) if args.json else print(
+        f"added {edge_id} in {result['revision']}"
+    )
+    return 0
+
+
+def plan_doc_unlink(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    role = _doc_role(args)
+    document = documents.load(role=role, record=False)
+    if args.edge not in document["edges"]:
+        raise grogu_plans.PlanError(f"no edge {args.edge!r}")
+    result = documents.patch(
+        role=role,
+        base=document["revision"],
+        operations=[{"op": "remove", "path": f"/edges/{args.edge}"}],
+        intent=args.intent or f"unlink {args.edge}",
+    )
+    print_json(result) if args.json else print(
+        f"removed {args.edge} in {result['revision']}"
+    )
+    return 0
+
+
+def plan_doc_revisions(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    values = documents.revisions(role=_doc_role(args))
+    if args.json:
+        print_json({"revisions": values})
+    else:
+        for value in reversed(values):
+            print(
+                f"{value['revision']}  {value['at']}  "
+                f"{value['origin']:<20} {value['intent']}"
+            )
+    return 0
+
+
+def plan_doc_diff(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    result = documents.diff(
+        role=_doc_role(args), before=args.from_revision, after=args.to_revision
+    )
+    if args.json:
+        print_json(result)
+    else:
+        print(json.dumps(result["ops"], indent=2, ensure_ascii=False))
+    return 0
+
+
+def plan_doc_propose(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    operations = _patch_ops(_json_input(args.file, service=documents))
+    proposal = documents.propose(
+        role=_doc_role(args),
+        operations=operations,
+        why=_stdin_value(args.why),
+        base=args.base or "",
+        from_thread=args.from_thread or "",
+    )
+    print_json(proposal) if args.json else print(proposal["id"])
+    return 0
+
+
+def plan_doc_revise(args: argparse.Namespace) -> int:
+    return plan_doc_propose(args)
+
+
+def plan_doc_proposals(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    values = documents.proposals(role=_doc_role(args))
+    if args.json:
+        print_json({"proposals": values})
+    else:
+        for value in values:
+            print(f"{value['id']}  {value['status']:<9} {value['why']}")
+    return 0
+
+
+def plan_doc_accept(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    result = documents.accept_proposal(args.proposal, role=_doc_role(args))
+    print_json(result) if args.json else print(result["revision"])
+    return 0
+
+
+def plan_doc_reject(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    result = documents.reject_proposal(
+        args.proposal,
+        role=_doc_role(args),
+        why_not=_stdin_value(args.why),
+    )
+    print_json(result) if args.json else print(
+        f"{args.proposal} rejected"
+    )
+    return 0
+
+
+def plan_doc_impact(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    if args.select.startswith("{"):
+        selector = json.loads(args.select)
+    else:
+        selector = {"type": "node", "id": args.select}
+    result = documents.impact(
+        role=_doc_role(args), selector=selector, depth=args.depth
+    )
+    if args.json:
+        print_json(result)
+    else:
+        for item in result["direct"]:
+            print(f"direct       {item['id']}  {item['title']}")
+        for item in result["transitive"]:
+            print(f"transitive   {item['id']}  {item['reason']}")
+    return 0
+
+
+def plan_doc_export(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    result = documents.export(
+        role=_doc_role(args),
+        stages=[args.stage] if args.stage else None,
+        include=args.include,
+        budget=args.budget,
+        since=args.since or "",
+        format=args.format,
+        output=Path(args.output).expanduser() if args.output else None,
+    )
+    if args.json:
+        print_json(result)
+    elif not args.output:
+        if isinstance(result["payload"], str):
+            sys.stdout.write(result["payload"])
+        else:
+            print_json(result["payload"])
+    else:
+        print(result["output"])
+    return 0
+
+
+def plan_doc_migrate(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    result = grogu_plans.PlanDocumentStore.migrate(
+        store,
+        store.resolve(args.id),
+        role=_doc_role(args),
+        dry_run=args.dry_run,
+    )
+    print_json(result) if args.json else print(
+        f"{result['plan']}: {'would migrate' if args.dry_run else 'migrated'} "
+        f"{result['from']} -> {result['to']}"
+    )
+    return 0
+
+
+def plan_doc_revert(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    result = grogu_plans.PlanDocumentStore.revert(
+        store,
+        store.resolve(args.id),
+        role=_doc_role(args),
+        dry_run=args.dry_run,
+    )
+    print_json(result) if args.json else print(
+        f"{result['plan']}: {'would restore' if args.dry_run else 'restored'} "
+        f"{result['to']}"
+    )
+    return 0
+
+
+def plan_doc_control(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    role = _doc_role(args)
+    if args.feedback is not None:
+        if not args.agent:
+            raise grogu_plans.PlanError("--feedback requires --agent")
+        result = documents.route_feedback(
+            role=role,
+            scope={
+                "kind": "agent",
+                "agent_key": args.agent,
+                "label": f"agent {args.agent}",
+            },
+            text=_stdin_value(args.feedback),
+            binding=args.binding,
+        )
+    elif args.agent:
+        result = documents.control_drill(args.agent, role=role)
+    else:
+        result = documents.control_snapshot(
+            role=role,
+            plan=args.filter_plan or "",
+            filter_role=args.filter_role or "",
+            workstream=args.workstream or "",
+            state=args.state or "",
+            window_minutes=args.window,
+        )
+    if args.json:
+        print_json(result)
+    else:
+        if args.feedback is not None:
+            print(f"{result['seq']} -> {result['delivered_to']}")
+        elif args.agent:
+            print(f"{result['agent']['agent']}  {result['agent']['badge']}")
+            for event in result["activity"]:
+                print(f"  {event['type']:<20} {event['summary']}")
+        else:
+            for agent in result["agents"]:
+                print(
+                    f"{agent['badge']:<12} {agent['role']:<10} "
+                    f"{agent['agent']}  {agent['plan']}"
+                )
+    return 0
+
+
+def plan_doc_register(args: argparse.Namespace) -> int:
+    _store, documents = _doc_store(args)
+    value = documents.register_session(
+        {
+            "run_id": args.run_id,
+            "repository": str(documents.plans.root),
+            "plan": documents.plan_id,
+            "agent": args.agent,
+            "role": args.session_role,
+            "workstream": args.workstream or "",
+            "session_id": args.session_id,
+            "agent_id": args.agent_id,
+            "registered_at": args.registered_at or now(),
+            "events_path": args.events or "",
+        }
+    )
+    print_json(value) if args.json else print(
+        f"registered {value['run_id']} for {value['agent']}"
+    )
+    return 0
+
+
 def _skill_repo(args: argparse.Namespace) -> Path:
     """The working tree the skill belongs to, not the primary one.
 
@@ -3576,6 +4204,30 @@ def review_open(args: argparse.Namespace) -> int:
     store = plan_store(args)
     plan_id = store.resolve(args.id)
     role = _review_effective_role()
+    if store.is_document_plan(plan_id):
+        def on_document_ready(info: dict) -> None:
+            launch_url = f"{info['url']}/?t={info['token']}"
+            if args.json:
+                print_json({**info, "launch_url": launch_url})
+            elif args.no_open:
+                print(f"  open {launch_url}")
+            else:
+                _open_in_browser(launch_url)
+                print(f"  {info['url']}  opened in your browser")
+            if not args.json:
+                print("  ctrl-c ends the session")
+
+        grogu_plan_server.serve(
+            plan_id,
+            role=role,
+            stage=args.stage or "",
+            mode="document",
+            port=args.port,
+            timeout=args.timeout,
+            store=store,
+            on_ready=on_document_ready,
+        )
+        return 0
     manifest = store.load(plan_id)
     readable = [
         stage
@@ -4428,6 +5080,249 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_new_parser.add_argument("--json", action="store_true")
     plan_new_parser.set_defaults(handler=plan_new)
+
+    plan_doc = plan_subparsers.add_parser(
+        "doc",
+        help="create, inspect, revise, compile, and serve typed .plan packages",
+    )
+    plan_doc_subparsers = plan_doc.add_subparsers(
+        dest="plan_doc_command", required=True
+    )
+
+    def doc_parser(
+        name: str,
+        *,
+        help: str = "",
+        needs_id: bool = True,
+    ) -> argparse.ArgumentParser:
+        parser = plan_doc_subparsers.add_parser(
+            name,
+            help=help,
+            parents=[plan_common, role_common],
+        )
+        if needs_id:
+            _plan_id_argument(parser)
+        parser.add_argument("--json", action="store_true")
+        return parser
+
+    doc_create = doc_parser(
+        "create", help="create a new typed .plan package", needs_id=False
+    )
+    doc_create.add_argument("title")
+    doc_create.add_argument("--task")
+    doc_create.add_argument("--design", action="store_true")
+    doc_create.add_argument("--eval", action="store_true")
+    doc_create.add_argument("--review-required", action="store_true")
+    doc_create.set_defaults(handler=plan_doc_create)
+
+    doc_open = doc_parser("open", help="open the secured local workspace")
+    doc_open.add_argument(
+        "--mode",
+        choices=["control", "document", "canvas", "dependencies", "revision"],
+        default="document",
+    )
+    doc_open.add_argument("--stage", choices=grogu_plans.STAGES, default="")
+    doc_open.add_argument("--port", type=int, default=0)
+    doc_open.add_argument("--no-open", action="store_true")
+    doc_open.add_argument(
+        "--timeout", type=int, default=grogu_plan_server.DEFAULT_TIMEOUT
+    )
+    doc_open.set_defaults(handler=plan_doc_open)
+
+    for name, handler, help_text in (
+        ("show", plan_doc_show, "show role-visible graph objects"),
+        ("query", plan_doc_query, "query role-visible graph objects"),
+    ):
+        item = doc_parser(name, help=help_text)
+        item.add_argument("--stage", choices=grogu_plans.STAGES, default="")
+        item.add_argument(
+            "--kind",
+            choices=(
+                list(grogu_plandoc_schema.NODE_KINDS)
+                + list(grogu_plandoc_schema.EDGE_KINDS)
+            ),
+            default="",
+        )
+        item.add_argument("--node", default="")
+        item.add_argument("--text", default="")
+        item.add_argument("--body", action="store_true")
+        item.set_defaults(handler=handler)
+
+    for name, handler, help_text in (
+        ("projection", plan_doc_projection, "compile a role projection"),
+        ("context", plan_doc_context, "emit bounded role context"),
+    ):
+        item = doc_parser(name, help=help_text)
+        item.add_argument("--stage", choices=grogu_plans.STAGES, default="")
+        item.add_argument(
+            "--include", choices=["normative", "all"], default="normative"
+        )
+        item.add_argument("--budget", type=int)
+        item.add_argument("--since", default="")
+        item.add_argument("--format", choices=["md", "json"], default="md")
+        item.set_defaults(handler=handler)
+
+    for name, handler in (
+        ("lint", plan_doc_lint),
+        ("verify", plan_doc_lint),
+    ):
+        item = doc_parser(name, help="verify package and compiler invariants")
+        item.set_defaults(handler=handler)
+
+    doc_compile = doc_parser(
+        "compile", help="compile or check derived stage artifacts"
+    )
+    doc_compile.add_argument("--stage", choices=grogu_plans.STAGES, default="")
+    doc_compile.add_argument("--check", action="store_true")
+    doc_compile.set_defaults(handler=plan_doc_compile)
+
+    doc_patch = doc_parser("patch", help="apply one atomic JSON Patch")
+    doc_patch.add_argument("--file", required=True)
+    doc_patch.add_argument("--base", default="")
+    doc_patch.add_argument("--dry-run", action="store_true")
+    doc_patch.add_argument("--intent", default="")
+    doc_patch.set_defaults(handler=plan_doc_patch)
+
+    doc_node = plan_doc_subparsers.add_parser(
+        "node", help="add, update, or remove graph nodes"
+    )
+    doc_node_subparsers = doc_node.add_subparsers(
+        dest="plan_doc_node_command", required=True
+    )
+
+    def node_parser(name: str) -> argparse.ArgumentParser:
+        parser = doc_node_subparsers.add_parser(
+            name, parents=[plan_common, role_common]
+        )
+        _plan_id_argument(parser)
+        parser.add_argument("--json", action="store_true")
+        parser.add_argument("--intent", default="")
+        return parser
+
+    node_add = node_parser("add")
+    node_add.add_argument("--node", default="")
+    node_add.add_argument(
+        "--kind", required=True, choices=list(grogu_plandoc_schema.NODE_KINDS)
+    )
+    node_add.add_argument("--title", required=True)
+    node_add.add_argument("--body", default="")
+    node_add.add_argument("--stage", choices=("", *grogu_plans.STAGES), default="")
+    node_add.add_argument("--attr", action="append", default=[])
+    node_add.add_argument("--order", type=int, default=1000)
+    node_add.set_defaults(handler=plan_doc_node_add)
+
+    node_set = node_parser("set")
+    node_set.add_argument("node")
+    node_set.add_argument("--title")
+    node_set.add_argument("--body")
+    node_set.add_argument("--attr", action="append", default=[])
+    node_set.add_argument("--order", type=int)
+    node_set.set_defaults(handler=plan_doc_node_set)
+
+    node_rm = node_parser("rm")
+    node_rm.add_argument("node")
+    node_rm.set_defaults(handler=plan_doc_node_rm)
+
+    doc_link = doc_parser("link", help="add a typed graph edge")
+    doc_link.add_argument("source")
+    doc_link.add_argument("kind", choices=grogu_plandoc_schema.EDGE_KINDS)
+    doc_link.add_argument("target")
+    doc_link.add_argument("--edge", default="")
+    doc_link.add_argument("--attr", action="append", default=[])
+    doc_link.add_argument("--intent", default="")
+    doc_link.set_defaults(handler=plan_doc_link)
+
+    doc_unlink = doc_parser("unlink", help="remove a graph edge")
+    doc_unlink.add_argument("edge")
+    doc_unlink.add_argument("--intent", default="")
+    doc_unlink.set_defaults(handler=plan_doc_unlink)
+
+    doc_revisions = doc_parser("revisions", help="list append-only revisions")
+    doc_revisions.set_defaults(handler=plan_doc_revisions)
+
+    doc_diff = doc_parser("diff", help="diff two role-visible revisions")
+    doc_diff.add_argument("--from", dest="from_revision", required=True)
+    doc_diff.add_argument("--to", dest="to_revision", required=True)
+    doc_diff.set_defaults(handler=plan_doc_diff)
+
+    for name, handler in (
+        ("propose", plan_doc_propose),
+        ("revise", plan_doc_revise),
+    ):
+        item = doc_parser(name, help="validate and store a proposed revision")
+        item.add_argument("--file", required=True)
+        item.add_argument("--why", required=True)
+        item.add_argument("--base", default="")
+        item.add_argument("--from-thread", default="")
+        item.set_defaults(handler=handler)
+
+    doc_proposals = doc_parser("proposals", help="list revision proposals")
+    doc_proposals.set_defaults(handler=plan_doc_proposals)
+
+    doc_accept = doc_parser("accept", help="atomically accept a proposal")
+    doc_accept.add_argument("proposal")
+    doc_accept.set_defaults(handler=plan_doc_accept)
+
+    doc_reject = doc_parser("reject", help="reject a proposal with a reason")
+    doc_reject.add_argument("proposal")
+    doc_reject.add_argument("--why", required=True)
+    doc_reject.set_defaults(handler=plan_doc_reject)
+
+    doc_impact = doc_parser("impact", help="show dependency impact")
+    doc_impact.add_argument("--select", required=True)
+    doc_impact.add_argument("--depth", type=int)
+    doc_impact.set_defaults(handler=plan_doc_impact)
+
+    doc_export = doc_parser("export", help="export a role-bounded projection")
+    doc_export.add_argument("--stage", choices=grogu_plans.STAGES, default="")
+    doc_export.add_argument(
+        "--include", choices=["normative", "all"], default="normative"
+    )
+    doc_export.add_argument("--budget", type=int)
+    doc_export.add_argument("--since", default="")
+    doc_export.add_argument("--format", choices=["md", "json"], default="md")
+    doc_export.add_argument("--output")
+    doc_export.set_defaults(handler=plan_doc_export)
+
+    doc_migrate = doc_parser(
+        "migrate", help="losslessly convert a legacy plan directory"
+    )
+    doc_migrate.add_argument("--dry-run", action="store_true")
+    doc_migrate.set_defaults(handler=plan_doc_migrate)
+
+    doc_revert = doc_parser(
+        "revert", help="restore the verbatim pre-migration directory"
+    )
+    doc_revert.add_argument("--dry-run", action="store_true")
+    doc_revert.set_defaults(handler=plan_doc_revert)
+
+    doc_control = doc_parser(
+        "control", help="read registered-agent control-room state"
+    )
+    doc_control.add_argument("--agent", default="")
+    doc_control.add_argument("--feedback")
+    doc_control.add_argument("--binding", action="store_true")
+    doc_control.add_argument("--filter-plan", default="")
+    doc_control.add_argument("--filter-role", default="")
+    doc_control.add_argument("--workstream", default="")
+    doc_control.add_argument("--state", default="")
+    doc_control.add_argument("--window", type=int, default=120)
+    doc_control.set_defaults(handler=plan_doc_control)
+
+    doc_register = doc_parser(
+        "register", help="explicitly register one Copilot session source"
+    )
+    doc_register.add_argument("--run-id", required=True)
+    doc_register.add_argument("--session-id", required=True)
+    doc_register.add_argument("--agent-id", required=True)
+    doc_register.add_argument("--agent", required=True)
+    doc_register.add_argument(
+        "--session-role", required=True, choices=grogu_plans.ROLES
+    )
+    doc_register.add_argument("--workstream", default="")
+    doc_register.add_argument("--events", default="")
+    doc_register.add_argument("--registered-at", default="")
+    doc_register.set_defaults(handler=plan_doc_register)
 
     plan_list_parser = plan_subparsers.add_parser("list", parents=[plan_common])
     plan_list_parser.add_argument("--status", choices=grogu_plans.PLAN_STATUSES)
@@ -5664,6 +6559,9 @@ def main(arguments: list[str]) -> int:
         print(f"grogu: {error}", file=sys.stderr)
         return 3
     except grogu_review_server.ReviewServerError as error:
+        print(f"grogu: {error}", file=sys.stderr)
+        return 2
+    except grogu_plan_server.PlanServerError as error:
         print(f"grogu: {error}", file=sys.stderr)
         return 2
     except grogu_tasks.TaskError as error:

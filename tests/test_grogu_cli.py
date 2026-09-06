@@ -4271,7 +4271,7 @@ class ReviewCliTests(unittest.TestCase):
         self.assertNotIn("review:", status_no_rev)
 
         _, brief_no_rev, _ = self.run_main("plan", "brief", "--role", "architect", "--plan", plan_no_rev, role="architect", agent=f"arch-{plan_no_rev}")
-        self.assertNotIn("c1", brief_no_rev)
+        self.assertNotIn("[c1 implementation anchored]", brief_no_rev)
 
         # Plan with thread
         code, out, _ = self.run_main("plan", "new", "With review")
@@ -4286,7 +4286,7 @@ class ReviewCliTests(unittest.TestCase):
         self.assertIn("1 open", status_rev)
 
         _, brief_rev, _ = self.run_main("plan", "brief", "--role", "architect", "--plan", plan_rev, role="architect", agent=f"arch-{plan_rev}")
-        self.assertIn("c1", brief_rev)
+        self.assertIn("[c1 implementation anchored]", brief_rev)
 
     def test_review_assets_cli(self):
         code, out, err = self.run_main("review", "assets")
@@ -4308,3 +4308,186 @@ class ReviewCliTests(unittest.TestCase):
             code_p, out_p, _ = self.run_main("review", "assets", "--json")
             data_present = json.loads(out_p)
             self.assertTrue(data_present.get("mermaid"))
+
+
+class PlanDocumentCliTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+        self.home = str(self.repo / "home")
+
+    def run_main(self, *arguments, role="", agent=""):
+        import secrets
+
+        agent = agent or f"doc-cli-{secrets.token_hex(4)}"
+        environment = {
+            "GROGU_HOME": self.home,
+            "GROGU_AGENT": agent,
+            "GROGU_ROLE": role,
+            "GROGU_PLAN": "",
+        }
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, environment):
+            if not role:
+                os.environ.pop("GROGU_ROLE", None)
+            with mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+                try:
+                    code = grogu_cli.main(
+                        list(arguments) + ["--repo", str(self.repo)]
+                    )
+                except SystemExit as error:
+                    code = error.code if isinstance(error.code, int) else 1
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def create(self):
+        code, output, error = self.run_main(
+            "plan", "doc", "create", "CLI document"
+        )
+        self.assertEqual(code, 0, error)
+        return output.strip()
+
+    def test_create_node_query_compile_and_export_surfaces(self):
+        plan = self.create()
+        code, output, error = self.run_main(
+            "plan",
+            "doc",
+            "node",
+            "add",
+            plan,
+            "--kind",
+            "task",
+            "--title",
+            "First task",
+            "--stage",
+            "implementation",
+            role="reviewer",
+        )
+        self.assertEqual(code, 0, error)
+        self.assertIn("task-1", output)
+        code, output, error = self.run_main(
+            "plan",
+            "doc",
+            "query",
+            plan,
+            "--node",
+            "task-1",
+            "--json",
+            role="reviewer",
+        )
+        self.assertEqual(code, 0, error)
+        self.assertEqual(json.loads(output)["nodes"][0]["title"], "First task")
+        code, _output, error = self.run_main(
+            "plan", "doc", "compile", plan, "--check", role="reviewer"
+        )
+        self.assertEqual(code, 0, error)
+        destination = self.repo / "projection.md"
+        code, output, error = self.run_main(
+            "plan",
+            "doc",
+            "export",
+            plan,
+            "--stage",
+            "implementation",
+            "--output",
+            str(destination),
+            role="reviewer",
+        )
+        self.assertEqual(code, 0, error)
+        self.assertEqual(Path(output.strip()), destination.resolve())
+        self.assertIn("First task", destination.read_text(encoding="utf8"))
+
+    def test_migrate_dry_run_and_actual_are_explicit_and_lossless(self):
+        code, output, error = self.run_main("plan", "new", "Legacy CLI")
+        self.assertEqual(code, 0, error)
+        plan = output.strip()
+        self.run_main(
+            "plan",
+            "write",
+            plan,
+            "implementation",
+            "--body",
+            "# Legacy\n\nKeep this prose.\n",
+            role="architect",
+            agent="legacy-architect",
+        )
+        code, output, error = self.run_main(
+            "plan", "doc", "migrate", plan, "--dry-run", "--json",
+            role="reviewer",
+        )
+        self.assertEqual(code, 0, error)
+        self.assertTrue(json.loads(output)["dry_run"])
+        self.assertTrue((self.repo / ".grogu" / "plans" / plan).is_dir())
+        code, output, error = self.run_main(
+            "plan", "doc", "migrate", plan, "--json", role="reviewer"
+        )
+        self.assertEqual(code, 0, error)
+        result = json.loads(output)
+        self.assertFalse(result["dry_run"])
+        package = self.repo / ".grogu" / "plans" / f"{plan}.plan"
+        self.assertTrue(package.is_dir())
+        self.assertIn(
+            "Keep this prose",
+            (
+                package
+                / "legacy"
+                / "pre-migration"
+                / "implementation.md"
+            ).read_text(encoding="utf8"),
+        )
+
+    def test_plan_write_refuses_compiled_artifact_as_source(self):
+        plan = self.create()
+        artifact = (
+            self.repo / ".grogu" / "plans" / f"{plan}.plan" / "implementation.md"
+        )
+        code, _output, error = self.run_main(
+            "plan",
+            "write",
+            plan,
+            "implementation",
+            "--file",
+            str(artifact),
+            role="architect",
+        )
+        self.assertEqual(code, 3)
+        self.assertIn("compiled output", error)
+
+    def test_engineer_cannot_project_testing_partition(self):
+        plan = self.create()
+        code, _output, error = self.run_main(
+            "plan",
+            "doc",
+            "projection",
+            plan,
+            "--stage",
+            "testing",
+            role="engineer",
+        )
+        self.assertEqual(code, 3)
+        self.assertIn("may not compile", error)
+
+    def test_review_open_uses_new_server_for_a_package(self):
+        plan = self.create()
+
+        def fake_serve(*args, **kwargs):
+            kwargs["on_ready"](
+                {
+                    "url": "http://127.0.0.1:1234",
+                    "host": "127.0.0.1",
+                    "port": 1234,
+                    "plan": plan,
+                    "role": "reviewer",
+                    "mode": "document",
+                    "token": "token",
+                }
+            )
+            return {}
+
+        with mock.patch("grogu_plan_server.serve", side_effect=fake_serve):
+            code, output, error = self.run_main(
+                "review", "open", plan, "--no-open", role="reviewer"
+            )
+        self.assertEqual(code, 0, error)
+        self.assertIn("/?t=token", output)

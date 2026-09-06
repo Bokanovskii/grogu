@@ -286,6 +286,29 @@ grogu plan gate <id> --stage implement             # exit 3 = do not start
 grogu plan show <id> --stage implementation --role engineer
 ```
 
+Typed plan packages make the graph the writable source while preserving those
+commands as adapters to deterministic compiled Markdown:
+
+```sh
+grogu plan doc create "Rate limiting" --design
+grogu plan doc open <id>
+grogu plan doc context <id> --role engineer --stage implementation
+grogu plan doc query <id> --kind task --json
+grogu plan doc lint <id> --role reviewer
+grogu plan doc revise <id> --file patch.json --why "split the limiter task"
+grogu plan doc diff <id> --from r0001 --to r0002
+grogu plan doc export <id> --role engineer --output implementation.md
+grogu plan doc migrate <legacy-id>
+```
+
+Packages live at `.grogu/plans/<id>.plan/`. Graph partitions, append-only
+revision logs, proposals, caches, registrations, recovery copies and the
+verbatim pre-migration directory stay local and ignored. Existing
+`plan show/write/gate/finalize` commands continue through `PlanStore`;
+`write_stage` imports and recompiles rather than writing a second Markdown
+truth. If `<id>/` and `<id>.plan/` both exist, every command refuses and names
+both. See [docs/plan-documents.md](docs/plan-documents.md).
+
 Work with a user-visible surface adds a design stage:
 
 ```sh
@@ -369,17 +392,22 @@ reason it was declined for, because a fresh context has no memory of being told
 no. `grogu skill contest` is how an agent argues with that reason instead of
 re-proposing under a new name.
 
-`grogu review <plan-id>` is how the user reads and comments on a plan. It opens
-the plan as a document in a local, loopback-only browser workspace where you
-select a passage — or a node or edge of a diagram — and comment on it, then
-either request changes or approve. Comments live beside the plan in a
-git-ignored `review.json`, never in the plan Markdown; **Request changes** sends
-one steering note to the architect and blocks the gate, and **Approve** is the
-user's alone (the workspace reads as `reviewer` and an agent-launched one can
-read and comment but never approve). The whole surface has a headless mirror —
-`grogu review list`, `comment`, `reply`, `resolve`, `request-changes` and
-`status` — so the architect reads a review round without a browser. Nothing
-leaves the machine at review time. See [docs/review.md](docs/review.md).
+`grogu review <plan-id>` opens the package's Document mode in the same
+loopback-only React workspace. Comments are graph `thread` nodes; the headless
+`review list/comment/reply/resolve/request-changes/status` commands are adapters
+to those revisions, not a second writable store. Migrated `review.json` is kept
+verbatim only for rollback. **Request changes** still sends one steering note
+through `PlanStore`, and **Approve** remains the user's alone. Unmigrated legacy
+plans retain the old local reader until migration. See
+[docs/review.md](docs/review.md).
+
+The workspace's **Control room** shows only explicitly registered agent
+sessions and normalized observable fields. It never scans Copilot session
+state, reads trace payloads, or returns prompts, reasoning, assistant bodies,
+raw arguments/results, or sealed-stage content. Feedback routes through
+`PlanStore.steer`, carries durable `f-NNN` receipts, and binding feedback holds
+the mapped gate only until the target acknowledges it. See
+[docs/control-room.md](docs/control-room.md).
 
 `grogu guard` is the egress check. Grogu reads private repositories, mail and
 messages, and publishes to public ones, so the risk is not that it leaks

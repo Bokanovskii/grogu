@@ -2,15 +2,17 @@
 
 A complex, multi-stage plan is hard to review as terminal prose, and a
 review-required plan otherwise has no user-visible way to interact with it.
-`grogu review` opens the plan as a document in a local browser workspace where
-you read it and comment on it — inline on a passage, or on a node or edge of a
-diagram — and either request changes or approve.
+`grogu review` opens the plan in the same local React workspace used by
+`grogu plan doc open`, initially in Document mode. You can comment inline on a
+passage or graph object, request changes, and — only from an undeclared user
+session — approve.
 
-The workspace is a **reader and a comment channel**, never an editor. The plan
-Markdown under `.grogu/plans/<id>/` stays canonical and is written by exactly
-one path (`grogu plan write`, architect only). Everything the workspace adds
-lives beside it in a git-ignored `review.json`, and every effect it has on the
-pipeline goes through the existing `PlanStore` methods (`steer`, `approve`).
+For a `.plan` package, the semantic graph is canonical and comments are graph
+`thread` nodes. The legacy `grogu review list/comment/reply/resolve/...`
+commands are adapters to those nodes, so there is no second writable
+`review.json`. A migrated package keeps the old file verbatim under
+`legacy/pre-migration/` solely for rollback. Unmigrated legacy plans retain the
+original reader workspace and local `review.json` behavior.
 
 ## Launching
 
@@ -20,21 +22,20 @@ grogu review open p-20260904-6095a8 [--stage implementation] [--port N]
                                      [--no-open] [--timeout SECS] [--json]
 ```
 
-`grogu review` starts a loopback server bound to `127.0.0.1`, prints a few
-lines, and opens your browser at `/?t=<token>`, which sets a session cookie and
-redirects to `/`:
+For a package, `grogu review` starts the secured plan server bound to
+`127.0.0.1`, prints a one-time `/?t=<token>` URL, exchanges it for an
+`HttpOnly` session cookie, burns the token, and redirects to `/`:
 
 ```
-p-20260904-6095a8  draft  Interactive plan review workspace
+p-20260905-aab017  draft  Typed plan package
   reading as reviewer: design, implementation, testing, evaluation
-  diagrams: mermaid not installed; `grogu review assets --install`
   http://127.0.0.1:53412  opened in your browser
   ctrl-c ends the session
 ```
 
-With `--no-open` the last line carries the one-time launch URL instead, so you
-can open it yourself. `Ctrl-C`, the idle timeout (default one hour), or
-`End session` in the page all stop the server.
+With `--no-open` the output carries the one-time launch URL. Reusing it returns
+`403` and the app shows **This session link has already been used.** `Ctrl-C`,
+the idle timeout (default one hour), or **End session** stops the server.
 
 ## What you can read
 
@@ -60,6 +61,8 @@ Comments are anchored with the W3C Web Annotation model — an exact quote plus
 32 characters of prefix and suffix, and the source character offsets — so a
 comment survives edits to the plan and is re-anchored (unmoved → unique quote →
 context-disambiguated → fuzzy → orphaned) every time the workspace loads.
+The shared implementation lives in `grogu_plandoc_anchor.py`; `grogu_review`
+exports compatibility names for existing callers.
 
 ## Rounds
 
@@ -93,20 +96,25 @@ a review exists, and `plan brief --role architect` lists the open comments.
 
 ## Local only
 
-`review.json` carries your unfiltered words about the plan. It is git-ignored
-(the `.grogu/plans/.gitignore` marker is upgraded in place to add it), is never
-staged by `plan finalize`, and is never copied into a plan stage, a steering
-note verbatim without your action, telemetry, or the activity log. The server
-binds `127.0.0.1` only, emits no CORS headers, sets a strict Content-Security-
-Policy, and never renders an `<img>` from plan Markdown, so nothing leaves the
-machine at review time.
+Graph partitions, thread revisions, proposals, caches, registrations, recovery
+copies, and legacy `review.json` are git-ignored. `plan finalize` stages only
+the same compiled Markdown, record, and attachments it stages for a legacy
+plan. Review text is never copied into telemetry or the activity log.
 
-## Diagrams and the Mermaid asset
+The package server binds loopback only, emits no CORS headers, validates Host,
+Origin and `Sec-Fetch-Site`, requires a session cookie plus
+`X-Grogu-Token` for mutations, caps bodies at 256 KiB, and uses a strict CSP.
+Node bodies are rendered through `grogu_markdown`; raw HTML and plan-authored
+images are not passed through.
 
-Semantic diagram anchors (node, edge, subgraph) are derived by parsing the
-Mermaid source in Python and do **not** depend on the rendered diagram. Rendering
-is optional: Mermaid's ~3 MB UMD bundle is never vendored and never fetched
-implicitly. Install it on request:
+## Diagrams and the legacy Mermaid asset
+
+Semantic diagram anchors (node, edge, subgraph) are derived by parsing Mermaid
+source in Python and do **not** depend on rendering. The React package workspace
+uses its committed build and needs no separately installed Mermaid runtime.
+
+The commands below apply only to the unmigrated legacy review workspace.
+Rendering there is optional: Mermaid's UMD bundle is never fetched implicitly.
 
 ```sh
 grogu review assets                    # what is installed
