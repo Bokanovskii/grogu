@@ -1,0 +1,7 @@
+{"type":"tool.execution_start","id":"e-2001","timestamp":"2026-09-05T09:10:00Z","agentId":"agent-bob","data":{"toolCallId":"tc-200","toolName":"view","arguments":{"path":"/etc/passwd"},"turnId":"t-1"}}
+{"type":"future.event_kind_we_do_not_know","id":"e-2002","timestamp":"2026-09-05T09:10:01Z","agentId":"agent-bob","data":{"newField":"FORBIDDEN_FUTURE_FIELD_TEXT"}}
+{"type":"tool.execution_complete","id":"e-2003","timestamp":"2026-09-05T09:10:02Z","agentId":"agent-bob","data":{"toolCallId":"tc-200","toolName":"view","success":true,"durationMs":42,"result":{"content":"FORBIDDEN_FILE_CONTENT"}}}
+this is not valid JSON at all -- FORBIDDEN_GARBAGE
+{"type":"tool.execution_start","id":"e-2005","timestamp":"2026-09-05T09:10:04Z","agentId":"agent-bob","data":{"toolCallId":"tc-201","toolName":"bash and other things","arguments":{"cmd":"FORBIDDEN_UNSAFE_NAME_TOOL"}}}
+{"type":"tool.execution_start","id":"e-2006","timestamp":"2026-09-05T09:10:05Z","agentId":"agent-bob","data":{"toolCallId":"tc-202","toolName":"str_replace","arguments":{"old":"FORBIDDEN_ARG","new":"FORBIDDEN_ARG_2"},"model":"leaks-model-name"}}
+{"type":"tool.execution_complete","id":"e-2007","timestamp":"2026-09-05T09:10:06Z","agentId":"agent-bob","data":{"toolCallId":"tc-202","toolName":"str_replace","success":false,"durationMs":10,"result":{"errorCode":"missing_target","message":"FORBIDDEN_ERROR_MESSAGE_LEAKING_PATH"}}}
