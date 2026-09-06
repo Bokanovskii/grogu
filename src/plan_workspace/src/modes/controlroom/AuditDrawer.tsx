@@ -184,10 +184,12 @@ export function AuditDrawer({ now }: { now: number }) {
 
       <p className="audit-provenance">{PROVENANCE}</p>
 
-      <div className="audit-composer">
-        <h3 className="audit-composer-title">Send feedback</h3>
-        <FeedbackComposer agent={agent} plan={state.plan} />
-      </div>
+      {state.overlay?.kind !== "feedbackComposer" ? (
+        <div className="audit-composer">
+          <h3 className="audit-composer-title">Send feedback</h3>
+          <FeedbackComposer agent={agent} plan={state.plan} />
+        </div>
+      ) : null}
     </div>
   );
 }

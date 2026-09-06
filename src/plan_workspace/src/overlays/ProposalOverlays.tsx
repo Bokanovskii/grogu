@@ -281,10 +281,21 @@ export function ImpactPreview() {
       .catch(() => setData(null));
   }, [sel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") actions.closeOverlay();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [actions]);
+
   return (
-    <Modal title="Impact" onClose={actions.closeOverlay} width={480}>
+    <aside className="impact-popover" role="dialog" aria-modal="false" aria-label="Impact">
       <ModalHeader>
         <ModalTitle>Impact of {sel?.id ?? "selection"}</ModalTitle>
+        <button type="button" className="btn btn-text" onClick={actions.closeOverlay} aria-label="Close impact preview">
+          Close
+        </button>
       </ModalHeader>
       <ModalBody>
         {!data ? (
@@ -298,6 +309,6 @@ export function ImpactPreview() {
           </>
         )}
       </ModalBody>
-    </Modal>
+    </aside>
   );
 }

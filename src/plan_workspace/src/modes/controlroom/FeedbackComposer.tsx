@@ -89,7 +89,7 @@ export function FeedbackComposer({
         rows={3}
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder={`What would you like this ${targets.find((t) => t.value === target)?.label.toLowerCase()} to know?`}
+        placeholder={`What would you like ${targets.find((t) => t.value === target)?.label.toLowerCase()} to know?`}
         aria-label="Feedback message"
       />
 

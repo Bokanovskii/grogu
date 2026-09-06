@@ -604,6 +604,19 @@ code, pre, kbd { font-family: var(--font-mono); }
 .impact-destructive { border-left: 2px solid var(--warn); padding-left: var(--space-2); }
 .impact-reason { color: var(--neutral-500); font-size: var(--text-xs); width: 100%; }
 .impact-expand { border: none; background: none; cursor: pointer; color: var(--accent); }
+.impact-popover {
+  position: fixed;
+  top: 104px;
+  right: var(--space-4);
+  z-index: 70;
+  width: min(480px, calc(100vw - 32px));
+  max-height: calc(100vh - 128px);
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--neutral-300);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-3);
+}
 .compiled-preview-diff, .compiled-source { font-family: var(--font-mono); font-size: var(--text-mono-sm); white-space: pre-wrap; background: var(--bg-elev-1); padding: var(--space-2); border-radius: var(--radius-3); max-height: 50vh; overflow: auto; }
 .proposal-stale { background: var(--warn-soft); color: var(--neutral-900); padding: var(--space-1) var(--space-2); border-radius: var(--radius-2); font-size: var(--text-sm); display: flex; gap: var(--space-2); align-items: center; }
 .proposal-warn { color: var(--warn); font-size: var(--text-sm); margin-right: auto; }
