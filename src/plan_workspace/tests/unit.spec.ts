@@ -61,8 +61,18 @@ test.describe("id allocator", () => {
     expect(a.node("task")).toBe("task-10");
     expect(a.edge("depends_on")).toBe("edge-21");
     const ops = a.counterOps();
-    expect(ops).toContainEqual({ op: "replace", path: "/counters/task", value: 10 });
-    expect(ops).toContainEqual({ op: "replace", path: "/counters/edge", value: 21 });
+    expect(ops).toContainEqual({ op: "add", path: "/counters/task", value: 10 });
+    expect(ops).toContainEqual({ op: "add", path: "/counters/edge", value: 21 });
+  });
+
+  test("a kind absent from counters still allocates and applies cleanly", () => {
+    // Regression: an `add` counter op must create a member that did not exist,
+    // otherwise "new risk from this edge" aborts when /counters/risk is absent.
+    const a = new Allocator({ task: 8 });
+    expect(a.node("risk")).toBe("risk-1");
+    const g: Graph = { nodes: {}, edges: {}, counters: { task: 8 } };
+    const next = applyOps(g, a.counterOps());
+    expect((next.counters as Record<string, number>)["risk"]).toBe(1);
   });
 });
 

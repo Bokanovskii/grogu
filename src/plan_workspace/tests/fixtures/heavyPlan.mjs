@@ -153,7 +153,7 @@ export function buildInitialState() {
     },
   }));
 
-  const counters = { goal: 1, dir: 6, con: 3, inv: 2, dec: 3, crit: 4, task: 8, dia: 2, reg: 5, note: 6, thr: 3, edge: 20, qn: 0, ev: 0, ref: 0 };
+  const counters = { goal: 1, dir: 6, con: 3, inv: 2, dec: 3, crit: 4, task: 8, dia: 2, reg: 5, note: 6, thr: 3, edge: 20, qn: 0, ev: 0, ref: 0, risk: 0 };
 
   // Proposal derived from the composite thread, pending.
   const proposals = [

@@ -57,7 +57,10 @@ test.describe("boot and shell", () => {
     await openApp(page);
     await page.keyboard.press("Meta+e");
     await expect(page.locator(".compiled-modal .modal-title")).toContainText("Compiled projection");
-    await expect(page.locator(".compiled-modal .modal-title")).toContainText("Digest: sha256:");
+    // The digest lands once /api/projection resolves; allow for load.
+    await expect(page.locator(".compiled-modal .modal-title")).toContainText("Digest: sha256:", {
+      timeout: 15_000,
+    });
   });
 });
 

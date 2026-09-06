@@ -37,7 +37,9 @@ export class Allocator {
   private bump(prefix: string): number {
     const next = (this.counters[prefix] ?? 0) + 1;
     this.counters[prefix] = next;
-    this.ops.push({ op: "replace", path: `/counters/${prefix}`, value: next });
+    // `add` (not `replace`): RFC 6902 add creates-or-replaces the member, so a
+    // kind whose counter was never seeded still allocates cleanly.
+    this.ops.push({ op: "add", path: `/counters/${prefix}`, value: next });
     return next;
   }
 

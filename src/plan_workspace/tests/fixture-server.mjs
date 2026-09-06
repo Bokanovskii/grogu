@@ -459,12 +459,23 @@ async function handle(req, res) {
       return json(res, 409, { error: "stale", revision: state.HEAD, ops_since: opsSince });
     }
     if ((body.ops ?? []).length > 500) return err(res, 422, "too_many_ops", "patch op count capped at 500");
-    // Reject ops that target a sealed stage's nodes (I2 write boundary).
+    // Reject ops that touch a sealed stage (I2 write boundary): the destination
+    // path, a move/copy source, or an add/replace whose value lands in a sealed
+    // stage.
+    const sealed = new Set(state.stages.sealed);
     for (let i = 0; i < body.ops.length; i++) {
       const op = body.ops[i];
-      const id = (op.path ?? "").match(/\/nodes\/([^/]+)/)?.[1];
-      const n = id ? state.graph.nodes[id] : null;
-      if (n && state.stages.sealed.includes(n.stage)) return err(res, 403, "sealed", `path names sealed stage ${n.stage}`);
+      const ids = [];
+      const pid = (op.path ?? "").match(/\/nodes\/([^/]+)/)?.[1];
+      const fid = (op.from ?? "").match(/\/nodes\/([^/]+)/)?.[1];
+      if (pid) ids.push(pid);
+      if (fid) ids.push(fid);
+      for (const id of ids) {
+        const n = state.graph.nodes[id];
+        if (n && sealed.has(n.stage)) return err(res, 403, "sealed", `path names sealed stage ${n.stage}`);
+      }
+      const valueStage = op.value && typeof op.value === "object" ? op.value.stage : undefined;
+      if (valueStage && sealed.has(valueStage)) return err(res, 403, "sealed", `value lands in sealed stage ${valueStage}`);
     }
     try {
       const result = commitPatch(body.ops, body.intent ?? "", body.origin ?? "workspace");

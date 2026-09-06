@@ -94,11 +94,14 @@ function CanvasInner() {
   );
 
   const commitDrag = useCallback(() => {
+    // Only the nodes that took part in the drag: xyflow selects a node on drag,
+    // and a multi-selection drags together. Committing all nodes would reconcile
+    // containment for unrelated, unmoved nodes.
     const moves = rf
       .getNodes()
-      .filter((n) => n.selected || true)
+      .filter((n) => n.selected)
       .map((n) => ({ id: n.id, x: n.position.x, y: n.position.y }));
-    ops.dragCommit(moves);
+    if (moves.length) ops.dragCommit(moves);
     draggingRef.current = false;
   }, [rf, ops]);
 

@@ -436,9 +436,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         commitGraph(optimistic, res.revision, res.revision);
         dispatch({ t: "save/set", save: "saved" });
         dispatch({ t: "connection/set", connection: "connected", reconnectIn: null });
-        undoStack.current.push({ ops, inverse, label: label ?? intent });
-        redoStack.current = [];
         if (origin !== "undo" && origin !== "redo") {
+          undoStack.current.push({ ops, inverse, label: label ?? intent });
+          redoStack.current = [];
           toast("Autosaved", "success");
         }
         live(`Saved ${res.revision}`);
@@ -535,8 +535,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const res = await api.patch({ base: stale.revision, ops, intent, origin });
           commitGraph(applied, res.revision, res.revision);
           dispatch({ t: "save/set", save: "saved" });
-          undoStack.current.push({ ops, inverse, label: label ?? intent });
-          redoStack.current = [];
+          if (origin !== "undo" && origin !== "redo") {
+            undoStack.current.push({ ops, inverse, label: label ?? intent });
+            redoStack.current = [];
+          }
           toast(`Rebased on ${res.revision}`, "info", { label: "View changes", event: "noop" });
           live(`Rebased on ${res.revision}`);
           return true;
@@ -577,13 +579,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const flushQueue = useCallback<Actions["flushQueue"]>(async () => {
-    let s = stateRef.current;
-    if (s.queue.length === 0) return;
+    if (stateRef.current.queue.length === 0) return;
     dispatch({ t: "connection/set", connection: "reconnecting" });
     live("Reconnecting…");
-    // Drain one revision at a time, in order.
-    for (const item of [...s.queue]) {
-      s = stateRef.current;
+    let rebases = 0;
+    // Drain one revision at a time, in order. The item's optimistic edit is
+    // already in local state; a clean send just advances the base.
+    while (stateRef.current.queue.length > 0) {
+      const s = stateRef.current;
+      const item = s.queue[0]!;
       try {
         const res = await api.patch({
           base: s.base,
@@ -591,15 +595,60 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           intent: item.intent,
           origin: item.origin,
         });
-        // Advance base; the optimistic edits are already in local state.
         commitGraph(graphOf(stateRef.current), res.revision, res.revision);
-        const remaining = stateRef.current.queue.filter((q) => q.id !== item.id);
-        persistQueue(s.plan, remaining);
+        persistQueue(s.plan, stateRef.current.queue.filter((q) => q.id !== item.id));
         dispatch({ t: "save/set", save: "saved" });
         live(`Synced ${res.revision}`);
       } catch (err) {
         if (err instanceof StaleError) {
-          await refreshDoc();
+          // The server moved under us. Rebase the WHOLE remaining queue onto its
+          // latest document, replaying local intent, so nothing is silently
+          // discarded. A replay that no longer applies raises a conflict card
+          // and is dropped from the queue (its intent is preserved on the card).
+          if (rebases++ > 50) {
+            dispatch({ t: "connection/set", connection: "offline" });
+            return;
+          }
+          let fresh: Graph;
+          let freshRev: string;
+          try {
+            const doc = await api.doc(s.stage, "all");
+            const { nodes, edges } = docToGraph(doc);
+            fresh = {
+              nodes: nodes as unknown as Record<string, never>,
+              edges: edges as unknown as Record<string, never>,
+              counters: doc.counters as unknown as Record<string, never>,
+            };
+            freshRev = doc.revision;
+          } catch {
+            dispatch({ t: "connection/set", connection: "offline" });
+            return;
+          }
+          let g = fresh;
+          const survivors: QueuedIntent[] = [];
+          for (const q of stateRef.current.queue) {
+            if (opsApply(g, q.ops)) {
+              g = applyOps(g, q.ops);
+              survivors.push({ ...q, base: freshRev });
+            } else {
+              const firstId =
+                (q.ops[0] && "path" in q.ops[0] ? q.ops[0].path : "").match(/\/(?:nodes|edges)\/([^/]+)/)?.[1] ??
+                "an item";
+              dispatch({
+                t: "conflict/push",
+                card: {
+                  id: uid("conflict"),
+                  title: stateRef.current.nodes[firstId]?.title ?? firstId,
+                  ops: q.ops,
+                  base: freshRev,
+                  serverRevision: freshRev,
+                },
+              });
+              live(`Someone else changed ${firstId}`, true);
+            }
+          }
+          commitGraph(g, freshRev, freshRev);
+          persistQueue(s.plan, survivors);
           continue;
         }
         dispatch({ t: "connection/set", connection: "offline" });
@@ -607,15 +656,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     }
     dispatch({ t: "connection/set", connection: "connected", reconnectIn: null });
-  }, [commitGraph, live, persistQueue, refreshDoc]);
+  }, [commitGraph, live, persistQueue]);
 
   const undo = useCallback<Actions["undo"]>(async () => {
     const entry = undoStack.current.pop();
     if (!entry) return;
     const ok = await writeGesture(entry.inverse, `Undo: ${entry.label}`, "undo", entry.label);
     if (ok) {
-      // writeGesture pushed the inverse onto undoStack; move it to redo instead.
-      undoStack.current.pop();
+      // writeGesture leaves the stacks alone for undo/redo origins; record the
+      // redo here so earlier redo entries survive a second consecutive undo.
       redoStack.current.push(entry);
       live(`Undid: ${entry.label}`);
       toast(`Undid: ${entry.label}`, "info");
@@ -629,8 +678,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!entry) return;
     const ok = await writeGesture(entry.ops, `Redo: ${entry.label}`, "redo", entry.label);
     if (ok) {
-      // writeGesture pushed a fresh entry; keep it (it equals entry).
-      undoStack.current.pop();
       undoStack.current.push(entry);
       live(`Redid: ${entry.label}`);
     } else {
