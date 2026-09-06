@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "run_id": "run-ada",
+  "repository": "/tmp/repo-a",
+  "plan": "p-20260905-aab017",
+  "agent": "ingest",
+  "role": "engineer",
+  "workstream": "controlroom",
+  "session_id": "adv-session-001",
+  "agent_id": "agent-ada",
+  "registered_at": "2026-09-05T08:59:59Z",
+  "events_path": "REPLACED_AT_TEST_TIME"
+}

@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grogu.dev/schemas/plan-control-room-events.schema.json",
+  "title": "Plan control-room normaliser output",
+  "description": "The frozen contract between grogu_agentevents (the allowlist normaliser) and grogu_controlroom (its only consumer). Every field here is enumerated; every category not on this list is dropped BEFORE the record leaves the parse function. This is NOT a display filter: an exception, cache, or serialisation path is not permitted to carry a forbidden category either.",
+  "type": "object",
+  "$defs": {
+    "safeName": {
+      "type": "string",
+      "description": "A safe identifier for tool names and event types. A value that fails this pattern is coerced to the empty string and the surrounding record is treated as `phase: unknown`.",
+      "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9._:@/-]{0,80}$"
+    },
+    "isoTimestamp": {
+      "type": "string",
+      "description": "RFC 3339 UTC, verbatim from the source. Empty when the source did not supply one."
+    },
+    "phase": {
+      "enum": [
+        "session_start",
+        "session_end",
+        "subagent_started",
+        "subagent_completed",
+        "tool_started",
+        "tool_completed",
+        "permission_requested",
+        "permission_completed",
+        "unknown"
+      ]
+    },
+    "normalisedEvent": {
+      "type": "object",
+      "description": "The only shape that may leave the parser. No `content`, `arguments`, `result`, `reasoningText`, `reasoningOpaque`, `intention`, `description`, `body`, `text`, `message`, `prompt` or anything semantically equivalent. Adding a field is an amendment.",
+      "required": ["event_id", "phase", "at"],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/identifier"},
+        "phase": {"$ref": "#/$defs/phase"},
+        "at": {"$ref": "#/$defs/isoTimestamp"},
+        "agent_id": {"$ref": "#/$defs/identifier"},
+        "tool_call_id": {"$ref": "#/$defs/identifier"},
+        "tool_name": {"$ref": "#/$defs/safeName"},
+        "request_id": {"$ref": "#/$defs/identifier"},
+        "success": {"type": ["boolean", "null"]},
+        "error_code": {
+          "type": ["string", "null"],
+          "pattern": "^[a-zA-Z0-9_.-]{0,32}$"
+        },
+        "duration_ms": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "coverageGap": {
+      "type": "object",
+      "required": ["kind", "at"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "torn_line",
+            "malformed_line",
+            "oversized_event",
+            "oversized_source",
+            "rotated_or_truncated",
+            "cursor_lost",
+            "unknown_event_version",
+            "unregistered_session",
+            "source_read_error"
+          ]
+        },
+        "at": {"$ref": "#/$defs/isoTimestamp"},
+        "at_line": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "cursor": {
+      "type": "object",
+      "description": "Advances only over fully processed records; carries a source generation so a restart deduplicates.",
+      "required": ["byte_offset", "generation"],
+      "properties": {
+        "byte_offset": {"type": "integer", "minimum": 0},
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Increments when the file is rotated or truncated. A cursor from a smaller generation is discarded."
+        },
+        "last_event_id": {"$ref": "#/$defs/identifier"}
+      },
+      "additionalProperties": false
+    },
+    "readResult": {
+      "type": "object",
+      "required": ["events", "gaps", "cursor", "bytes_read"],
+      "properties": {
+        "events": {"type": "array", "items": {"$ref": "#/$defs/normalisedEvent"}},
+        "gaps": {"type": "array", "items": {"$ref": "#/$defs/coverageGap"}},
+        "cursor": {"$ref": "#/$defs/cursor"},
+        "bytes_read": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {"$ref": "#/$defs/normalisedEvent"},
+    {"$ref": "#/$defs/readResult"},
+    {"$ref": "#/$defs/coverageGap"}
+  ]
+}
