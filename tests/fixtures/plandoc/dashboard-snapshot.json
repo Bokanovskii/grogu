@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "snapshot-7",
+  "plan_id": "p-20260905-fixture",
+  "sampled_at": "2026-09-05T20:10:00Z",
+  "observed_through": "2026-09-05T20:09:59Z",
+  "poll_after_ms": 2000,
+  "cursor": "cursor-7",
+  "source_health": [
+    {
+      "source": "session",
+      "state": "live",
+      "last_success_at": "2026-09-05T20:10:00Z",
+      "watermark": "generation-2:8192",
+      "gap": false,
+      "reason_code": null
+    }
+  ],
+  "coverage": {
+    "lifecycle": "complete",
+    "tools": "partial",
+    "outcomes": "partial",
+    "truncated": false
+  },
+  "agents": [
+    {
+      "agent_key": "repo-plan-agent-run",
+      "agent": "plan-v2-core-engineer",
+      "run_id": "run-1",
+      "parent_agent_key": null,
+      "role": "engineer",
+      "workstream": "core",
+      "plan_id": "p-20260905-fixture",
+      "revision": {
+        "last_read": "r0007",
+        "current": "r0007",
+        "relation": "current"
+      },
+      "lifecycle": "running",
+      "activity": "active",
+      "connection": "live",
+      "started_at": "2026-09-05T20:00:00Z",
+      "last_observed_at": "2026-09-05T20:09:58Z",
+      "elapsed_ms": 598000,
+      "elapsed_basis": "lifecycle_start",
+      "current_action": {
+        "event_id": "event-17",
+        "tool_call_id": "tool-9",
+        "kind": "tool.execution_start",
+        "tool_name": "python",
+        "phase": "started",
+        "at": "2026-09-05T20:09:58Z",
+        "duration_ms": null,
+        "refs": [
+          {
+            "plan_id": "p-20260905-fixture",
+            "revision": "r0007",
+            "object_id": "task-2",
+            "edge_id": null,
+            "frame_id": null,
+            "artifact_id": null,
+            "relation": "affected"
+          }
+        ],
+        "basis": "observed"
+      },
+      "last_action": null,
+      "tools": {
+        "started": 9,
+        "completed": 8,
+        "failed": 0,
+        "inflight": 1,
+        "grogu_commands": 4,
+        "complete": false
+      },
+      "failures": [],
+      "blockers": [],
+      "steering": {
+        "unread": 0,
+        "queued": 0,
+        "delivered": 1,
+        "acknowledged": 1,
+        "audit_refs": ["receipt-3"]
+      },
+      "evidence": {
+        "basis": "observed",
+        "sources": ["session", "plan"],
+        "reason_codes": ["tool_counts_partial"],
+        "coverage": "partial"
+      },
+      "links": [
+        {
+          "plan_id": "p-20260905-fixture",
+          "revision": "r0007",
+          "object_id": "task-2",
+          "edge_id": null,
+          "frame_id": null,
+          "artifact_id": null,
+          "relation": "context"
+        }
+      ],
+      "summary": null
+    }
+  ],
+  "next_cursor": null
+}
