@@ -44,6 +44,14 @@
         }
       ]
     },
+    "extensionMap": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+        "maxLength": 253
+      },
+      "additionalProperties": {"$ref": "#/$defs/canonicalValue"}
+    },
     "geometry": {
       "type": "object",
       "additionalProperties": false,
@@ -232,6 +240,7 @@
           "type": "object",
           "additionalProperties": {"$ref": "#/$defs/canonicalValue"}
         },
+        "ext": {"$ref": "#/$defs/extensionMap"},
         "geometry": {"$ref": "#/$defs/geometry"},
         "order": {"$ref": "#/$defs/safeInteger"},
         "created_rev": {"$ref": "#/$defs/revisionId"},
@@ -332,6 +341,7 @@
           "type": "object",
           "additionalProperties": {"$ref": "#/$defs/canonicalValue"}
         },
+        "ext": {"$ref": "#/$defs/extensionMap"},
         "created_rev": {"$ref": "#/$defs/revisionId"}
       },
       "allOf": [

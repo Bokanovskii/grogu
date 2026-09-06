@@ -1,0 +1,10 @@
+{
+  "role": "reviewer",
+  "stages": [
+    "implementation"
+  ],
+  "include": "all",
+  "budget_chars": 2400,
+  "since": "",
+  "compiler": 1
+}

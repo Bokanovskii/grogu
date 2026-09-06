@@ -9,7 +9,7 @@ import re
 import stat
 import unicodedata
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -540,6 +540,28 @@ def atomic_write(
         os.close(parent)
 
 
+def safe_read(path: Path) -> bytes:
+    """Read a regular file without following any untrusted path component."""
+    path = Path(path)
+    if os.name == "nt":
+        return _windows_read_file(path)
+    try:
+        parent = _open_directory_chain(path.parent, create=False)
+    except RevisionError as error:
+        if not path.parent.exists():
+            raise FileNotFoundError(str(path)) from error
+        raise
+    try:
+        try:
+            return _read_file_at(parent, path.name)
+        except RevisionError as error:
+            if not path.exists():
+                raise FileNotFoundError(str(path)) from error
+            raise
+    finally:
+        os.close(parent)
+
+
 def _json_bytes(value: Any) -> bytes:
     return canon.dumpb(value) + b"\n"
 
@@ -629,15 +651,19 @@ def write_generation(
     snapshot: Any | None = None,
     before_head_replace: Callable[[], None] | None = None,
     base: str | None = None,
+    identity_checks: Iterable[Callable[[], Any]] = (),
 ) -> None:
     """Persist one complete generation with ``HEAD`` replaced last.
 
     Paths in ``partitions`` and ``artifacts`` are package-relative.  Callers
     supply already-sealed bytes for sealed graph partitions; this layer never
-    decodes them.
+    decodes them. Compiler identity callbacks run before the immutable log or
+    any materialized file is written.
     """
     revision = schema.validate_revision(envelope)
     package = Path(package)
+    for check in identity_checks:
+        check()
     if snapshot is not None and revision["seq"] % SNAPSHOT_INTERVAL != 0:
         raise RevisionError(
             f"snapshot {revision['revision']} is not on the {SNAPSHOT_INTERVAL}-revision boundary"
@@ -995,6 +1021,7 @@ class RevisionStore:
         artifacts: Mapping[str, bytes],
         snapshot: Any | None = None,
         base: str | None = None,
+        identity_checks: Iterable[Callable[[], Any]] = (),
     ) -> None:
         write_generation(
             self.package,
@@ -1003,4 +1030,5 @@ class RevisionStore:
             artifacts=artifacts,
             snapshot=snapshot,
             base=base,
+            identity_checks=identity_checks,
         )

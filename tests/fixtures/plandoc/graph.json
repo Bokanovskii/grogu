@@ -28,6 +28,11 @@
         "status": "active",
         "source": "steering"
       },
+      "ext": {
+        "com.example.tool": {
+          "opaque": ["preserved", 7]
+        }
+      },
       "order": 2000,
       "created_rev": "r0002",
       "updated_rev": "r0007"
@@ -180,6 +185,11 @@
       "from": "task-2",
       "to": "task-1",
       "attrs": {},
+      "ext": {
+        "dev.grogu.review": {
+          "weight": 3
+        }
+      },
       "created_rev": "r0004"
     },
     "edge-2": {

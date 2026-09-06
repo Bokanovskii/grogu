@@ -289,6 +289,32 @@ class ImmutablePatchTests(unittest.TestCase):
         self.assertEqual(patch.apply_patch(before, changes), after)
         self.assertEqual(changes, patch.diff(before, after))
 
+    def test_namespaced_extension_data_survives_patching_unchanged(self):
+        graph = graph_fixture()
+        updated = patch.apply_patch(
+            graph,
+            [
+                {
+                    "op": "add",
+                    "path": "/nodes/task-1/ext",
+                    "value": {
+                        "org.example.plugin": {
+                            "nested": ["opaque", {"value": 7}]
+                        }
+                    },
+                }
+            ],
+        )
+        self.assertEqual(
+            updated["nodes"]["task-1"]["ext"],
+            {
+                "org.example.plugin": {
+                    "nested": ["opaque", {"value": 7}]
+                }
+            },
+        )
+        self.assertNotEqual(canon.digest(graph), canon.digest(updated))
+
 
 class RevisionGenerationTests(unittest.TestCase):
     def setUp(self):
@@ -435,6 +461,26 @@ class RevisionGenerationTests(unittest.TestCase):
                 base="r0000",
             )
         self.assertFalse((self.directory / "log" / "000002.json").exists())
+
+    def test_failed_compiler_identity_writes_nothing(self):
+        before, after_one, _after_two = self._states()
+        envelope = self._envelope(
+            before, after_one, 1, patch.diff(before, after_one)
+        )
+
+        def fail_identity():
+            raise ValueError("identity 3 failed at nodes.task-1.body")
+
+        with self.assertRaisesRegex(ValueError, "identity 3"):
+            revision.write_generation(
+                self.directory,
+                envelope,
+                partitions={"graph/open.json": canon.dumpb(after_one)},
+                artifacts={"implementation.md": b"bad compile\n"},
+                identity_checks=[fail_identity],
+            )
+        self.assertFalse((self.directory / "log").exists())
+        self.assertFalse((self.directory / "HEAD").exists())
 
     def test_log_and_snapshot_files_are_immutable(self):
         before, after_one, _after_two = self._states()

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "kind": "grogu.plan_projection",
+  "title": "One node",
+  "nodes": [
+    {
+      "id": "goal-1",
+      "kind": "goal",
+      "stage": "implementation",
+      "title": "One goal",
+      "body": "A single body.",
+      "attrs": {},
+      "order": 1000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    }
+  ],
+  "edges": [],
+  "elided": [],
+  "provenance": {
+    "plan_id": "p-golden-one",
+    "revision": "r0001",
+    "role": "reviewer",
+    "stages": [
+      "implementation"
+    ],
+    "include": "all",
+    "compiler": 1,
+    "graph_digest": "sha256:87edd891a4a265e934c4796f93d4b84ad0b3131938e3b9f033eb898da9602500",
+    "projection_id": "sha256:cf9a3e58d745117fb5d23f8f83c4486be96cc89908eef0e6e92e62358de43dfc",
+    "source_at": "",
+    "source_actor": "",
+    "source_role": "",
+    "source_agent": "",
+    "sealed_relationships": 0,
+    "budget_chars": null,
+    "budget_exceeded": false,
+    "since": "",
+    "depth": null,
+    "source_provenance": {},
+    "canvas": {
+      "snap": 8
+    }
+  },
+  "projection_digest": "sha256:82eb6742aafdb13088f22c6e1dc5d5a24848642cae0d3b5cb70223f24d2c01a3"
+}

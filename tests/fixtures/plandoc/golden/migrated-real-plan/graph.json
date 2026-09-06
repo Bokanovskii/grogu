@@ -1,0 +1,290 @@
+{
+  "schema_version": 1,
+  "kind": "grogu.plan_document",
+  "plan_id": "p-golden-migrated",
+  "title": "What this is",
+  "revision": "r0001",
+  "nodes": {
+    "dia-1": {
+      "id": "dia-1",
+      "kind": "diagram",
+      "stage": "implementation",
+      "title": "Mermaid diagram 1",
+      "body": "flowchart LR\n  Parse[Parse the plan] --> Render[Render HTML]\n  Render --> Anchor[Anchor comments]\n  Parse -->|retry| Parse\n  subgraph Server\n    Render\n    Anchor\n  end\n",
+      "attrs": {
+        "parsed": {
+          "edges": [
+            {
+              "edge_index": 0,
+              "from": "Parse",
+              "kind": "arrow",
+              "label": "",
+              "line": 2,
+              "operator": "-->",
+              "pair_ordinal": 0,
+              "to": "Render"
+            },
+            {
+              "edge_index": 1,
+              "from": "Render",
+              "kind": "arrow",
+              "label": "",
+              "line": 3,
+              "operator": "-->",
+              "pair_ordinal": 0,
+              "to": "Anchor"
+            },
+            {
+              "edge_index": 2,
+              "from": "Parse",
+              "kind": "arrow",
+              "label": "retry",
+              "line": 4,
+              "operator": "-->",
+              "pair_ordinal": 0,
+              "to": "Parse"
+            }
+          ],
+          "lines": 8,
+          "nodes": [
+            {
+              "id": "Parse",
+              "label": "Parse the plan",
+              "line": 2,
+              "shape": "rectangle",
+              "subgraph": ""
+            },
+            {
+              "id": "Render",
+              "label": "Render HTML",
+              "line": 2,
+              "shape": "rectangle",
+              "subgraph": ""
+            },
+            {
+              "id": "Anchor",
+              "label": "Anchor comments",
+              "line": 3,
+              "shape": "rectangle",
+              "subgraph": ""
+            }
+          ],
+          "partial": false,
+          "subgraphs": [
+            {
+              "id": "Server",
+              "line": 5,
+              "title": "Server"
+            }
+          ],
+          "supported": true,
+          "type": "flowchart",
+          "unparsed": 0
+        },
+        "source": "flowchart LR\n  Parse[Parse the plan] --> Render[Render HTML]\n  Render --> Anchor[Anchor comments]\n  Parse -->|retry| Parse\n  subgraph Server\n    Render\n    Anchor\n  end\n",
+        "source_end": 503,
+        "source_start": 319
+      },
+      "order": 5000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001"
+    },
+    "note-1": {
+      "id": "note-1",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Overview",
+      "body": "\nA local, browser-based surface for reading a plan and **commenting on it**,\nlaunched from the CLI with `grogu review <plan-id>`.\n\n",
+      "attrs": {
+        "source": "markdown-import",
+        "source_end": 146,
+        "source_start": 15
+      },
+      "order": 1000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001"
+    },
+    "note-2": {
+      "id": "note-2",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Invariants",
+      "body": "\n- **I1.** Markdown is *canonical*. The workspace never writes a stage body.\n- **I2.** Every stage read goes through `PlanStore.read_stage`.\n\n",
+      "attrs": {
+        "source": "markdown-import",
+        "source_end": 302,
+        "source_start": 160
+      },
+      "order": 2000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001"
+    },
+    "note-3": {
+      "id": "note-3",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "The pipeline",
+      "body": "\n```mermaid\nflowchart LR\n  Parse[Parse the plan] --> Render[Render HTML]\n  Render --> Anchor[Anchor comments]\n  Parse -->|retry| Parse\n  subgraph Server\n    Render\n    Anchor\n  end\n```\n\n",
+      "attrs": {
+        "source": "markdown-import",
+        "source_end": 504,
+        "source_start": 318
+      },
+      "order": 3000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001"
+    },
+    "note-4": {
+      "id": "note-4",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "A table",
+      "body": "\n| Stage | Reader |\n| --- | --- |\n| design | everyone |\n| testing | tester only |\n\nInline `code`, **strong**, *emphasis*, a [link](https://example.com), and an\nautolink <https://grogu.example> all render. An image ![alt](x.png) becomes a\nlink chip, never an `<img>`.\n\n> A block quote, for good measure.\n\n- one\n- two\n  - nested\n",
+      "attrs": {
+        "source": "markdown-import",
+        "source_end": 842,
+        "source_start": 515
+      },
+      "order": 4000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001"
+    },
+    "note-5": {
+      "id": "note-5",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Parse the plan",
+      "body": "",
+      "attrs": {
+        "diagram": "dia-1",
+        "mermaid_id": "Parse",
+        "shape": "rectangle",
+        "source": "mermaid"
+      },
+      "order": 6000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001"
+    },
+    "note-6": {
+      "id": "note-6",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Render HTML",
+      "body": "",
+      "attrs": {
+        "diagram": "dia-1",
+        "mermaid_id": "Render",
+        "shape": "rectangle",
+        "source": "mermaid"
+      },
+      "order": 7000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001"
+    },
+    "note-7": {
+      "id": "note-7",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Anchor comments",
+      "body": "",
+      "attrs": {
+        "diagram": "dia-1",
+        "mermaid_id": "Anchor",
+        "shape": "rectangle",
+        "source": "mermaid"
+      },
+      "order": 8000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001"
+    }
+  },
+  "edges": {
+    "edge-1": {
+      "id": "edge-1",
+      "kind": "contains",
+      "from": "note-3",
+      "to": "dia-1",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    "edge-2": {
+      "id": "edge-2",
+      "kind": "contains",
+      "from": "dia-1",
+      "to": "note-5",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    "edge-3": {
+      "id": "edge-3",
+      "kind": "contains",
+      "from": "dia-1",
+      "to": "note-6",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    "edge-4": {
+      "id": "edge-4",
+      "kind": "contains",
+      "from": "dia-1",
+      "to": "note-7",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    "edge-5": {
+      "id": "edge-5",
+      "kind": "diagram_edge",
+      "from": "note-5",
+      "to": "note-6",
+      "attrs": {
+        "edge_index": 0,
+        "edge_kind": "arrow",
+        "label": "",
+        "operator": "-->",
+        "pair_ordinal": 0,
+        "source": "mermaid"
+      },
+      "created_rev": "r0001"
+    },
+    "edge-6": {
+      "id": "edge-6",
+      "kind": "diagram_edge",
+      "from": "note-6",
+      "to": "note-7",
+      "attrs": {
+        "edge_index": 1,
+        "edge_kind": "arrow",
+        "label": "",
+        "operator": "-->",
+        "pair_ordinal": 0,
+        "source": "mermaid"
+      },
+      "created_rev": "r0001"
+    },
+    "edge-7": {
+      "id": "edge-7",
+      "kind": "diagram_edge",
+      "from": "note-5",
+      "to": "note-5",
+      "attrs": {
+        "edge_index": 2,
+        "edge_kind": "arrow",
+        "label": "retry",
+        "operator": "-->",
+        "pair_ordinal": 0,
+        "source": "mermaid"
+      },
+      "created_rev": "r0001"
+    }
+  },
+  "canvas": {
+    "snap": 8
+  },
+  "provenance": {
+    "actor": "",
+    "agent": "migration",
+    "at": "",
+    "origin": "migration",
+    "role": "reviewer"
+  }
+}

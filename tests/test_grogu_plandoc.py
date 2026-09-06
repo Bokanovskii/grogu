@@ -174,6 +174,24 @@ class PlanDocumentSchemaTests(unittest.TestCase):
         with self.assertRaises(canon.DuplicateKeyError):
             schema.load_document('{"schema_version":1,"schema_version":1}')
 
+    def test_extension_maps_require_reverse_dns_and_affect_digests(self):
+        graph = fixture("graph.json")
+        validated = schema.validate_document(graph)
+        self.assertEqual(
+            validated["nodes"]["dir-1"]["ext"],
+            {"com.example.tool": {"opaque": ["preserved", 7]}},
+        )
+        invalid = copy.deepcopy(graph)
+        invalid["nodes"]["dir-1"]["ext"] = {"bare": {"lost": True}}
+        with self.assertRaisesRegex(schema.SchemaError, "invalid format"):
+            schema.validate_document(invalid)
+        changed = copy.deepcopy(graph)
+        changed["nodes"]["dir-1"]["ext"]["com.example.tool"]["opaque"].append(8)
+        self.assertNotEqual(
+            plandoc.document_digest(graph),
+            plandoc.document_digest(changed),
+        )
+
     def test_dashboard_fixture_matches_runtime_and_published_schema(self):
         snapshot = fixture("dashboard-snapshot.json")
         self.assertEqual(schema.validate_dashboard_snapshot(snapshot), snapshot)

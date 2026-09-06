@@ -132,6 +132,7 @@ def make_node(
     order: int = 1000,
     revision: str = "r0001",
     geometry: Mapping[str, int] | None = None,
+    ext: Mapping[str, Any] | None = None,
 ) -> dict:
     """Build and validate one graph node."""
     value = {
@@ -147,6 +148,8 @@ def make_node(
     }
     if geometry is not None:
         value["geometry"] = dict(geometry)
+    if ext is not None:
+        value["ext"] = copy.deepcopy(dict(ext))
     return schema.validate_node(value)
 
 
@@ -158,18 +161,20 @@ def make_edge(
     *,
     attrs: Mapping[str, Any] | None = None,
     revision: str = "r0001",
+    ext: Mapping[str, Any] | None = None,
 ) -> dict:
     """Build and validate one graph edge."""
-    return schema.validate_edge(
-        {
-            "id": edge_id,
-            "kind": kind,
-            "from": source,
-            "to": target,
-            "attrs": dict(attrs or {}),
-            "created_rev": revision,
-        }
-    )
+    value = {
+        "id": edge_id,
+        "kind": kind,
+        "from": source,
+        "to": target,
+        "attrs": dict(attrs or {}),
+        "created_rev": revision,
+    }
+    if ext is not None:
+        value["ext"] = copy.deepcopy(dict(ext))
+    return schema.validate_edge(value)
 
 
 def partition_for_stage(stage: str) -> str:

@@ -1,9 +1,13 @@
 import copy
+import dataclasses
 import json
 import os
+import shutil
 import sys
 import unittest
+import uuid
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -12,10 +16,13 @@ sys.path.insert(0, str(ROOT / "tests"))
 import _sandbox  # noqa: E402,F401
 
 import grogu_plandoc as plandoc  # noqa: E402
+import grogu_plandoc_canon as canon  # noqa: E402
 import grogu_plandoc_compile as compiler  # noqa: E402
+import grogu_plandoc_revision as revision  # noqa: E402
 import grogu_plandoc_schema as schema  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures" / "plandoc"
+GOLDEN = FIXTURES / "golden"
 
 
 def graph_fixture() -> dict:
@@ -35,7 +42,482 @@ def spec(**updates) -> dict:
     return value
 
 
+def _node_kind_graph() -> dict:
+    graph = plandoc.new_document("p-golden-kinds", "Every node kind", revision="r0001")
+    manifest = {"plandoc": {"counters": {}}}
+    order = 1000
+    for kind in schema.NODE_KINDS:
+        node_id = plandoc.allocate_id(
+            manifest, kind, existing_ids=graph["nodes"]
+        )
+        attrs = {}
+        body = f"Body for {kind}."
+        geometry = None
+        ext = None
+        if kind == "directive":
+            attrs = {
+                "binding": "must",
+                "audience": ["reviewer", "engineer"],
+                "status": "active",
+            }
+            ext = {"com.example.node": {"kind": kind}}
+        elif kind == "thread":
+            attrs = {
+                "selector": {"type": "node", "id": "goal-1"},
+                "comments": [
+                    {
+                        "id": "c1",
+                        "at": "2026-09-05T20:00:00Z",
+                        "author": "reviewer",
+                        "body": "Thread body.",
+                    }
+                ],
+                "status": "open",
+                "anchor_state": "resolved",
+            }
+        elif kind == "diagram":
+            body = "flowchart LR\n  A --> B\n"
+            attrs = {"source": body}
+        elif kind == "reference":
+            attrs = {"url": "https://example.com"}
+        elif kind == "region":
+            geometry = {"x": 0, "y": 0, "w": 640, "h": 480, "z": 0}
+        graph["nodes"][node_id] = plandoc.make_node(
+            node_id,
+            kind,
+            f"{kind.title()} example",
+            stage="implementation",
+            body=body,
+            attrs=attrs,
+            order=order,
+            revision="r0001",
+            geometry=geometry,
+            ext=ext,
+        )
+        order += 1000
+    return schema.validate_document(graph)
+
+
+def _edge_kind_graph() -> dict:
+    graph = plandoc.new_document("p-golden-edges", "Every edge kind", revision="r0001")
+    manifest = {"plandoc": {"counters": {}}}
+    node_count = len(schema.EDGE_KINDS) * 2
+    for number in range(1, node_count + 1):
+        node_id = f"note-{number}"
+        graph["nodes"][node_id] = plandoc.make_node(
+            node_id,
+            "note",
+            f"Endpoint {number}",
+            stage="implementation",
+            order=number * 1000,
+            revision="r0001",
+        )
+    for index, kind in enumerate(schema.EDGE_KINDS):
+        edge_id = plandoc.allocate_id(
+            manifest, "edge", existing_ids=graph["edges"]
+        )
+        source = f"note-{index * 2 + 1}"
+        target = source if kind == "diagram_edge" else f"note-{index * 2 + 2}"
+        attrs = (
+            {"operator": "-->", "label": "loop", "pair_ordinal": 0, "edge_index": 0}
+            if kind == "diagram_edge"
+            else {}
+        )
+        graph["edges"][edge_id] = plandoc.make_edge(
+            edge_id,
+            kind,
+            source,
+            target,
+            attrs=attrs,
+            revision="r0001",
+            ext=(
+                {"com.example.edge": {"kind": kind}}
+                if kind == "depends_on"
+                else None
+            ),
+        )
+    return schema.validate_document(graph)
+
+
+def _nested_region_graph() -> dict:
+    graph = plandoc.new_document(
+        "p-golden-regions", "Nested regions", revision="r0001"
+    )
+    for number in range(1, 5):
+        graph["nodes"][f"reg-{number}"] = plandoc.make_node(
+            f"reg-{number}",
+            "region",
+            f"Region {number}",
+            stage="implementation",
+            order=number * 1000,
+            revision="r0001",
+            geometry={
+                "x": number * 20,
+                "y": number * 20,
+                "w": 800 - number * 100,
+                "h": 600 - number * 80,
+                "z": number,
+            },
+        )
+    graph["nodes"]["task-1"] = plandoc.make_node(
+        "task-1",
+        "task",
+        "Nested task",
+        stage="implementation",
+        order=5000,
+        revision="r0001",
+    )
+    for number, (source, target) in enumerate(
+        (
+            ("reg-1", "reg-2"),
+            ("reg-2", "reg-3"),
+            ("reg-3", "reg-4"),
+            ("reg-4", "task-1"),
+        ),
+        1,
+    ):
+        graph["edges"][f"edge-{number}"] = plandoc.make_edge(
+            f"edge-{number}",
+            "contains",
+            source,
+            target,
+            revision="r0001",
+        )
+    return schema.validate_document(graph)
+
+
+def golden_cases() -> dict[str, tuple[dict, dict]]:
+    empty = plandoc.new_document("p-golden-empty", "Empty graph", revision="r0001")
+    one = plandoc.new_document("p-golden-one", "One node", revision="r0001")
+    one["nodes"]["goal-1"] = plandoc.make_node(
+        "goal-1",
+        "goal",
+        "One goal",
+        stage="implementation",
+        body="A single body.",
+        revision="r0001",
+    )
+    self_loop = plandoc.new_document(
+        "p-golden-loop", "Diagram self-loop", revision="r0001"
+    )
+    self_loop["nodes"]["dia-1"] = plandoc.make_node(
+        "dia-1",
+        "diagram",
+        "Loop",
+        stage="implementation",
+        body="flowchart LR\n  A --> A\n",
+        attrs={"source": "flowchart LR\n  A --> A\n"},
+        revision="r0001",
+    )
+    self_loop["nodes"]["note-1"] = plandoc.make_node(
+        "note-1",
+        "note",
+        "A",
+        stage="implementation",
+        attrs={"source": "mermaid", "mermaid_id": "A"},
+        order=2000,
+        revision="r0001",
+    )
+    self_loop["edges"]["edge-1"] = plandoc.make_edge(
+        "edge-1", "contains", "dia-1", "note-1", revision="r0001"
+    )
+    self_loop["edges"]["edge-2"] = plandoc.make_edge(
+        "edge-2",
+        "diagram_edge",
+        "note-1",
+        "note-1",
+        attrs={"operator": "-->", "label": "", "pair_ordinal": 0, "edge_index": 0},
+        revision="r0001",
+    )
+    bounded = graph_fixture()
+    bounded["nodes"]["note-1"]["body"] = "Long discussion. " * 300
+    migrated = compiler.import_markdown(
+        (
+            ROOT
+            / "tests"
+            / "fixtures"
+            / "review"
+            / "stage_with_diagram.md"
+        ).read_text(encoding="utf8"),
+        plan_id="p-golden-migrated",
+    )
+    return {
+        "empty": (empty, spec(role="reviewer", include="all")),
+        "one-node": (one, spec(role="reviewer", include="all")),
+        "every-node-kind": (
+            _node_kind_graph(),
+            spec(role="reviewer", include="all"),
+        ),
+        "every-edge-kind": (
+            _edge_kind_graph(),
+            spec(role="reviewer", include="all"),
+        ),
+        "diagram-self-loop": (
+            schema.validate_document(self_loop),
+            spec(role="reviewer", include="all"),
+        ),
+        "nested-region": (
+            _nested_region_graph(),
+            spec(role="reviewer", include="all"),
+        ),
+        "bounded-elision": (
+            bounded,
+            spec(role="reviewer", include="all", budget_chars=2400),
+        ),
+        "migrated-real-plan": (
+            migrated,
+            spec(role="reviewer", include="all"),
+        ),
+    }
+
+
+def write_golden_corpus() -> None:
+    GOLDEN.mkdir(parents=True, exist_ok=True)
+    for name, (graph, projection_spec) in golden_cases().items():
+        directory = GOLDEN / name
+        directory.mkdir(parents=True, exist_ok=True)
+        result = compiler.compile_checked(graph, projection_spec)
+        (directory / "graph.json").write_text(
+            json.dumps(graph, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf8",
+        )
+        (directory / "spec.json").write_text(
+            json.dumps(projection_spec, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf8",
+        )
+        (directory / "expected.md").write_text(
+            result["markdown"], encoding="utf8"
+        )
+        (directory / "expected.json").write_text(
+            json.dumps(
+                result["json"],
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf8",
+        )
+
+
 class CompilerEquivalenceTests(unittest.TestCase):
+    def test_golden_corpus_matches_current_compiler_byte_for_byte(self):
+        expected_names = set(golden_cases())
+        self.assertEqual(
+            {path.name for path in GOLDEN.iterdir() if path.is_dir()},
+            expected_names,
+        )
+        node_graph = json.loads(
+            (GOLDEN / "every-node-kind" / "graph.json").read_text()
+        )
+        edge_graph = json.loads(
+            (GOLDEN / "every-edge-kind" / "graph.json").read_text()
+        )
+        self.assertEqual(
+            {node["kind"] for node in node_graph["nodes"].values()},
+            set(schema.NODE_KINDS),
+        )
+        self.assertEqual(
+            {edge["kind"] for edge in edge_graph["edges"].values()},
+            set(schema.EDGE_KINDS),
+        )
+        for name in sorted(expected_names):
+            with self.subTest(case=name):
+                directory = GOLDEN / name
+                graph = json.loads(
+                    (directory / "graph.json").read_text(encoding="utf8")
+                )
+                projection_spec = json.loads(
+                    (directory / "spec.json").read_text(encoding="utf8")
+                )
+                result = compiler.compile_checked(graph, projection_spec)
+                self.assertEqual(
+                    result["markdown"],
+                    (directory / "expected.md").read_text(encoding="utf8"),
+                )
+                self.assertEqual(
+                    result["json"],
+                    json.loads(
+                        (directory / "expected.json").read_text(encoding="utf8")
+                    ),
+                )
+                self.assertIn(
+                    f"compiler {compiler.COMPILER_VERSION}",
+                    result["markdown"].splitlines()[2],
+                )
+                self.assertEqual(
+                    result["json"]["provenance"]["compiler"],
+                    compiler.COMPILER_VERSION,
+                )
+
+    def test_all_three_compiler_identities_hold(self):
+        graph = graph_fixture()
+        original = copy.deepcopy(graph)
+        fragment = compiler.scope(graph, spec())
+        ir = compiler.project(fragment, spec())
+        self.assertEqual(graph, original)
+        self.assertEqual(
+            compiler.verify_identities(fragment, ir),
+            {
+                "identity_1": True,
+                "identity_2": True,
+                "identity_3": True,
+                "projection_digest": ir.projection_digest,
+            },
+        )
+        self.assertEqual(
+            compiler.lift(compiler.parse(compiler.render(ir))),
+            compiler.subtract_elided(fragment, ir.elided),
+        )
+        self.assertEqual(
+            compiler.elements(ir)
+            | compiler.elided(fragment, ir),
+            compiler.elements(fragment),
+        )
+
+    def test_identity_two_can_pass_while_identity_three_fails(self):
+        fragment = compiler.scope(graph_fixture(), spec())
+        ir = compiler.project(fragment, spec())
+        nodes = list(ir.nodes)
+        task_index = next(
+            index for index, node in enumerate(nodes) if node.id == "task-1"
+        )
+        nodes[task_index] = dataclasses.replace(
+            nodes[task_index], body="A self-consistent but false body"
+        )
+        tampered = dataclasses.replace(
+            ir, nodes=tuple(nodes), projection_digest=""
+        )
+        tampered = dataclasses.replace(
+            tampered,
+            projection_digest=compiler.projection_digest(tampered),
+        )
+        self.assertEqual(
+            compiler.parse(compiler.render(tampered)),
+            tampered,
+            "Identity 2 deliberately still passes",
+        )
+        with self.assertRaisesRegex(
+            compiler.CompileError, "identity 3 graph equivalence"
+        ):
+            compiler.verify_graph_equivalence(fragment, tampered)
+
+    def test_identity_one_names_a_silently_missing_element(self):
+        fragment = compiler.scope(graph_fixture(), spec())
+        ir = compiler.project(fragment, spec())
+        missing = dataclasses.replace(
+            ir,
+            nodes=tuple(node for node in ir.nodes if node.id != "risk-1"),
+            projection_digest="",
+        )
+        missing = dataclasses.replace(
+            missing,
+            projection_digest=compiler.projection_digest(missing),
+        )
+        with self.assertRaises(compiler.CompileError) as caught:
+            compiler.verify_completeness(fragment, missing)
+        self.assertIn("risk-1", caught.exception.field)
+
+    def test_forged_elision_cannot_authorize_dropping_required_nodes(self):
+        fragment = compiler.scope(graph_fixture(), spec())
+        ir = compiler.project(fragment, spec())
+        for node_id in ("dir-1", "risk-1", "inv-1"):
+            with self.subTest(node_id=node_id):
+                node = next(item for item in ir.nodes if item.id == node_id)
+                forged = dataclasses.replace(
+                    ir,
+                    nodes=tuple(item for item in ir.nodes if item.id != node_id),
+                    elided=(
+                        *ir.elided,
+                        compiler.Elision(node_id, node.kind, "node"),
+                    ),
+                    projection_digest="",
+                )
+                forged = dataclasses.replace(
+                    forged,
+                    projection_digest=compiler.projection_digest(forged),
+                )
+                self.assertEqual(
+                    compiler.parse(compiler.render(forged)),
+                    forged,
+                    "the forged artifact remains internally invertible",
+                )
+                with self.assertRaisesRegex(
+                    compiler.CompileError, "deterministic projection policy"
+                ):
+                    compiler.verify_identities(fragment, forged)
+
+    def test_unknown_node_and_edge_kinds_fail_closed_in_scope_and_render(self):
+        graph = graph_fixture()
+        graph["nodes"]["future-1"] = {
+            **copy.deepcopy(graph["nodes"]["note-1"]),
+            "id": "future-1",
+            "kind": "future",
+        }
+        with mock.patch.dict(
+            schema.NODE_KINDS,
+            {"future": {"prefix": "future", "normative": False}},
+        ):
+            validated = schema.validate_document(graph)
+            with self.assertRaisesRegex(compiler.CompileError, "no dispatch"):
+                compiler.scope(graph, spec())
+            fragment = compiler.GraphFragment(
+                document_json=canon.dumps(validated),
+                spec_json=canon.dumps(
+                    schema.validate_projection_spec(spec())
+                ),
+                source_digest=canon.digest(validated),
+            )
+            with self.assertRaisesRegex(compiler.CompileError, "no dispatch"):
+                compiler.project(fragment, spec())
+
+        graph = graph_fixture()
+        graph["edges"]["edge-99"] = {
+            "id": "edge-99",
+            "kind": "future_edge",
+            "from": "task-2",
+            "to": "task-1",
+            "attrs": {},
+            "created_rev": "r0007",
+        }
+        with mock.patch.object(
+            schema, "EDGE_KINDS", (*schema.EDGE_KINDS, "future_edge")
+        ):
+            with self.assertRaisesRegex(compiler.CompileError, "no dispatch"):
+                compiler.scope(graph, spec())
+
+        ir = compiler.project(graph_fixture(), spec())
+        bad_node = dataclasses.replace(ir.nodes[0], kind="future")
+        bad = dataclasses.replace(
+            ir, nodes=(bad_node, *ir.nodes[1:]), projection_digest=""
+        )
+        bad = dataclasses.replace(
+            bad, projection_digest=compiler.projection_digest(bad)
+        )
+        with self.assertRaisesRegex(compiler.CompileError, "no dispatch"):
+            compiler.render(bad)
+
+    def test_reverse_dns_extensions_round_trip_through_every_compiler_layer(self):
+        graph = graph_fixture()
+        fragment = compiler.scope(graph, spec())
+        self.assertEqual(
+            fragment.nodes["dir-1"]["ext"]["com.example.tool"]["opaque"],
+            ["preserved", 7],
+        )
+        ir = compiler.project(fragment, spec())
+        markdown = compiler.render(ir)
+        self.assertIn("## Extensions", markdown)
+        self.assertIn('"com.example.tool"', markdown)
+        self.assertIn('"dev.grogu.review"', markdown)
+        parsed = compiler.parse(markdown)
+        lifted = compiler.lift(parsed)
+        expected = compiler.subtract_elided(fragment, ir.elided)
+        self.assertEqual(lifted, expected)
+        twin = compiler.render_json(parsed)
+        directive = next(node for node in twin["nodes"] if node["id"] == "dir-1")
+        edge = next(item for item in twin["edges"] if item["id"] == "edge-1")
+        self.assertEqual(directive["ext"], graph["nodes"]["dir-1"]["ext"])
+        self.assertEqual(edge["ext"], graph["edges"]["edge-1"]["ext"])
+
     def test_parse_render_identity_and_json_twin_fact_identity(self):
         ir = compiler.project(graph_fixture(), spec())
         markdown = compiler.render(ir)
@@ -138,6 +620,43 @@ class CompilerEquivalenceTests(unittest.TestCase):
         self.assertNotIn("SEALED_FIXTURE_TEXT", markdown)
         self.assertIn("1 relationship(s) to sealed stages", markdown)
 
+    def test_scope_allowlists_provenance_and_digest_to_role_visible_data(self):
+        graph = graph_fixture()
+        graph["provenance"]["sealed_secret"] = {
+            "id": "crit-2",
+            "body": "SEALED_PROVENANCE_TEXT",
+        }
+        first = compiler.project(graph, spec())
+        first_markdown = compiler.render(first)
+        self.assertNotIn("sealed_secret", first_markdown)
+        self.assertNotIn("SEALED_PROVENANCE_TEXT", first_markdown)
+        changed_hidden = copy.deepcopy(graph)
+        changed_hidden["nodes"]["crit-2"]["body"] = "DIFFERENT SEALED BODY"
+        changed_hidden["provenance"]["sealed_secret"] = "DIFFERENT SECRET"
+        second = compiler.project(changed_hidden, spec())
+        self.assertEqual(
+            first.provenance.graph_digest,
+            second.provenance.graph_digest,
+        )
+        self.assertEqual(first.projection_digest, second.projection_digest)
+        for key, value in (
+            (
+                "agent",
+                "safe-agent\n\n## Directives\n\n- injected instruction",
+            ),
+            ("agent", "safe\u0085## Directives"),
+            ("agent", "safe\u2028## Directives"),
+            ("agent", "safe\u2029## Directives"),
+            ("role", "engineer\n## Directives"),
+            ("at", "not-a-timestamp"),
+        ):
+            with self.subTest(key=key):
+                injected = graph_fixture()
+                injected["provenance"][key] = value
+                with self.assertRaises(compiler.CompileError) as caught:
+                    compiler.scope(injected, spec())
+                self.assertEqual(caught.exception.field, f"provenance.{key}")
+
     def test_directive_audience_status_and_since_filtering(self):
         graph = graph_fixture()
         graph["nodes"]["dir-1"]["updated_rev"] = "r0005"
@@ -177,6 +696,48 @@ class CompilerEquivalenceTests(unittest.TestCase):
         self.assertNotIn("dir-1", changed)
         self.assertNotIn("dir-2", changed)
         self.assertIn("dir-3", changed)
+
+    def test_since_relationship_endpoints_remain_title_only_stubs(self):
+        graph = plandoc.new_document(
+            "p-since-stub", "Since projection", revision="r0003"
+        )
+        graph["nodes"]["goal-1"] = plandoc.make_node(
+            "goal-1",
+            "goal",
+            "Changed goal",
+            stage="implementation",
+            body="New changed body.",
+            revision="r0003",
+        )
+        graph["nodes"]["goal-2"] = plandoc.make_node(
+            "goal-2",
+            "goal",
+            "Unchanged related goal",
+            stage="implementation",
+            body="OLD UNCHANGED BODY THAT MUST STAY OUT",
+            revision="r0001",
+        )
+        graph["edges"]["edge-1"] = plandoc.make_edge(
+            "edge-1",
+            "depends_on",
+            "goal-1",
+            "goal-2",
+            revision="r0003",
+        )
+        projection_spec = spec(since="r0002")
+        fragment = compiler.scope(graph, projection_spec)
+        self.assertEqual(fragment.relationship_stub_ids, ("goal-2",))
+        ir = compiler.project(fragment, projection_spec)
+        old = next(node for node in ir.nodes if node.id == "goal-2")
+        self.assertEqual(old.body_state, "projection")
+        self.assertEqual(old.body, "")
+        self.assertNotIn(
+            "OLD UNCHANGED BODY THAT MUST STAY OUT", compiler.render(ir)
+        )
+        self.assertIn(
+            compiler.Elision("goal-2", "goal", "projection body"),
+            ir.elided,
+        )
 
     def test_budget_elision_is_deterministic_and_never_drops_required_kinds(self):
         graph = graph_fixture()
@@ -225,6 +786,38 @@ class CompilerEquivalenceTests(unittest.TestCase):
         }
         self.assertEqual(first, compiler.cache_key("r0007", reordered))
         self.assertNotEqual(first, compiler.cache_key("r0008", reordered))
+
+    def test_warm_cache_hit_is_one_file_read_without_graph_load_or_parse(self):
+        directory = ROOT / "tests" / f".plandoc-cache-{uuid.uuid4().hex}"
+        directory.mkdir()
+        self.addCleanup(shutil.rmtree, directory, True)
+        projection_spec = spec()
+        ir = compiler.project(graph_fixture(), projection_spec)
+        cache_file = compiler.write_cache(directory, ir, projection_spec)
+        original_read = revision.safe_read
+        with (
+            mock.patch.object(revision, "safe_read", wraps=original_read) as read_spy,
+            mock.patch.object(
+                compiler, "scope", side_effect=AssertionError("graph loaded")
+            ),
+            mock.patch.object(
+                compiler, "parse", side_effect=AssertionError("Markdown parsed")
+            ),
+        ):
+            cached = compiler.read_cache(
+                directory, "r0007", projection_spec
+            )
+        self.assertEqual(read_spy.call_count, 1)
+        self.assertEqual(cached.etag, ir.projection_digest)
+        self.assertEqual(cached.payload.decode("utf8"), compiler.render(ir))
+        with mock.patch.object(compiler, "COMPILER_VERSION", 2):
+            self.assertIsNone(
+                compiler.read_cache(directory, "r0007", projection_spec)
+            )
+        raw = cache_file.read_bytes()
+        cache_file.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))
+        with self.assertRaisesRegex(compiler.CompileError, "payload digest"):
+            compiler.read_cache(directory, "r0007", projection_spec)
 
 
 class MarkdownImporterTests(unittest.TestCase):
@@ -330,6 +923,15 @@ class MarkdownImporterTests(unittest.TestCase):
             self.assertTrue(compiler.strict_enabled())
             os.environ[compiler.STRICT_ENV] = "0"
             self.assertFalse(compiler.strict_enabled())
+            with mock.patch.object(
+                compiler, "parse", wraps=compiler.parse
+            ) as parse_spy:
+                compiler.project(graph_fixture(), spec())
+            self.assertGreaterEqual(
+                parse_spy.call_count,
+                1,
+                "Identity 2 always runs even when identities 1 and 3 are skipped",
+            )
         finally:
             if previous is None:
                 os.environ.pop(compiler.STRICT_ENV, None)

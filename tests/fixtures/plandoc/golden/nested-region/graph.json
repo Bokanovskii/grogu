@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "kind": "grogu.plan_document",
+  "plan_id": "p-golden-regions",
+  "title": "Nested regions",
+  "revision": "r0001",
+  "nodes": {
+    "reg-1": {
+      "id": "reg-1",
+      "kind": "region",
+      "stage": "implementation",
+      "title": "Region 1",
+      "body": "",
+      "attrs": {},
+      "order": 1000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "geometry": {
+        "x": 20,
+        "y": 20,
+        "w": 700,
+        "h": 520,
+        "z": 1
+      }
+    },
+    "reg-2": {
+      "id": "reg-2",
+      "kind": "region",
+      "stage": "implementation",
+      "title": "Region 2",
+      "body": "",
+      "attrs": {},
+      "order": 2000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "geometry": {
+        "x": 40,
+        "y": 40,
+        "w": 600,
+        "h": 440,
+        "z": 2
+      }
+    },
+    "reg-3": {
+      "id": "reg-3",
+      "kind": "region",
+      "stage": "implementation",
+      "title": "Region 3",
+      "body": "",
+      "attrs": {},
+      "order": 3000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "geometry": {
+        "x": 60,
+        "y": 60,
+        "w": 500,
+        "h": 360,
+        "z": 3
+      }
+    },
+    "reg-4": {
+      "id": "reg-4",
+      "kind": "region",
+      "stage": "implementation",
+      "title": "Region 4",
+      "body": "",
+      "attrs": {},
+      "order": 4000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "geometry": {
+        "x": 80,
+        "y": 80,
+        "w": 400,
+        "h": 280,
+        "z": 4
+      }
+    },
+    "task-1": {
+      "id": "task-1",
+      "kind": "task",
+      "stage": "implementation",
+      "title": "Nested task",
+      "body": "",
+      "attrs": {},
+      "order": 5000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001"
+    }
+  },
+  "edges": {
+    "edge-1": {
+      "id": "edge-1",
+      "kind": "contains",
+      "from": "reg-1",
+      "to": "reg-2",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    "edge-2": {
+      "id": "edge-2",
+      "kind": "contains",
+      "from": "reg-2",
+      "to": "reg-3",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    "edge-3": {
+      "id": "edge-3",
+      "kind": "contains",
+      "from": "reg-3",
+      "to": "reg-4",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    "edge-4": {
+      "id": "edge-4",
+      "kind": "contains",
+      "from": "reg-4",
+      "to": "task-1",
+      "attrs": {},
+      "created_rev": "r0001"
+    }
+  },
+  "canvas": {
+    "snap": 8
+  }
+}

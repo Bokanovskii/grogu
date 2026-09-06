@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
 import os
 import re
 from collections import defaultdict, deque
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
 import grogu_markdown
@@ -39,6 +41,7 @@ SECTION_ORDER = (
     "Open questions",
     "Discussion",
     "Comment threads",
+    "Extensions",
     "Elided",
     "Provenance",
 )
@@ -91,16 +94,38 @@ _RELATIONSHIP = re.compile(
     r"^(?P<kind>[a-z ]+): "
     r"(?P<ids>[a-z][a-z0-9_]*-[0-9]+(?:, [a-z][a-z0-9_]*-[0-9]+)*)$"
 )
-_H1 = re.compile(r"(?m)^# (.+?)\r?$")
-_H2 = re.compile(r"(?m)^## (.+?)\r?$")
-
-
 class CompileError(ValueError):
     """Compilation or semantic-equivalence verification failed."""
 
     def __init__(self, message: str, *, field: str = ""):
         self.field = field
         super().__init__(f"{field}: {message}" if field else message)
+
+
+@dataclass(frozen=True)
+class GraphFragment:
+    """Canonical, role-bounded source sub-graph selected by ``scope``."""
+
+    document_json: str
+    spec_json: str
+    source_digest: str
+    relationship_stub_ids: tuple[str, ...] = field(default=(), compare=False)
+
+    @property
+    def document(self) -> dict:
+        return canon.loads(self.document_json)
+
+    @property
+    def spec(self) -> dict:
+        return canon.loads(self.spec_json)
+
+    @property
+    def nodes(self) -> dict:
+        return self.document["nodes"]
+
+    @property
+    def edges(self) -> dict:
+        return self.document["edges"]
 
 
 @dataclass(frozen=True)
@@ -115,6 +140,7 @@ class ProjectionNode:
     created_rev: str
     updated_rev: str
     geometry_json: str = ""
+    ext_json: str = ""
     body_state: str = "full"
 
     @property
@@ -125,6 +151,10 @@ class ProjectionNode:
     def geometry(self) -> dict | None:
         return canon.loads(self.geometry_json) if self.geometry_json else None
 
+    @property
+    def ext(self) -> dict | None:
+        return canon.loads(self.ext_json) if self.ext_json else None
+
 
 @dataclass(frozen=True)
 class ProjectionEdge:
@@ -134,10 +164,15 @@ class ProjectionEdge:
     target: str
     attrs_json: str
     created_rev: str
+    ext_json: str = ""
 
     @property
     def attrs(self) -> dict:
         return canon.loads(self.attrs_json)
+
+    @property
+    def ext(self) -> dict | None:
+        return canon.loads(self.ext_json) if self.ext_json else None
 
 
 @dataclass(frozen=True)
@@ -166,6 +201,8 @@ class Provenance:
     budget_exceeded: bool = False
     since: str = ""
     depth: int | None = None
+    source_provenance_json: str = "{}"
+    canvas_json: str = ""
 
 
 @dataclass(frozen=True)
@@ -176,6 +213,13 @@ class ProjectionIR:
     elided: tuple[Elision, ...]
     provenance: Provenance
     projection_digest: str
+
+
+@dataclass(frozen=True)
+class CachedProjection:
+    format: str
+    etag: str
+    payload: bytes
 
 
 def _node_from_dict(node: Mapping[str, Any], *, body_state: str = "full") -> ProjectionNode:
@@ -190,6 +234,7 @@ def _node_from_dict(node: Mapping[str, Any], *, body_state: str = "full") -> Pro
         created_rev=node["created_rev"],
         updated_rev=node["updated_rev"],
         geometry_json=canon.dumps(node["geometry"]) if "geometry" in node else "",
+        ext_json=canon.dumps(node["ext"]) if "ext" in node else "",
         body_state=body_state,
     )
 
@@ -202,6 +247,7 @@ def _edge_from_dict(edge: Mapping[str, Any]) -> ProjectionEdge:
         target=edge["to"],
         attrs_json=canon.dumps(edge["attrs"]),
         created_rev=edge["created_rev"],
+        ext_json=canon.dumps(edge["ext"]) if "ext" in edge else "",
     )
 
 
@@ -220,11 +266,13 @@ def _node_dict(node: ProjectionNode) -> dict:
     }
     if node.geometry_json:
         value["geometry"] = node.geometry
+    if node.ext_json:
+        value["ext"] = node.ext
     return value
 
 
 def _edge_dict(edge: ProjectionEdge) -> dict:
-    return {
+    value = {
         "id": edge.id,
         "kind": edge.kind,
         "from": edge.source,
@@ -232,6 +280,9 @@ def _edge_dict(edge: ProjectionEdge) -> dict:
         "attrs": edge.attrs,
         "created_rev": edge.created_rev,
     }
+    if edge.ext_json:
+        value["ext"] = edge.ext
+    return value
 
 
 def _provenance_dict(provenance: Provenance) -> dict:
@@ -253,6 +304,12 @@ def _provenance_dict(provenance: Provenance) -> dict:
         "budget_exceeded": provenance.budget_exceeded,
         "since": provenance.since,
         "depth": provenance.depth,
+        "source_provenance": canon.loads(provenance.source_provenance_json),
+        "canvas": (
+            canon.loads(provenance.canvas_json)
+            if provenance.canvas_json
+            else None
+        ),
     }
 
 
@@ -289,6 +346,99 @@ def cache_key(revision: str, spec: Mapping[str, Any]) -> tuple[str, str, int]:
     return revision, canon.digest(normalized), normalized["compiler"]
 
 
+def cache_path(
+    package: Path,
+    revision: str,
+    spec: Mapping[str, Any],
+    *,
+    format: str = "md",
+) -> Path:
+    """Return the content-addressed role/spec/compiler cache path."""
+    if re.fullmatch(r"r[0-9]{4,}", revision) is None:
+        raise CompileError("invalid cache revision", field="revision")
+    if format not in {"md", "json"}:
+        raise CompileError("cache format must be md or json", field="format")
+    _revision, identifier, compiler_version = cache_key(revision, spec)
+    return (
+        Path(package)
+        / "projections"
+        / revision
+        / identifier.removeprefix("sha256:")
+        / f"compiler-{compiler_version}.{format}.cache"
+    )
+
+
+def write_cache(
+    package: Path,
+    ir: ProjectionIR,
+    spec: Mapping[str, Any],
+    *,
+    format: str = "md",
+) -> Path:
+    """Atomically write one cache entry containing its strong ETag."""
+    normalized_spec = schema.validate_projection_spec(spec)
+    if normalized_spec["compiler"] != COMPILER_VERSION:
+        raise CompileError("cannot write a stale compiler cache", field="compiler")
+    if canon.dumps(normalized_spec) != canon.dumps(
+        _spec_from_provenance(ir.provenance)
+    ):
+        raise CompileError("cache spec differs from projection", field="spec")
+    payload = (
+        render(ir).encode("utf8")
+        if format == "md"
+        else canon.dumpb(render_json(ir))
+    )
+    payload_digest = hashlib.sha256(payload).hexdigest()
+    header = (
+        f"GROGU-PROJECTION-CACHE/1 {format} {ir.projection_digest} "
+        f"{payload_digest}\n"
+    ).encode("ascii")
+    path = cache_path(
+        package, ir.provenance.revision, spec, format=format
+    )
+    import grogu_plandoc_revision
+
+    grogu_plandoc_revision.atomic_write(path, header + payload)
+    return path
+
+
+def read_cache(
+    package: Path,
+    revision: str,
+    spec: Mapping[str, Any],
+    *,
+    format: str = "md",
+) -> CachedProjection | None:
+    """Serve a warm hit with one file read and no graph or Markdown parse."""
+    normalized_spec = schema.validate_projection_spec(spec)
+    if normalized_spec["compiler"] != COMPILER_VERSION:
+        return None
+    path = cache_path(package, revision, spec, format=format)
+    import grogu_plandoc_revision
+
+    try:
+        raw = grogu_plandoc_revision.safe_read(path)
+    except FileNotFoundError:
+        return None
+    header, separator, payload = raw.partition(b"\n")
+    expected_prefix = f"GROGU-PROJECTION-CACHE/1 {format} ".encode("ascii")
+    if not separator or not header.startswith(expected_prefix):
+        raise CompileError("invalid projection cache header", field="cache")
+    try:
+        fields = header[len(expected_prefix) :].decode("ascii").split(" ")
+    except UnicodeDecodeError as error:
+        raise CompileError("invalid projection cache ETag", field="cache") from error
+    if (
+        len(fields) != 2
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", fields[0]) is None
+        or re.fullmatch(r"[0-9a-f]{64}", fields[1]) is None
+    ):
+        raise CompileError("invalid projection cache ETag", field="cache")
+    if hashlib.sha256(payload).hexdigest() != fields[1]:
+        raise CompileError("projection cache payload digest differs", field="cache")
+    return CachedProjection(format=format, etag=fields[0], payload=payload)
+
+
 def _revision_number(value: str) -> int:
     return int(value[1:]) if value else -1
 
@@ -303,19 +453,21 @@ def _thread_attached(
     return bool(ids & selected_ids)
 
 
-def _initial_selection(graph: dict, spec: dict) -> tuple[set[str], dict[str, str]]:
+def _scope_selection(graph: dict, spec: dict) -> tuple[set[str], set[str]]:
     stage_ids = {
         node_id
         for node_id, node in graph["nodes"].items()
         if node["stage"] in spec["stages"] or node["stage"] == ""
     }
     selected: set[str] = set()
-    body_states: dict[str, str] = {}
+    relationship_stubs: set[str] = set()
     since = _revision_number(spec["since"])
     role = spec["role"]
     for node_id in sorted(stage_ids, key=canon.id_sort_key):
         node = graph["nodes"][node_id]
         kind = node["kind"]
+        if kind not in KIND_SECTION:
+            raise CompileError(f"unknown node kind {kind!r}", field=f"nodes.{node_id}.kind")
         if spec["since"] and max(
             _revision_number(node["created_rev"]),
             _revision_number(node["updated_rev"]),
@@ -327,20 +479,15 @@ def _initial_selection(graph: dict, spec: dict) -> tuple[set[str], dict[str, str
             changed_directive = bool(spec["since"])
             if addressed and (attrs["status"] == "active" or changed_directive):
                 selected.add(node_id)
-                body_states[node_id] = "full"
             continue
         if spec["include"] == "all":
             selected.add(node_id)
-            body_states[node_id] = "full"
         elif schema.NODE_KINDS[kind]["normative"] or kind in {"risk", "question"}:
             selected.add(node_id)
-            body_states[node_id] = "full"
         elif kind in {"diagram", "region"}:
             selected.add(node_id)
-            body_states[node_id] = "full"
         elif kind in {"note", "evidence", "reference"}:
             selected.add(node_id)
-            body_states[node_id] = "projection"
 
     if spec["include"] == "normative":
         for node_id in sorted(stage_ids, key=canon.id_sort_key):
@@ -351,7 +498,6 @@ def _initial_selection(graph: dict, spec: dict) -> tuple[set[str], dict[str, str
                 and _thread_attached(node, selected)
             ):
                 selected.add(node_id)
-                body_states[node_id] = "full"
 
         # Preserve relationships from selected facts.  Any remaining endpoint
         # is a title/attribute stub unless --include all was requested.
@@ -383,8 +529,8 @@ def _initial_selection(graph: dict, spec: dict) -> tuple[set[str], dict[str, str
                 ):
                     if edge["to"] not in selected:
                         changed = True
+                        relationship_stubs.add(edge["to"])
                     selected.add(edge["to"])
-                    body_states.setdefault(edge["to"], "projection")
                 if (
                     edge["to"] in selected
                     and edge["from"] in stage_ids
@@ -392,9 +538,9 @@ def _initial_selection(graph: dict, spec: dict) -> tuple[set[str], dict[str, str
                 ):
                     if edge["from"] not in selected:
                         changed = True
+                        relationship_stubs.add(edge["from"])
                     selected.add(edge["from"])
-                    body_states.setdefault(edge["from"], "projection")
-    return selected, body_states
+    return selected, relationship_stubs
 
 
 def _goal_depths(nodes: tuple[ProjectionNode, ...], edges: tuple[ProjectionEdge, ...]) -> dict[str, int]:
@@ -541,8 +687,71 @@ def _apply_budget(ir: ProjectionIR, *, depth: int = 0) -> ProjectionIR:
     )
 
 
-def project(graph: Mapping[str, Any], spec: Mapping[str, Any]) -> ProjectionIR:
-    """Produce the ordered, role-filtered projection intermediate."""
+def _check_closed_kinds(document: Mapping[str, Any], *, operation: str) -> None:
+    for node_id, node in document["nodes"].items():
+        if node["kind"] not in KIND_SECTION:
+            raise CompileError(
+                f"{operation} has no dispatch for node kind {node['kind']!r}",
+                field=f"nodes.{node_id}.kind",
+            )
+    for edge_id, edge in document["edges"].items():
+        if edge["kind"] not in RELATIONSHIP_LABELS:
+            raise CompileError(
+                f"{operation} has no dispatch for edge kind {edge['kind']!r}",
+                field=f"edges.{edge_id}.kind",
+            )
+
+
+def _safe_provenance(value: Any) -> dict:
+    if not isinstance(value, Mapping):
+        return {}
+    result = {}
+    at = value.get("at")
+    if at is not None:
+        if not isinstance(at, str) or (
+            at
+            and re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:"
+                r"[0-9]{2}(?:\.[0-9]{1,6})?Z",
+                at,
+            )
+            is None
+        ):
+            raise CompileError(
+                "source timestamp must be empty or UTC",
+                field="provenance.at",
+            )
+        result["at"] = at
+    role = value.get("role")
+    if role is not None:
+        if role not in schema.ROLES:
+            raise CompileError(
+                "source role is not permitted", field="provenance.role"
+            )
+        result["role"] = role
+    for key in ("actor", "agent"):
+        text = value.get(key)
+        if text is None:
+            continue
+        if (
+            not isinstance(text, str)
+            or len(text) > 256
+            or (text and text.splitlines() != [text])
+            or any(ord(character) < 32 or ord(character) == 127 for character in text)
+        ):
+            raise CompileError(
+                f"source {key} must be bounded single-line text",
+                field=f"provenance.{key}",
+            )
+        result[key] = text
+    count = value.get("sealed_relationships")
+    if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+        result["sealed_relationships"] = count
+    return result
+
+
+def scope(graph: Mapping[str, Any], spec: Mapping[str, Any]) -> GraphFragment:
+    """Select the complete role/stage/include sub-graph without eliding it."""
     document = schema.validate_document(graph)
     projection_spec = schema.validate_projection_spec(spec)
     if projection_spec["compiler"] != COMPILER_VERSION:
@@ -550,12 +759,62 @@ def project(graph: Mapping[str, Any], spec: Mapping[str, Any]) -> ProjectionIR:
             f"unsupported compiler {projection_spec['compiler']}",
             field="provenance.compiler",
         )
-    selected, body_states = _initial_selection(document, projection_spec)
+    _check_closed_kinds(document, operation="scope")
+    selected, relationship_stubs = _scope_selection(document, projection_spec)
+    fragment_document = {
+        "schema_version": 1,
+        "kind": "grogu.plan_document",
+        "plan_id": document["plan_id"],
+        "title": document["title"],
+        "revision": document["revision"],
+        "nodes": {
+            node_id: copy.deepcopy(document["nodes"][node_id])
+            for node_id in sorted(selected, key=canon.id_sort_key)
+        },
+        "edges": {
+            edge_id: copy.deepcopy(edge)
+            for edge_id, edge in sorted(
+                document["edges"].items(),
+                key=lambda item: canon.id_sort_key(item[0]),
+            )
+            if edge["from"] in selected and edge["to"] in selected
+        },
+    }
+    if "canvas" in document:
+        fragment_document["canvas"] = copy.deepcopy(document["canvas"])
+    safe_provenance = _safe_provenance(document.get("provenance"))
+    if safe_provenance:
+        fragment_document["provenance"] = safe_provenance
+    fragment_document = schema.validate_document(fragment_document)
+    return GraphFragment(
+        document_json=canon.dumps(fragment_document),
+        spec_json=canon.dumps(projection_spec),
+        source_digest=canon.digest(fragment_document),
+        relationship_stub_ids=tuple(
+            sorted(relationship_stubs, key=canon.id_sort_key)
+        ),
+    )
+
+
+def _project_unchecked(
+    source_fragment: GraphFragment,
+    projection_spec: Mapping[str, Any],
+) -> ProjectionIR:
+    document = schema.validate_document(source_fragment.document)
+    _check_closed_kinds(document, operation="project")
     nodes = []
     elided = []
-    for node_id in sorted(selected, key=canon.id_sort_key):
+    for node_id in sorted(document["nodes"], key=canon.id_sort_key):
         node = document["nodes"][node_id]
-        state = body_states.get(node_id, "full")
+        state = (
+            "projection"
+            if node_id in source_fragment.relationship_stub_ids
+            or (
+                projection_spec["include"] == "normative"
+                and node["kind"] in {"note", "evidence", "reference"}
+            )
+            else "full"
+        )
         projected = copy.deepcopy(node)
         if state != "full" and projected["body"]:
             projected["body"] = ""
@@ -572,7 +831,6 @@ def project(graph: Mapping[str, Any], spec: Mapping[str, Any]) -> ProjectionIR:
     edges = [
         _edge_from_dict(edge)
         for edge in document["edges"].values()
-        if edge["from"] in selected and edge["to"] in selected
     ]
     edges.sort(
         key=lambda edge: (
@@ -590,7 +848,7 @@ def project(graph: Mapping[str, Any], spec: Mapping[str, Any]) -> ProjectionIR:
         stages=tuple(projection_spec["stages"]),
         include=projection_spec["include"],
         compiler=projection_spec["compiler"],
-        graph_digest=canon.digest(document),
+        graph_digest=source_fragment.source_digest,
         projection_id=canon.digest(projection_spec),
         source_at=str(graph_provenance.get("at", "")),
         source_actor=str(graph_provenance.get("actor", "")),
@@ -600,6 +858,10 @@ def project(graph: Mapping[str, Any], spec: Mapping[str, Any]) -> ProjectionIR:
         budget_chars=projection_spec["budget_chars"],
         since=projection_spec["since"],
         depth=projection_spec.get("depth"),
+        source_provenance_json=canon.dumps(graph_provenance),
+        canvas_json=(
+            canon.dumps(document["canvas"]) if "canvas" in document else ""
+        ),
     )
     ir = ProjectionIR(
         title=document["title"],
@@ -610,11 +872,262 @@ def project(graph: Mapping[str, Any], spec: Mapping[str, Any]) -> ProjectionIR:
         projection_digest="",
     )
     ir = _apply_budget(ir, depth=projection_spec.get("depth", 0))
-    ir = _stamp(ir)
+    return _stamp(ir)
+
+
+def project(
+    fragment: GraphFragment | Mapping[str, Any],
+    spec: Mapping[str, Any],
+) -> ProjectionIR:
+    """Order and deliberately elide a previously scoped graph fragment."""
+    projection_spec = schema.validate_projection_spec(spec)
+    if projection_spec["compiler"] != COMPILER_VERSION:
+        raise CompileError(
+            f"unsupported compiler {projection_spec['compiler']}",
+            field="provenance.compiler",
+        )
+    if isinstance(fragment, GraphFragment):
+        expected_spec = canon.dumps(projection_spec)
+        if fragment.spec_json != expected_spec:
+            raise CompileError(
+                "projection spec differs from the scoped fragment",
+                field="spec",
+            )
+        source_fragment = fragment
+    else:
+        source_fragment = scope(fragment, projection_spec)
+    ir = _project_unchecked(source_fragment, projection_spec)
+    round_tripped = parse(render(ir))
+    assert_equivalent(ir, round_tripped)
     if strict_enabled():
-        round_tripped = parse(render(ir))
-        assert_equivalent(ir, round_tripped)
+        verify_completeness(source_fragment, ir)
+        verify_graph_equivalence(source_fragment, round_tripped)
     return ir
+
+
+def _spec_from_provenance(provenance: Provenance) -> dict:
+    spec = {
+        "role": provenance.role,
+        "stages": list(provenance.stages),
+        "include": provenance.include,
+        "budget_chars": provenance.budget_chars,
+        "since": provenance.since,
+        "compiler": provenance.compiler,
+    }
+    if provenance.depth is not None:
+        spec["depth"] = provenance.depth
+    return schema.validate_projection_spec(spec)
+
+
+def lift(ir: ProjectionIR) -> GraphFragment:
+    """Invert ``project`` for every element not deliberately elided."""
+    if not isinstance(ir, ProjectionIR):
+        raise TypeError("ir must be a ProjectionIR")
+    _check_closed_kinds(
+        {
+            "nodes": {node.id: _node_dict(node) for node in ir.nodes},
+            "edges": {edge.id: _edge_dict(edge) for edge in ir.edges},
+        },
+        operation="lift",
+    )
+    document = {
+        "schema_version": 1,
+        "kind": "grogu.plan_document",
+        "plan_id": ir.provenance.plan_id,
+        "title": ir.title,
+        "revision": ir.provenance.revision,
+        "nodes": {},
+        "edges": {},
+    }
+    for node in ir.nodes:
+        value = _node_dict(node)
+        value.pop("body_state", None)
+        document["nodes"][node.id] = value
+    for edge in ir.edges:
+        document["edges"][edge.id] = _edge_dict(edge)
+    source_provenance = canon.loads(ir.provenance.source_provenance_json)
+    if source_provenance:
+        document["provenance"] = source_provenance
+    if ir.provenance.canvas_json:
+        document["canvas"] = canon.loads(ir.provenance.canvas_json)
+    document = schema.validate_document(document)
+    return GraphFragment(
+        document_json=canon.dumps(document),
+        spec_json=canon.dumps(_spec_from_provenance(ir.provenance)),
+        source_digest=ir.provenance.graph_digest,
+    )
+
+
+def subtract_elided(
+    fragment: GraphFragment,
+    elisions: tuple[Elision, ...],
+) -> GraphFragment:
+    """Apply the declared elision set to a fragment for Identity 3."""
+    document = copy.deepcopy(fragment.document)
+    for item in elisions:
+        if item.detail in {
+            "body",
+            "projection body",
+            "rationale",
+            "distant task body",
+            "node body",
+            "resolved thread body",
+        }:
+            if item.id in document["nodes"]:
+                document["nodes"][item.id]["body"] = ""
+            continue
+        if item.detail in {"node", "resolved thread"}:
+            document["nodes"].pop(item.id, None)
+            document["edges"] = {
+                edge_id: edge
+                for edge_id, edge in document["edges"].items()
+                if item.id not in {edge["from"], edge["to"]}
+            }
+            continue
+        raise CompileError(
+            f"unknown elision detail {item.detail!r}",
+            field=f"elided.{item.id}",
+        )
+    document = schema.validate_document(document)
+    return GraphFragment(
+        document_json=canon.dumps(document),
+        spec_json=fragment.spec_json,
+        source_digest=fragment.source_digest,
+    )
+
+
+def _leaf_elements(value: Any, path: str, output: set[str]) -> None:
+    if isinstance(value, Mapping):
+        if not value:
+            output.add(path)
+        for key in sorted(value, key=canon.utf16_key):
+            _leaf_elements(value[key], f"{path}.{key}", output)
+        return
+    if isinstance(value, list):
+        if not value:
+            output.add(path)
+        for index, item in enumerate(value):
+            _leaf_elements(item, f"{path}[{index}]", output)
+        return
+    output.add(path)
+
+
+def elements(value: GraphFragment | ProjectionIR) -> frozenset[str]:
+    """Return stable leaf element paths for completeness checks."""
+    fragment = value if isinstance(value, GraphFragment) else lift(value)
+    result: set[str] = set()
+    _leaf_elements(fragment.document, "$", result)
+    return frozenset(result)
+
+
+def elided(fragment: GraphFragment, ir: ProjectionIR) -> frozenset[str]:
+    """Return the exact element paths deliberately removed by projection."""
+    return elements(fragment) - elements(subtract_elided(fragment, ir.elided))
+
+
+def _json_difference(left: Any, right: Any, path: str = "$") -> str:
+    if type(left) is not type(right):
+        return path
+    if isinstance(left, Mapping):
+        if set(left) != set(right):
+            return path
+        for key in sorted(left, key=canon.utf16_key):
+            found = _json_difference(left[key], right[key], f"{path}.{key}")
+            if found:
+                return found
+        return ""
+    if isinstance(left, list):
+        if len(left) != len(right):
+            return f"{path}.length"
+        for index, (left_item, right_item) in enumerate(zip(left, right)):
+            found = _json_difference(
+                left_item, right_item, f"{path}[{index}]"
+            )
+            if found:
+                return found
+        return ""
+    return "" if left == right else path
+
+
+def _verify_elision_policy(fragment: GraphFragment, ir: ProjectionIR) -> None:
+    trusted = _project_unchecked(fragment, fragment.spec)
+    if trusted.elided != ir.elided:
+        field = first_difference(trusted.elided, ir.elided, "$.elided")
+        raise CompileError(
+            "candidate elisions do not match the deterministic projection policy",
+            field=field or "$.elided",
+        )
+
+
+def verify_completeness(fragment: GraphFragment, ir: ProjectionIR) -> bool:
+    """Evaluate Identity 1 and name the first missing or invented element."""
+    _verify_elision_policy(fragment, ir)
+    expected = elements(fragment)
+    named_elisions = elided(fragment, ir)
+    actual = elements(ir)
+    combined = actual | named_elisions
+    if combined != expected:
+        differing = sorted(combined ^ expected)[0]
+        raise CompileError(
+            "identity 1 completeness failed",
+            field=differing,
+        )
+    return True
+
+
+def verify_graph_equivalence(fragment: GraphFragment, ir: ProjectionIR) -> bool:
+    """Evaluate Identity 3 using structural canonical JSON equality."""
+    _verify_elision_policy(fragment, ir)
+    expected = subtract_elided(fragment, ir.elided)
+    actual = lift(ir)
+    if expected.document_json != actual.document_json:
+        field = _json_difference(expected.document, actual.document)
+        raise CompileError(
+            "identity 3 graph equivalence failed",
+            field=field or "$",
+        )
+    if expected.spec_json != actual.spec_json:
+        raise CompileError(
+            "identity 3 graph equivalence failed",
+            field="$.spec",
+        )
+    if expected.source_digest != actual.source_digest:
+        raise CompileError(
+            "identity 3 graph equivalence failed",
+            field="$.source_digest",
+        )
+    return True
+
+
+def verify_identities(fragment: GraphFragment, ir: ProjectionIR) -> dict:
+    """Run all three compiler identities and return durable evidence."""
+    verify_completeness(fragment, ir)
+    parsed = parse(render(ir))
+    assert_equivalent(ir, parsed)
+    verify_graph_equivalence(fragment, parsed)
+    return {
+        "identity_1": True,
+        "identity_2": True,
+        "identity_3": True,
+        "projection_digest": ir.projection_digest,
+    }
+
+
+def compile_checked(
+    graph: Mapping[str, Any],
+    spec: Mapping[str, Any],
+) -> dict:
+    """Compile one projection and return artifacts only after all identities."""
+    fragment = scope(graph, spec)
+    ir = project(fragment, spec)
+    identities = verify_identities(fragment, ir)
+    return {
+        "fragment": fragment,
+        "ir": ir,
+        "markdown": render(ir),
+        "json": render_json(ir),
+        "identities": identities,
+    }
 
 
 def _stage_label(stages: tuple[str, ...]) -> str:
@@ -627,6 +1140,7 @@ def _metadata(node: ProjectionNode) -> dict:
         "body_chars": len(node.body),
         "body_state": node.body_state,
         "created_rev": node.created_rev,
+        "ext": node.ext,
         "geometry": node.geometry,
         "kind": node.kind,
         "order": node.order,
@@ -706,6 +1220,13 @@ def render(ir: ProjectionIR) -> str:
     """Render a projection to deterministic LF Markdown."""
     if not isinstance(ir, ProjectionIR):
         raise TypeError("ir must be a ProjectionIR")
+    _check_closed_kinds(
+        {
+            "nodes": {node.id: _node_dict(node) for node in ir.nodes},
+            "edges": {edge.id: _edge_dict(edge) for edge in ir.edges},
+        },
+        operation="render",
+    )
     expected = projection_digest(ir)
     if ir.projection_digest != expected:
         raise CompileError(
@@ -731,7 +1252,7 @@ def render(ir: ProjectionIR) -> str:
     for node in ir.nodes:
         by_section[KIND_SECTION[node.kind]].append(node)
     for section in SECTION_ORDER:
-        if section in {"Elided", "Provenance"}:
+        if section in {"Extensions", "Elided", "Provenance"}:
             continue
         nodes = by_section.get(section, [])
         if not nodes:
@@ -740,6 +1261,37 @@ def render(ir: ProjectionIR) -> str:
         for node in nodes:
             lines.append(_render_item(node, edges_by_source.get(node.id, [])))
             lines.append("")
+
+    extensions = [
+        {
+            "element": "node",
+            "id": node.id,
+            "ext": node.ext,
+        }
+        for node in ir.nodes
+        if node.ext_json
+    ] + [
+        {
+            "element": "edge",
+            "id": edge.id,
+            "ext": edge.ext,
+        }
+        for edge in ir.edges
+        if edge.ext_json
+    ]
+    if extensions:
+        extensions.sort(key=lambda item: canon.id_sort_key(item["id"]))
+        lines.extend(["## Extensions", ""])
+        for extension in extensions:
+            lines.extend(
+                [
+                    f"### {extension['id']} · Extensions",
+                    "```json",
+                    canon.dumps(extension),
+                    "```",
+                    "",
+                ]
+            )
 
     if ir.elided:
         lines.extend(["## Elided", "", *_elision_summary(ir.elided)])
@@ -842,6 +1394,8 @@ def _parse_provenance(value: Mapping[str, Any]) -> Provenance:
         "budget_exceeded",
         "since",
         "depth",
+        "source_provenance",
+        "canvas",
     }
     if set(value) != required:
         raise CompileError("invalid provenance metadata fields", field="provenance")
@@ -887,6 +1441,15 @@ def _parse_provenance(value: Mapping[str, Any]) -> Provenance:
         raise CompileError(
             "budget_exceeded must be boolean", field="provenance.budget_exceeded"
         )
+    if not isinstance(value["source_provenance"], Mapping):
+        raise CompileError(
+            "source provenance must be an object",
+            field="provenance.source_provenance",
+        )
+    if value["canvas"] is not None and not isinstance(value["canvas"], Mapping):
+        raise CompileError(
+            "canvas must be an object or null", field="provenance.canvas"
+        )
     return Provenance(
         plan_id=str(value["plan_id"]),
         revision=str(value["revision"]),
@@ -907,6 +1470,10 @@ def _parse_provenance(value: Mapping[str, Any]) -> Provenance:
         budget_exceeded=value["budget_exceeded"],
         since=normalized_spec["since"],
         depth=normalized_spec.get("depth"),
+        source_provenance_json=canon.dumps(value["source_provenance"]),
+        canvas_json=(
+            "" if value["canvas"] is None else canon.dumps(value["canvas"])
+        ),
     )
 
 
@@ -918,6 +1485,7 @@ def _parse_node_metadata(value: Any, node_id: str) -> dict:
         "body_chars",
         "body_state",
         "created_rev",
+        "ext",
         "geometry",
         "kind",
         "order",
@@ -944,6 +1512,10 @@ def _parse_node_metadata(value: Any, node_id: str) -> dict:
         raise CompileError(
             "geometry must be an object or null", field=f"nodes.{node_id}.geometry"
         )
+    if value["ext"] is not None and not isinstance(value["ext"], Mapping):
+        raise CompileError(
+            "ext must be an object or null", field=f"nodes.{node_id}.ext"
+        )
     return dict(value)
 
 
@@ -965,6 +1537,7 @@ def _parse_compiled(markdown: str) -> ProjectionIR:
     edges_by_id: dict[str, ProjectionEdge] = {}
     elided: tuple[Elision, ...] = ()
     provenance: Provenance | None = None
+    extension_blocks: dict[tuple[str, str], dict] = {}
 
     while cursor.position < len(markdown):
         heading = cursor.line()
@@ -1006,6 +1579,58 @@ def _parse_compiled(markdown: str) -> ProjectionIR:
                 ) from error
             if cursor.remaining().startswith("\n"):
                 cursor.expect_line("")
+            continue
+        if section == "Extensions":
+            while cursor.position < len(markdown):
+                if cursor.remaining().startswith("## "):
+                    break
+                first = cursor.line()
+                if not first:
+                    continue
+                heading_match = _NODE_HEADING.fullmatch(first)
+                if (
+                    heading_match is None
+                    or heading_match.group("title") != "Extensions"
+                ):
+                    raise CompileError(
+                        "invalid extension heading", field="extensions"
+                    )
+                cursor.expect_line("```json")
+                try:
+                    extension = canon.loads(cursor.line())
+                except canon.CanonicalError as error:
+                    raise CompileError(
+                        str(error), field="extensions"
+                    ) from error
+                cursor.expect_line("```")
+                if cursor.remaining().startswith("\n"):
+                    cursor.expect_line("")
+                if not isinstance(extension, Mapping) or set(extension) != {
+                    "element",
+                    "id",
+                    "ext",
+                }:
+                    raise CompileError(
+                        "invalid extension block", field="extensions"
+                    )
+                element = str(extension["element"])
+                identifier = str(extension["id"])
+                if element not in {"node", "edge"}:
+                    raise CompileError(
+                        "invalid extension element type", field="extensions"
+                    )
+                if identifier != heading_match.group("id"):
+                    raise CompileError(
+                        "extension heading and payload ids differ",
+                        field=f"extensions.{identifier}",
+                    )
+                key = (element, identifier)
+                if key in extension_blocks:
+                    raise CompileError(
+                        "duplicate extension block",
+                        field=f"extensions.{identifier}",
+                    )
+                extension_blocks[key] = canon.normalize(extension["ext"])
             continue
         if section == "Provenance":
             provenance_line = ""
@@ -1102,6 +1727,8 @@ def _parse_compiled(markdown: str) -> ProjectionIR:
             }
             if meta["geometry"] is not None:
                 raw_node["geometry"] = meta["geometry"]
+            if meta["ext"] is not None:
+                raw_node["ext"] = meta["ext"]
             try:
                 node = _node_from_dict(
                     schema.validate_node(raw_node, path=f"$.nodes.{node_id}"),
@@ -1158,6 +1785,23 @@ def _parse_compiled(markdown: str) -> ProjectionIR:
                 "relationship endpoint is absent from the projection",
                 field=edge.id,
             )
+    expected_extensions = {
+        ("node", node.id): node.ext
+        for node in nodes
+        if node.ext_json
+    }
+    expected_extensions.update(
+        {
+            ("edge", edge.id): edge.ext
+            for edge in edges_by_id.values()
+            if edge.ext_json
+        }
+    )
+    if extension_blocks != expected_extensions:
+        raise CompileError(
+            "extension blocks differ from element metadata",
+            field="extensions",
+        )
     header_stages = tuple(header.group("stages").split(","))
     if (
         header.group("plan") != provenance.plan_id

@@ -81,6 +81,10 @@ _POINTER = re.compile(r"^(?:/(?:[^~/]|~[01])*)*$")
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,255}$")
 _ARTIFACT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,255}$")
 _PLAIN_TEXT = re.compile(r"^[^\x00-\x1f\x7f]*$")
+_REVERSE_DNS = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$"
+)
 _UTC_TIMESTAMP = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:\.[0-9]{1,6})?Z$"
@@ -381,6 +385,15 @@ def _validate_attrs(kind: str, value: Any, path: str) -> dict:
     return normalized
 
 
+def _validate_ext(value: Any, path: str) -> dict:
+    extension = _object(value, path)
+    normalized = {}
+    for key in sorted(extension, key=canon.utf16_key):
+        _string(key, f"{path}<key>", maximum=253, pattern=_REVERSE_DNS)
+        normalized[key] = _json_value(extension[key], f"{path}.{key}")
+    return normalized
+
+
 def validate_node(value: Any, *, path: str = "$") -> dict:
     """Validate one typed plan-document node."""
     node = _object(value, path)
@@ -398,7 +411,7 @@ def validate_node(value: Any, *, path: str = "$") -> dict:
             "created_rev",
             "updated_rev",
         ),
-        optional=("geometry",),
+        optional=("geometry", "ext"),
     )
     kind = _enum(node["kind"], tuple(NODE_KINDS), f"{path}.kind")
     prefix = NODE_KINDS[kind]["prefix"]
@@ -418,6 +431,8 @@ def validate_node(value: Any, *, path: str = "$") -> dict:
     }
     if "geometry" in node:
         result["geometry"] = _geometry(node["geometry"], f"{path}.geometry")
+    if "ext" in node:
+        result["ext"] = _validate_ext(node["ext"], f"{path}.ext")
     return result
 
 
@@ -428,6 +443,7 @@ def validate_edge(value: Any, *, path: str = "$") -> dict:
         edge,
         path,
         required=("id", "kind", "from", "to", "attrs", "created_rev"),
+        optional=("ext",),
     )
     result = {
         "id": _stable_id(edge["id"], f"{path}.id", prefix="edge"),
@@ -457,6 +473,8 @@ def validate_edge(value: Any, *, path: str = "$") -> dict:
                 minimum=0,
                 maximum=MAX_SAFE_INTEGER,
             )
+    if "ext" in edge:
+        result["ext"] = _validate_ext(edge["ext"], f"{path}.ext")
     return result
 
 

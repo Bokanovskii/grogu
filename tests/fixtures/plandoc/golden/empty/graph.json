@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "kind": "grogu.plan_document",
+  "plan_id": "p-golden-empty",
+  "title": "Empty graph",
+  "revision": "r0001",
+  "nodes": {},
+  "edges": {},
+  "canvas": {
+    "snap": 8
+  }
+}

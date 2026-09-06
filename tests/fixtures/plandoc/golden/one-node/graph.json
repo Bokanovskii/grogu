@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "kind": "grogu.plan_document",
+  "plan_id": "p-golden-one",
+  "title": "One node",
+  "revision": "r0001",
+  "nodes": {
+    "goal-1": {
+      "id": "goal-1",
+      "kind": "goal",
+      "stage": "implementation",
+      "title": "One goal",
+      "body": "A single body.",
+      "attrs": {},
+      "order": 1000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001"
+    }
+  },
+  "edges": {},
+  "canvas": {
+    "snap": 8
+  }
+}
