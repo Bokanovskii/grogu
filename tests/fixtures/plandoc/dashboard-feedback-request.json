@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "idempotency_key": "feedback-client-17",
+  "scope": "agent",
+  "target_agent_key": "repo-plan-agent-run",
+  "target_role": null,
+  "expected_plan_revision": "r0007",
+  "refs": [
+    {
+      "plan_id": "p-20260905-fixture",
+      "revision": "r0007",
+      "object_id": "task-2",
+      "edge_id": null,
+      "frame_id": null,
+      "artifact_id": null,
+      "relation": "context"
+    }
+  ],
+  "body": "Please include the compiler cache key in the task.",
+  "requires_replan": false
+}

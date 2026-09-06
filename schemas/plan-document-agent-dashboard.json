@@ -1,0 +1,598 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grogu.dev/schemas/plan-document-agent-dashboard.json",
+  "title": "Grogu plan-document agent dashboard wire objects",
+  "description": "Version-1 observable-only DTOs. Nullable values mean unavailable, never zero. Producers reject unknown fields before persistence.",
+  "oneOf": [
+    {"$ref": "#/$defs/DashboardSnapshot"},
+    {"$ref": "#/$defs/EventPage"},
+    {"$ref": "#/$defs/FeedbackRequest"},
+    {"$ref": "#/$defs/FeedbackReceipt"}
+  ],
+  "$defs": {
+    "safeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "nullableSafeInteger": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/safeInteger"}
+      ]
+    },
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "plainText": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "safeCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,255}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
+    "nullableTimestamp": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/timestamp"}
+      ]
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^r[0-9]{4,}$"
+    },
+    "nullableRevision": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/revision"}
+      ]
+    },
+    "role": {
+      "enum": ["architect", "designer", "engineer", "tester", "reviewer", "supervisor"]
+    },
+    "ObjectRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plan_id", "revision", "object_id", "edge_id", "frame_id", "artifact_id", "relation"],
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "pattern": "^p-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "revision": {"$ref": "#/$defs/nullableRevision"},
+        "object_id": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*-[1-9][0-9]*$",
+              "maxLength": 128
+            }
+          ]
+        },
+        "edge_id": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "string",
+              "pattern": "^edge-[1-9][0-9]*$",
+              "maxLength": 128
+            }
+          ]
+        },
+        "frame_id": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "string",
+              "pattern": "^reg-[1-9][0-9]*$",
+              "maxLength": 128
+            }
+          ]
+        },
+        "artifact_id": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,255}$"
+            }
+          ]
+        },
+        "relation": {"enum": ["affected", "evidence", "context"]}
+      }
+    },
+    "Action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "tool_call_id", "kind", "tool_name", "phase", "at", "duration_ms", "refs", "basis"],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/opaqueId"},
+        "tool_call_id": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/opaqueId"}
+          ]
+        },
+        "kind": {"$ref": "#/$defs/safeCode"},
+        "tool_name": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/safeCode"}
+          ]
+        },
+        "phase": {"enum": ["started", "completed", "failed", "unknown"]},
+        "at": {"$ref": "#/$defs/timestamp"},
+        "duration_ms": {"$ref": "#/$defs/nullableSafeInteger"},
+        "refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ObjectRef"}
+        },
+        "basis": {"const": "observed"}
+      }
+    },
+    "ModelSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "author_role", "classification", "source_event_id", "at", "basis"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "author_role": {"$ref": "#/$defs/role"},
+        "classification": {"$ref": "#/$defs/safeCode"},
+        "source_event_id": {"$ref": "#/$defs/opaqueId"},
+        "at": {"$ref": "#/$defs/timestamp"},
+        "basis": {"const": "model_summary"}
+      }
+    },
+    "SourceHealth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "state", "last_success_at", "watermark", "gap", "reason_code"],
+      "properties": {
+        "source": {"enum": ["watch", "trace", "session", "plan"]},
+        "state": {"enum": ["live", "partial", "stale", "unavailable"]},
+        "last_success_at": {"$ref": "#/$defs/nullableTimestamp"},
+        "watermark": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            }
+          ]
+        },
+        "gap": {"type": "boolean"},
+        "reason_code": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/safeCode"}
+          ]
+        }
+      }
+    },
+    "Coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lifecycle", "tools", "outcomes", "truncated"],
+      "properties": {
+        "lifecycle": {"enum": ["complete", "partial", "unavailable"]},
+        "tools": {"enum": ["complete", "partial", "unavailable"]},
+        "outcomes": {"enum": ["complete", "partial", "unavailable"]},
+        "truncated": {"type": "boolean"}
+      }
+    },
+    "Failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "category", "safe_code", "at", "ref"],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/opaqueId"},
+        "category": {"enum": ["tool_transport", "command_exit", "agent_lifecycle"]},
+        "safe_code": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/safeCode"}
+          ]
+        },
+        "at": {"$ref": "#/$defs/timestamp"},
+        "ref": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/ObjectRef"}
+          ]
+        }
+      }
+    },
+    "Blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "visible_ref", "observed_at"],
+      "properties": {
+        "kind": {"enum": ["permission", "gate", "amendment", "defect", "steering"]},
+        "visible_ref": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/opaqueId"}
+          ]
+        },
+        "observed_at": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "AgentRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_key", "agent", "run_id", "parent_agent_key", "role", "workstream", "plan_id", "revision", "lifecycle", "activity", "connection", "started_at", "last_observed_at", "elapsed_ms", "elapsed_basis", "current_action", "last_action", "tools", "failures", "blockers", "steering", "evidence", "links", "summary"],
+      "properties": {
+        "agent_key": {"$ref": "#/$defs/opaqueId"},
+        "agent": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "run_id": {"$ref": "#/$defs/opaqueId"},
+        "parent_agent_key": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/opaqueId"}
+          ]
+        },
+        "role": {
+          "oneOf": [
+            {"$ref": "#/$defs/role"},
+            {"const": "unknown"}
+          ]
+        },
+        "workstream": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/opaqueId"}
+          ]
+        },
+        "plan_id": {
+          "type": "string",
+          "pattern": "^p-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "revision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["last_read", "current", "relation"],
+          "properties": {
+            "last_read": {"$ref": "#/$defs/nullableRevision"},
+            "current": {"$ref": "#/$defs/nullableRevision"},
+            "relation": {"enum": ["current", "behind", "unknown"]}
+          }
+        },
+        "lifecycle": {"enum": ["registered", "running", "finished", "failed", "cancelled", "unknown"]},
+        "activity": {"enum": ["active", "quiet", "possibly_stuck", "blocked", "unknown"]},
+        "connection": {"enum": ["live", "stale", "disconnected", "unknown"]},
+        "started_at": {"$ref": "#/$defs/nullableTimestamp"},
+        "last_observed_at": {"$ref": "#/$defs/nullableTimestamp"},
+        "elapsed_ms": {"$ref": "#/$defs/nullableSafeInteger"},
+        "elapsed_basis": {"enum": ["lifecycle_start", "first_observed", "unknown"]},
+        "current_action": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/Action"}
+          ]
+        },
+        "last_action": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/Action"}
+          ]
+        },
+        "tools": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["started", "completed", "failed", "inflight", "grogu_commands", "complete"],
+          "properties": {
+            "started": {"$ref": "#/$defs/nullableSafeInteger"},
+            "completed": {"$ref": "#/$defs/nullableSafeInteger"},
+            "failed": {"$ref": "#/$defs/nullableSafeInteger"},
+            "inflight": {"$ref": "#/$defs/nullableSafeInteger"},
+            "grogu_commands": {"$ref": "#/$defs/safeInteger"},
+            "complete": {"type": "boolean"}
+          }
+        },
+        "failures": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Failure"}
+        },
+        "blockers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Blocker"}
+        },
+        "steering": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["unread", "queued", "delivered", "acknowledged", "audit_refs"],
+          "properties": {
+            "unread": {"$ref": "#/$defs/safeInteger"},
+            "queued": {"$ref": "#/$defs/safeInteger"},
+            "delivered": {"$ref": "#/$defs/safeInteger"},
+            "acknowledged": {"$ref": "#/$defs/safeInteger"},
+            "audit_refs": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/opaqueId"}
+            }
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["basis", "sources", "reason_codes", "coverage"],
+          "properties": {
+            "basis": {"enum": ["observed", "inferred", "mixed"]},
+            "sources": {
+              "type": "array",
+              "items": {"enum": ["watch", "trace", "session", "plan"]}
+            },
+            "reason_codes": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/safeCode"}
+            },
+            "coverage": {"enum": ["complete", "partial", "unavailable"]}
+          }
+        },
+        "links": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ObjectRef"}
+        },
+        "summary": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/ModelSummary"}
+          ]
+        }
+      }
+    },
+    "DashboardSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "snapshot_id", "plan_id", "sampled_at", "observed_through", "poll_after_ms", "cursor", "source_health", "coverage", "agents", "next_cursor"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "snapshot_id": {"$ref": "#/$defs/opaqueId"},
+        "plan_id": {
+          "type": "string",
+          "pattern": "^p-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "sampled_at": {"$ref": "#/$defs/timestamp"},
+        "observed_through": {"$ref": "#/$defs/nullableTimestamp"},
+        "poll_after_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "cursor": {
+          "type": "string",
+          "maxLength": 2048,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
+        "source_health": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/SourceHealth"}
+        },
+        "coverage": {"$ref": "#/$defs/Coverage"},
+        "agents": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {"$ref": "#/$defs/AgentRow"}
+        },
+        "next_cursor": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            }
+          ]
+        }
+      }
+    },
+    "Event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sequence", "occurred_at", "collected_at", "source", "basis", "kind", "action", "refs", "safe_code", "summary"],
+      "properties": {
+        "id": {"$ref": "#/$defs/opaqueId"},
+        "sequence": {"$ref": "#/$defs/safeInteger"},
+        "occurred_at": {"$ref": "#/$defs/timestamp"},
+        "collected_at": {"$ref": "#/$defs/timestamp"},
+        "source": {"enum": ["watch", "trace", "session", "plan"]},
+        "basis": {"enum": ["observed", "model_summary", "inferred"]},
+        "kind": {"$ref": "#/$defs/safeCode"},
+        "action": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/Action"}
+          ]
+        },
+        "refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ObjectRef"}
+        },
+        "safe_code": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/safeCode"}
+          ]
+        },
+        "summary": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/ModelSummary"}
+          ]
+        }
+      }
+    },
+    "EventPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "agent_key", "events", "next_cursor", "gap", "truncated"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "agent_key": {"$ref": "#/$defs/opaqueId"},
+        "events": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {"$ref": "#/$defs/Event"}
+        },
+        "next_cursor": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+            }
+          ]
+        },
+        "gap": {"type": "boolean"},
+        "truncated": {"type": "boolean"}
+      }
+    },
+    "FeedbackRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "idempotency_key", "scope", "target_agent_key", "target_role", "expected_plan_revision", "refs", "body", "requires_replan"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "idempotency_key": {"$ref": "#/$defs/opaqueId"},
+        "scope": {"enum": ["agent", "role", "plan"]},
+        "target_agent_key": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/opaqueId"}
+          ]
+        },
+        "target_role": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/role"}
+          ]
+        },
+        "expected_plan_revision": {"$ref": "#/$defs/nullableRevision"},
+        "refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ObjectRef"}
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000
+        },
+        "requires_replan": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"scope": {"const": "agent"}}},
+          "then": {
+            "properties": {
+              "target_agent_key": {"$ref": "#/$defs/opaqueId"},
+              "target_role": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"scope": {"const": "role"}}},
+          "then": {
+            "properties": {
+              "target_agent_key": {"type": "null"},
+              "target_role": {"$ref": "#/$defs/role"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"scope": {"const": "plan"}}},
+          "then": {
+            "properties": {
+              "target_agent_key": {"type": "null"},
+              "target_role": {"type": "null"}
+            }
+          }
+        }
+      ]
+    },
+    "FeedbackTargetReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_key", "delivered_at", "acked_at", "delivery_source", "ack_source"],
+      "properties": {
+        "agent_key": {"$ref": "#/$defs/opaqueId"},
+        "delivered_at": {"$ref": "#/$defs/nullableTimestamp"},
+        "acked_at": {"$ref": "#/$defs/nullableTimestamp"},
+        "delivery_source": {
+          "oneOf": [
+            {"type": "null"},
+            {"enum": ["cli_banner", "supervisor_relay"]}
+          ]
+        },
+        "ack_source": {
+          "oneOf": [
+            {"type": "null"},
+            {"enum": ["harness_receipt", "explicit_agent"]}
+          ]
+        }
+      }
+    },
+    "FeedbackReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["feedback_id", "plan_id", "note_seq", "scope", "authorized_targets", "created_at", "status", "per_target", "requires_replan", "gate_effect", "retryable", "reason_code"],
+      "properties": {
+        "feedback_id": {"$ref": "#/$defs/opaqueId"},
+        "plan_id": {
+          "type": "string",
+          "pattern": "^p-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "note_seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "scope": {"enum": ["agent", "role", "plan"]},
+        "authorized_targets": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/opaqueId"}
+        },
+        "created_at": {"$ref": "#/$defs/timestamp"},
+        "status": {"enum": ["queued", "delivered", "acknowledged", "folded", "retracted"]},
+        "per_target": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/FeedbackTargetReceipt"}
+        },
+        "requires_replan": {"type": "boolean"},
+        "gate_effect": {"enum": ["none", "plan_needs_review"]},
+        "retryable": {"type": "boolean"},
+        "reason_code": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/safeCode"}
+          ]
+        }
+      }
+    }
+  }
+}

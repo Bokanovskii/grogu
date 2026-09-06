@@ -1,0 +1,253 @@
+{
+  "schema_version": 1,
+  "kind": "grogu.plan_projection",
+  "title": "Every node kind",
+  "nodes": [
+    {
+      "id": "dir-1",
+      "kind": "directive",
+      "stage": "implementation",
+      "title": "Directive example",
+      "body": "Body for directive.",
+      "attrs": {
+        "audience": [
+          "reviewer",
+          "engineer"
+        ],
+        "binding": "must",
+        "status": "active"
+      },
+      "order": 2000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full",
+      "ext": {
+        "com.example.node": {
+          "kind": "directive"
+        }
+      }
+    },
+    {
+      "id": "goal-1",
+      "kind": "goal",
+      "stage": "implementation",
+      "title": "Goal example",
+      "body": "Body for goal.",
+      "attrs": {},
+      "order": 1000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "dec-1",
+      "kind": "decision",
+      "stage": "implementation",
+      "title": "Decision example",
+      "body": "Body for decision.",
+      "attrs": {},
+      "order": 5000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "con-1",
+      "kind": "constraint",
+      "stage": "implementation",
+      "title": "Constraint example",
+      "body": "Body for constraint.",
+      "attrs": {},
+      "order": 3000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "inv-1",
+      "kind": "invariant",
+      "stage": "implementation",
+      "title": "Invariant example",
+      "body": "Body for invariant.",
+      "attrs": {},
+      "order": 4000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "task-1",
+      "kind": "task",
+      "stage": "implementation",
+      "title": "Task example",
+      "body": "Body for task.",
+      "attrs": {},
+      "order": 7000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "dia-1",
+      "kind": "diagram",
+      "stage": "implementation",
+      "title": "Diagram example",
+      "body": "flowchart LR\n  A --> B\n",
+      "attrs": {
+        "source": "flowchart LR\n  A --> B\n"
+      },
+      "order": 13000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "crit-1",
+      "kind": "criterion",
+      "stage": "implementation",
+      "title": "Criterion example",
+      "body": "Body for criterion.",
+      "attrs": {},
+      "order": 6000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "risk-1",
+      "kind": "risk",
+      "stage": "implementation",
+      "title": "Risk example",
+      "body": "Body for risk.",
+      "attrs": {},
+      "order": 8000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "qn-1",
+      "kind": "question",
+      "stage": "implementation",
+      "title": "Question example",
+      "body": "Body for question.",
+      "attrs": {},
+      "order": 9000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-1",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Note example",
+      "body": "Body for note.",
+      "attrs": {},
+      "order": 10000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "ev-1",
+      "kind": "evidence",
+      "stage": "implementation",
+      "title": "Evidence example",
+      "body": "Body for evidence.",
+      "attrs": {},
+      "order": 11000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "ref-1",
+      "kind": "reference",
+      "stage": "implementation",
+      "title": "Reference example",
+      "body": "Body for reference.",
+      "attrs": {
+        "url": "https://example.com"
+      },
+      "order": 12000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "reg-1",
+      "kind": "region",
+      "stage": "implementation",
+      "title": "Region example",
+      "body": "Body for region.",
+      "attrs": {},
+      "order": 14000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full",
+      "geometry": {
+        "h": 480,
+        "w": 640,
+        "x": 0,
+        "y": 0,
+        "z": 0
+      }
+    },
+    {
+      "id": "thr-1",
+      "kind": "thread",
+      "stage": "implementation",
+      "title": "Thread example",
+      "body": "Body for thread.",
+      "attrs": {
+        "anchor_state": "resolved",
+        "comments": [
+          {
+            "at": "2026-09-05T20:00:00Z",
+            "author": "reviewer",
+            "body": "Thread body.",
+            "id": "c1"
+          }
+        ],
+        "selector": {
+          "id": "goal-1",
+          "type": "node"
+        },
+        "status": "open"
+      },
+      "order": 15000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    }
+  ],
+  "edges": [],
+  "elided": [],
+  "provenance": {
+    "plan_id": "p-golden-kinds",
+    "revision": "r0001",
+    "role": "reviewer",
+    "stages": [
+      "implementation"
+    ],
+    "include": "all",
+    "compiler": 1,
+    "graph_digest": "sha256:5f54fdfddc085569b97f8e3726305e921595c736156779ecc4d5421b148cb897",
+    "projection_id": "sha256:cf9a3e58d745117fb5d23f8f83c4486be96cc89908eef0e6e92e62358de43dfc",
+    "source_at": "",
+    "source_actor": "",
+    "source_role": "",
+    "source_agent": "",
+    "sealed_relationships": 0,
+    "budget_chars": null,
+    "budget_exceeded": false,
+    "since": "",
+    "depth": null,
+    "source_provenance": {},
+    "canvas": {
+      "snap": 8
+    }
+  },
+  "projection_digest": "sha256:4d0d37487a3d152399b2f89d1b1b967f96f2cfa81067a4a73d7c6b6fea65bf3d"
+}

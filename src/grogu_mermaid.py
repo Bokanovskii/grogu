@@ -211,6 +211,7 @@ def parse(source: str) -> dict:
                                 "to": target_node["id"],
                                 "label": label,
                                 "kind": _edge_kind(operator),
+                                "operator": operator,
                                 "edge_index": len(result["edges"]),
                                 "pair_ordinal": ordinal,
                                 "line": line_number,

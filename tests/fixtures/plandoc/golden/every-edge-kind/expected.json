@@ -1,0 +1,398 @@
+{
+  "schema_version": 1,
+  "kind": "grogu.plan_projection",
+  "title": "Every edge kind",
+  "nodes": [
+    {
+      "id": "note-1",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 1",
+      "body": "",
+      "attrs": {},
+      "order": 1000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-2",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 2",
+      "body": "",
+      "attrs": {},
+      "order": 2000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-3",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 3",
+      "body": "",
+      "attrs": {},
+      "order": 3000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-4",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 4",
+      "body": "",
+      "attrs": {},
+      "order": 4000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-5",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 5",
+      "body": "",
+      "attrs": {},
+      "order": 5000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-6",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 6",
+      "body": "",
+      "attrs": {},
+      "order": 6000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-7",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 7",
+      "body": "",
+      "attrs": {},
+      "order": 7000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-8",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 8",
+      "body": "",
+      "attrs": {},
+      "order": 8000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-9",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 9",
+      "body": "",
+      "attrs": {},
+      "order": 9000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-10",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 10",
+      "body": "",
+      "attrs": {},
+      "order": 10000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-11",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 11",
+      "body": "",
+      "attrs": {},
+      "order": 11000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-12",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 12",
+      "body": "",
+      "attrs": {},
+      "order": 12000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-13",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 13",
+      "body": "",
+      "attrs": {},
+      "order": 13000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-14",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 14",
+      "body": "",
+      "attrs": {},
+      "order": 14000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-15",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 15",
+      "body": "",
+      "attrs": {},
+      "order": 15000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-16",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 16",
+      "body": "",
+      "attrs": {},
+      "order": 16000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-17",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 17",
+      "body": "",
+      "attrs": {},
+      "order": 17000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-18",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 18",
+      "body": "",
+      "attrs": {},
+      "order": 18000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-19",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 19",
+      "body": "",
+      "attrs": {},
+      "order": 19000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-20",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 20",
+      "body": "",
+      "attrs": {},
+      "order": 20000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-21",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 21",
+      "body": "",
+      "attrs": {},
+      "order": 21000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-22",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "Endpoint 22",
+      "body": "",
+      "attrs": {},
+      "order": 22000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-1",
+      "kind": "depends_on",
+      "from": "note-1",
+      "to": "note-2",
+      "attrs": {},
+      "created_rev": "r0001",
+      "ext": {
+        "com.example.edge": {
+          "kind": "depends_on"
+        }
+      }
+    },
+    {
+      "id": "edge-2",
+      "kind": "blocks",
+      "from": "note-3",
+      "to": "note-4",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-3",
+      "kind": "refines",
+      "from": "note-5",
+      "to": "note-6",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-4",
+      "kind": "contains",
+      "from": "note-7",
+      "to": "note-8",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-5",
+      "kind": "validates",
+      "from": "note-9",
+      "to": "note-10",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-6",
+      "kind": "supersedes",
+      "from": "note-11",
+      "to": "note-12",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-7",
+      "kind": "derives_from",
+      "from": "note-13",
+      "to": "note-14",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-8",
+      "kind": "references",
+      "from": "note-15",
+      "to": "note-16",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-9",
+      "kind": "answers",
+      "from": "note-17",
+      "to": "note-18",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-10",
+      "kind": "anchors",
+      "from": "note-19",
+      "to": "note-20",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-11",
+      "kind": "diagram_edge",
+      "from": "note-21",
+      "to": "note-21",
+      "attrs": {
+        "edge_index": 0,
+        "label": "loop",
+        "operator": "-->",
+        "pair_ordinal": 0
+      },
+      "created_rev": "r0001"
+    }
+  ],
+  "elided": [],
+  "provenance": {
+    "plan_id": "p-golden-edges",
+    "revision": "r0001",
+    "role": "reviewer",
+    "stages": [
+      "implementation"
+    ],
+    "include": "all",
+    "compiler": 1,
+    "graph_digest": "sha256:cc12c9606ce33f0219bd40768bbbf2756ace365f90d85ac486ecb1e20cc2fc0a",
+    "projection_id": "sha256:cf9a3e58d745117fb5d23f8f83c4486be96cc89908eef0e6e92e62358de43dfc",
+    "source_at": "",
+    "source_actor": "",
+    "source_role": "",
+    "source_agent": "",
+    "sealed_relationships": 0,
+    "budget_chars": null,
+    "budget_exceeded": false,
+    "since": "",
+    "depth": null,
+    "source_provenance": {},
+    "canvas": {
+      "snap": 8
+    }
+  },
+  "projection_digest": "sha256:7885c5e0069c5785132a4c508300175f8e84badb33b1fcef501f47f5dd1415a8"
+}
