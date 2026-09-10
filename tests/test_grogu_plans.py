@@ -2525,6 +2525,27 @@ class PlanStageConcurrencyTests(unittest.TestCase):
             self.plan, grogu_plans.IMPLEMENTATION, "new draft"
         )
 
+    def test_superseded_writer_cannot_reset_the_replacement_stage(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-old"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "old draft"
+        )
+        os.environ["GROGU_AGENT"] = "architect-new"
+        self.store.write_stage(
+            self.plan,
+            grogu_plans.IMPLEMENTATION,
+            "replacement draft",
+            replace=True,
+        )
+        os.environ["GROGU_AGENT"] = "architect-old"
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.reset_stage(
+                self.plan,
+                grogu_plans.IMPLEMENTATION,
+                role=grogu_plans.ARCHITECT,
+            )
+
     def test_anonymous_write_cannot_bypass_an_active_writer(self):
         os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
         os.environ["GROGU_AGENT"] = "architect-one"
@@ -2677,6 +2698,50 @@ class PlanGovernanceTests(unittest.TestCase):
         self.store.set_stage_state(
             self.plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
         )
+
+    def test_governance_role_survives_a_partial_privileged_update(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-governor"
+        self.store.configure_agent_governance(
+            self.plan,
+            agent="engineer-one",
+            role=grogu_plans.ENGINEER,
+            tool_calls=10,
+            workstream="api",
+        )
+        updated = self.store.configure_agent_governance(
+            self.plan, agent="engineer-one", tool_calls=8
+        )
+        self.assertEqual(updated["role"], grogu_plans.ENGINEER)
+        self.assertEqual(updated["workstream"], "api")
+
+    def test_bound_agent_cannot_escalate_governance_by_changing_role_env(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
+        self.store.configure_agent_governance(
+            self.plan, agent="engineer-one", tool_calls=10
+        )
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.configure_agent_governance(
+                self.plan, agent="engineer-one", tool_calls=20
+            )
+
+    def test_lost_role_environment_still_honors_the_bound_agents_blocker(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
+        self.store.configure_agent_governance(
+            self.plan, agent="engineer-one", tool_calls=5
+        )
+        self.store.record_agent_usage(
+            self.plan, agent="engineer-one", tool_calls=6
+        )
+        os.environ.pop("GROGU_ROLE")
+        os.environ.pop("GROGU_AGENT")
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.set_stage_state(
+                self.plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+            )
 
 
 class ParallelCompletionTests(unittest.TestCase):

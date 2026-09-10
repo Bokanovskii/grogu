@@ -2038,7 +2038,7 @@ class PlanStore:
         command is worse than any bug it was chasing.
         """
         role = role or current_role() or ARCHITECT
-        self.claim_agent_role(plan_id, role)
+        identified = self.claim_agent_role(plan_id, role)
         if role != ARCHITECT:
             raise PlanError(f"role {role!r} may not reset a stage; that is the architect's")
         if stage not in STAGES:
@@ -2049,6 +2049,12 @@ class PlanStore:
                 raise PlanError(f"plan {plan_id} has no {stage} stage")
             if manifest.get("status") == COMPLETE:
                 raise PlanError(f"plan {plan_id} is finalized; supersede it instead")
+            active = manifest.setdefault("stage_writers", {}).get(stage)
+            if active and identified and active.get("agent") != identified:
+                raise PlanError(
+                    f"agent {identified!r} may not reset the {stage} stage owned "
+                    f"by {active.get('agent')!r}"
+                )
             for path in (self.plan_dir(plan_id) / f"{stage}.md",
                          self.plan_dir(plan_id) / f"{stage}.sealed"):
                 if path.exists():
@@ -2060,7 +2066,7 @@ class PlanStore:
             )
             manifest.setdefault("stage_written", {})[stage] = False
             manifest.setdefault("stage_state", {})[stage] = PENDING
-            active = manifest.setdefault("stage_writers", {}).pop(stage, None)
+            active = manifest["stage_writers"].pop(stage, None)
             if active:
                 released = dict(active)
                 released.update(
@@ -2314,8 +2320,7 @@ class PlanStore:
     ) -> dict:
         """Transfer one stage to a replacement identity of the same writer role."""
         role = role or current_role() or ARCHITECT
-        self.claim_agent_role(plan_id, role)
-        identified = os.environ.get("GROGU_AGENT", "").strip()
+        identified = self.claim_agent_role(plan_id, role)
         if agent and agent.strip() != identified:
             raise PlanError(
                 f"this session is agent {identified!r}; it cannot install "
@@ -2340,7 +2345,9 @@ class PlanStore:
             revoked_agents = {
                 item.get("agent")
                 for item in manifest.get("stage_writer_history", [])
-                if item.get("stage") == stage and item.get("revoked_at")
+                if item.get("stage") == stage
+                and item.get("revoked_at")
+                and not item.get("reset")
             }
             if replacement in revoked_agents:
                 raise PlanError(
@@ -2412,7 +2419,7 @@ class PlanStore:
         """
         role = role or current_role() or ARCHITECT
         identified = self.claim_agent_role(plan_id, role)
-        agent = os.environ.get("GROGU_AGENT", "").strip()
+        explicit_agent = os.environ.get("GROGU_AGENT", "").strip()
         writers = STAGE_WRITERS.get(stage, frozenset({ARCHITECT}))
         if role not in writers:
             raise PlanError(
@@ -2503,12 +2510,15 @@ class PlanStore:
                     "stage and retry with its current base."
                 )
             active = manifest.setdefault("stage_writers", {}).get(stage)
+            agent = identified if active else explicit_agent
             if agent:
                 if active and active.get("agent") != agent:
                     revoked_agents = {
                         item.get("agent")
                         for item in manifest.get("stage_writer_history", [])
-                        if item.get("stage") == stage and item.get("revoked_at")
+                        if item.get("stage") == stage
+                        and item.get("revoked_at")
+                        and not item.get("reset")
                     }
                     if replace and agent not in revoked_agents:
                         revoked = dict(active)
@@ -2811,6 +2821,10 @@ class PlanStore:
             raise PlanError(f"unknown stage state {state!r}")
         workstream = (workstream or os.environ.get("GROGU_WORKSTREAM", "")).strip()
         role = role or current_role()
+        if not role and not as_user:
+            recovered_agent, recovered_role = self._identified_agent()
+            if recovered_agent and recovered_role:
+                role = recovered_role
         owner = STAGE_COMPLETERS.get(stage)
         claimed_agent = ""
         # Marking the test plan complete is the tester's judgement to make. An
@@ -4097,24 +4111,31 @@ class PlanStore:
             raise PlanError(f"{name} must be a non-negative number")
         return value
 
+    def _governance_identity(self, plan_id: str) -> tuple[str, str]:
+        identified, bound_role = self._identified_agent()
+        acting_role = current_role() or bound_role
+        if acting_role:
+            claimed = self.claim_agent_role(plan_id, acting_role)
+            identified = claimed or identified
+        return identified, acting_role
+
     def configure_agent_governance(
         self,
         plan_id: str,
         *,
         agent: str = "",
         role: str = "",
-        workstream: str = "",
+        workstream: Optional[str] = None,
         tool_calls: Optional[int] = None,
         elapsed_seconds: Optional[float] = None,
         ai_credits: Optional[float] = None,
         checkpoint_tool_calls: Optional[int] = None,
     ) -> dict:
         """Declare observable limits; Grogu records state but controls no process."""
-        identified, bound_role = self._identified_agent()
+        identified, acting_role = self._governance_identity(plan_id)
         name = (agent or identified).strip()
         if not name:
             raise PlanError("agent governance needs a stable agent identity")
-        acting_role = current_role()
         if not identified or (
             name != identified and acting_role not in (ARCHITECT, SUPERVISOR)
         ):
@@ -4122,7 +4143,6 @@ class PlanStore:
                 "agent governance may only be configured by that agent, "
                 "an architect, or a supervisor"
             )
-        declared_role = (role or current_role() or bound_role).strip()
         limits = {
             key: self._governance_number(key, value)
             for key, value in {
@@ -4142,6 +4162,26 @@ class PlanStore:
                 .setdefault("agents", {})
                 .setdefault(name, {})
             )
+            requested_role = role.strip()
+            if (
+                requested_role
+                and name == identified
+                and acting_role
+                and requested_role != acting_role
+            ):
+                raise PlanError(
+                    f"agent {name!r} is bound to the {acting_role} role and "
+                    f"cannot relabel its governance as {requested_role}"
+                )
+            declared_role = (
+                requested_role or entry.get("role", "") or
+                (acting_role if name == identified else "")
+            )
+            if declared_role not in ROLES:
+                raise PlanError(
+                    f"agent governance needs a valid role; expected one of "
+                    f"{', '.join(ROLES)}"
+                )
             if name == identified and acting_role not in (ARCHITECT, SUPERVISOR):
                 raised = [
                     key
@@ -4160,7 +4200,11 @@ class PlanStore:
                 {
                     "agent": name,
                     "role": declared_role,
-                    "workstream": workstream.strip(),
+                    "workstream": (
+                        entry.get("workstream", "")
+                        if workstream is None
+                        else workstream.strip()
+                    ),
                     "limits": merged_limits,
                     "declared_at": now(),
                     "declared_by": actor(),
@@ -4182,12 +4226,12 @@ class PlanStore:
         ai_credits: Optional[float] = None,
     ) -> dict:
         """Record caller-supplied counters; session SQL remains runtime-owned."""
-        identified, _ = self._identified_agent()
+        identified, acting_role = self._governance_identity(plan_id)
         name = (agent or identified).strip()
         if not name:
             raise PlanError("recording usage needs a stable agent identity")
         if not identified or (
-            name != identified and current_role() not in (ARCHITECT, SUPERVISOR)
+            name != identified and acting_role not in (ARCHITECT, SUPERVISOR)
         ):
             raise PlanError(
                 "agent usage may only be recorded by that identified agent, "
@@ -4233,12 +4277,12 @@ class PlanStore:
         commit: str = "",
         note: str = "",
     ) -> dict:
-        identified, _ = self._identified_agent()
+        identified, acting_role = self._governance_identity(plan_id)
         name = (agent or identified).strip()
         if not name:
             raise PlanError("recording a checkpoint needs a stable agent identity")
         if not identified or (
-            name != identified and current_role() not in (ARCHITECT, SUPERVISOR)
+            name != identified and acting_role not in (ARCHITECT, SUPERVISOR)
         ):
             raise PlanError(
                 "a checkpoint may only be recorded by that identified agent, "
@@ -4276,12 +4320,12 @@ class PlanStore:
     ) -> dict:
         if status not in ("available", "restored", "failed"):
             raise PlanError("checkpoint recovery status must be available, restored, or failed")
-        identified, _ = self._identified_agent()
+        identified, acting_role = self._governance_identity(plan_id)
         name = (agent or identified).strip()
         if not name:
             raise PlanError("recording checkpoint recovery needs a stable agent identity")
         if not identified or (
-            name != identified and current_role() not in (ARCHITECT, SUPERVISOR)
+            name != identified and acting_role not in (ARCHITECT, SUPERVISOR)
         ):
             raise PlanError(
                 "checkpoint recovery may only be recorded by that identified "
