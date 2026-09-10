@@ -45,7 +45,7 @@ import secrets
 import zlib
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Iterator, List, Optional, Tuple
 
 import grogu_platform
 import grogu_privacy
@@ -1526,6 +1526,7 @@ HTML_REPORT_TEMPLATE = """<!doctype html>
     .hero-stat { border: 1px solid rgba(255,255,255,0.14); border-radius: 14px; background: rgba(255,255,255,0.07); padding: 0.8rem 0.95rem; backdrop-filter: blur(9px); }
     .hero-stat strong { display: block; font-size: 1.35rem; }
     .hero-stat span { color: #aebcda; font-size: 0.75rem; }
+    @media (max-width: 620px) { .hero-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     section { scroll-margin-top: 1.5rem; margin: 2rem 0; }
     .section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; margin: 3.2rem 0 1.2rem; }
     .section-head h2 { margin: 0; font-size: clamp(1.8rem, 3vw, 2.7rem); line-height: 1.1; letter-spacing: -0.035em; }
@@ -1544,10 +1545,33 @@ HTML_REPORT_TEMPLATE = """<!doctype html>
       border-radius: 16px; background: color-mix(in srgb, var(--brand) 7%, var(--surface)); padding: 1rem 1.1rem;
     }
     .callout.warn { border-color: color-mix(in srgb, var(--amber) 38%, var(--line)); background: color-mix(in srgb, var(--amber) 8%, var(--surface)); }
+    .callout.danger { border-color: color-mix(in srgb, var(--danger) 38%, var(--line)); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
+    .callout.security { border-color: color-mix(in srgb, var(--danger) 38%, var(--line)); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
+    .callout.success { border-color: color-mix(in srgb, var(--success) 38%, var(--line)); background: color-mix(in srgb, var(--success) 8%, var(--surface)); }
     .callout-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: var(--brand); color: white; font-weight: 900; }
     .callout.warn .callout-icon { background: var(--amber); }
+    .callout.danger .callout-icon { background: var(--danger); }
+    .callout.security .callout-icon { background: var(--danger); }
+    .callout.success .callout-icon { background: var(--success); }
     .callout strong { display: block; margin-bottom: 0.15rem; }
     .callout p { margin: 0; color: var(--muted); }
+    table {
+      width: 100%; border-collapse: collapse; border: 1px solid var(--line); border-radius: var(--radius);
+      overflow: hidden; background: var(--surface-solid); box-shadow: var(--shadow);
+    }
+    th, td { padding: 0.65rem 0.9rem; text-align: left; border-bottom: 1px solid var(--line); }
+    th { background: var(--surface-soft); font-size: 0.78rem; letter-spacing: 0.03em; text-transform: uppercase; color: var(--muted); }
+    tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: var(--surface-soft); }
+    .diagram {
+      overflow: auto; border: 1px solid var(--line); border-radius: 22px;
+      background: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px), var(--surface-solid);
+      background-size: 28px 28px; padding: 1rem; box-shadow: var(--shadow);
+    }
+    .diagram svg { display: block; min-width: 680px; width: 100%; height: auto; }
+    .legend { display: flex; flex-wrap: wrap; gap: 0.55rem; margin: 0.9rem 0 0; color: var(--muted); font-size: 0.8rem; }
+    .legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+    .legend .dot { width: 10px; height: 10px; border-radius: 3px; }
     .footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85rem; }
     @media print { .toolbar, .mobile-nav { display: none !important; } .sidebar { display: none; } .app { display: block; } }
   </style>
@@ -1582,11 +1606,12 @@ __NAV_OPTIONS__
         <button id="themeToggle" title="Toggle color theme">Theme</button>
       </div>
 
-      <header class="hero" id="__FIRST_ANCHOR__">
+      <header class="hero" id="top">
         <div>
           <span class="eyebrow">__EYEBROW__</span>
           <h1>__HEADLINE__</h1>
           <p>__DEK__</p>
+__HERO_STATS__
         </div>
       </header>
 
@@ -1651,17 +1676,20 @@ def html_report_template(
     logo: str = "",
     footnote: str = "",
     sections: Optional[List[str]] = None,
+    hero_stats: Optional[List[Tuple[str, str]]] = None,
 ) -> str:
     """The standing chrome for a standalone HTML report or guide.
 
     This is the settled style: CSS variables for a light/dark theme, a sticky
     sidebar table of contents with a mobile fallback, a print button, a hero
-    header, and card/callout/grid primitives. `sections` names the reader's
-    table of contents — supply the section titles in order and get back
-    numbered nav links, matching `<section id="...">` anchors, and a mobile
-    `<select>`, all wired to the same anchors; anything you write inside those
-    `<section>` tags is the actual content, which is the only part that should
-    take real design or engineering effort.
+    header, and card/callout/grid/table/diagram primitives. `sections` names
+    the reader's table of contents — supply the section titles in order and
+    get back numbered nav links, matching `<section id="...">` anchors, and a
+    mobile `<select>`, all wired to the same anchors; anything you write
+    inside those `<section>` tags is the actual content, which is the only
+    part that should take real design or engineering effort. `hero_stats` is
+    an optional list of `(value, label)` pairs (up to four read well) shown as
+    a stat row in the hero, e.g. `[("94.2%", "Hit rate"), ("18ms", "P50 on hit")]`.
     """
     sections = list(sections) if sections else ["Overview"]
     used_ids: List[str] = []
@@ -1684,6 +1712,15 @@ def html_report_template(
         for anchor, name in zip(used_ids, sections)
     )
 
+    if hero_stats:
+        stat_cards = "\n".join(
+            f'          <div class="hero-stat"><strong>{value}</strong><span>{label}</span></div>'
+            for value, label in hero_stats
+        )
+        hero_stats_html = f'          <div class="hero-stats">\n{stat_cards}\n          </div>'
+    else:
+        hero_stats_html = ""
+
     storage_key = f"{_slugify(title, fallback='report')}-theme"
     replacements = {
         "__TITLE__": title,
@@ -1695,7 +1732,7 @@ def html_report_template(
         "__FOOTNOTE__": footnote,
         "__NAV_ITEMS__": "\n".join(nav_items),
         "__NAV_OPTIONS__": "\n".join(nav_options),
-        "__FIRST_ANCHOR__": used_ids[0],
+        "__HERO_STATS__": hero_stats_html,
         "__STORAGE_KEY__": storage_key,
         "__CONTENT__": content,
     }
