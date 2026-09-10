@@ -13,6 +13,11 @@ Issues remain the source of truth for anything that crosses a machine boundary.
 The repository task store is what a Grogu session can read, claim and update
 without network access, and what a reviewer sees in a pull request diff.
 
+This store is repository-owned only. Copilot session SQL todos live in the
+runtime's own SQLite session state, are owned by that running Copilot session,
+and Grogu must not try to cancel or delete them from the repository task
+store.
+
 For a session-facing quick reference of the claim/heartbeat/release lifecycle
 and inbox relay, see the `grogu-tasks` skill
 (`.github/skills/grogu-tasks/SKILL.md`); this document is the full design
@@ -44,7 +49,7 @@ different files, and a status change is a small, readable diff.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "t-20260807-5f7320",
   "title": "Ship the autopilot default",
   "body": "Verify the flag matrix",
@@ -53,8 +58,13 @@ different files, and a status change is a small, readable diff.
   "labels": [],
   "issue": 42,
   "assignee": "ana@laptop",
+  "assignee_owner": "ana@laptop",
+  "assignee_agent": "friction-task-store",
+  "assignee_session_id": "8b6d9e4b-4f7c-4b7f-9e26-9a7a4af0a4e0",
   "created_at": "2026-08-07T00:44:53+00:00",
   "created_by": "ana@laptop",
+  "created_by_owner": "ana@laptop",
+  "created_by_agent": "friction-task-store",
   "updated_at": "2026-08-07T00:45:13+00:00",
   "revision": 3,
   "log": [{"at": "…", "by": "ana@laptop", "event": "claim"}]
@@ -64,6 +74,16 @@ different files, and a status change is a small, readable diff.
 `log` is append-only, so the record explains itself without a separate history.
 `revision` increments on every mutation and gives reviewers and future tooling a
 cheap conflict signal.
+
+Grogu records owner/agent/session provenance on new or touched tasks where it
+can: `created_by`, `created_by_owner`, `created_by_agent`,
+`created_by_session_id`, `assignee`, `assignee_owner`, `assignee_agent`,
+`assignee_session_id`, and `parent_task_id`. Legacy v1 task JSON is accepted
+and upgraded in place on the next write.
+
+When a Grogu-owned task is finalized, any stale subordinate Grogu-owned work
+items that point back to it through `parent_task_id` are cancelled rather than
+deleted. User-created or unrelated tasks are left alone.
 
 ## Concurrency contract
 
