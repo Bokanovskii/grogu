@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import hashlib
 import uuid
 import fnmatch
 import json
@@ -195,6 +196,13 @@ REVIEW_SECURITY = "security-review"
 REVIEW_KINDS = (REVIEW_RUBBER_DUCK, REVIEW_CODE, REVIEW_SECURITY)
 DESIGN_VERDICTS = (PASS, CHANGES)
 
+GOVERNANCE_LIMITS = (
+    "tool_calls",
+    "elapsed_seconds",
+    "ai_credits",
+    "checkpoint_tool_calls",
+)
+
 DEFAULT_MAX_ROUNDS = 3
 DEFAULT_MAX_DEFECT_ROUNDS = 3
 # A backstop for the stall that produces no bounces: failures piling up on one
@@ -223,6 +231,36 @@ def now() -> str:
     the note would be silently treated as already answered.
     """
     return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def body_digest(body: str) -> str:
+    """A storage-independent token for exactly the plaintext a role read."""
+    return "sha256:" + hashlib.sha256(body.encode("utf8")).hexdigest()
+
+
+def _required_reviews(value: object) -> list[str]:
+    """Validate and canonicalise review kinds from new and legacy manifests."""
+    if value in (None, ""):
+        return []
+    values = [value] if isinstance(value, str) else value
+    if not isinstance(values, (list, tuple)):
+        raise PlanError("required reviews must be a list of review kinds")
+    unknown = sorted(
+        {
+            str(kind).strip()
+            for kind in values
+            if str(kind).strip() not in REVIEW_KINDS
+        }
+    )
+    if unknown:
+        raise PlanError(
+            "unknown review "
+            + ", ".join(repr(kind) for kind in unknown)
+            + "; expected one of "
+            + ", ".join(REVIEW_KINDS)
+        )
+    present = {str(kind).strip() for kind in values if str(kind).strip()}
+    return [kind for kind in REVIEW_KINDS if kind in present]
 
 
 def max_rounds() -> int:
@@ -1857,11 +1895,21 @@ class PlanStore:
 
     # -- reads -------------------------------------------------------------
 
+    def _migrate_manifest(self, manifest: dict) -> dict:
+        """Normalise compatible on-disk shapes without forcing a write on read."""
+        for stream in manifest.get("workstreams", []):
+            reviews = stream.get("required_reviews")
+            if reviews is None:
+                reviews = stream.get("review", "")
+            stream["required_reviews"] = _required_reviews(reviews)
+            stream.pop("review", None)
+        return manifest
+
     def load(self, plan_id: str) -> dict:
         manifest = self._read_json(self.manifest_path(plan_id))
         if not manifest:
             raise PlanError(f"plan {plan_id} was not found")
-        return manifest
+        return self._migrate_manifest(manifest)
 
     def list_plans(self) -> list:
         if not self.plans_dir.is_dir():
@@ -1871,7 +1919,9 @@ class PlanStore:
             for path in sorted(self.plans_dir.iterdir())
             if path.is_dir()
         ]
-        return [plan for plan in plans if plan.get("id")]
+        return [
+            self._migrate_manifest(plan) for plan in plans if plan.get("id")
+        ]
 
     # -- creation ----------------------------------------------------------
 
@@ -1920,6 +1970,9 @@ class PlanStore:
                 "steering": [],
                 "steering_acked": {role: 0 for role in ROLES},
                 "access_log": [],
+                "stage_versions": {},
+                "stage_writers": {},
+                "governance": {"agents": {}},
                 "events": [{"at": now(), "actor": actor(), "event": "created"}],
             }
             self._write_json(self.manifest_path(plan_id), manifest)
@@ -2203,6 +2256,129 @@ class PlanStore:
 
     # -- stage bodies ------------------------------------------------------
 
+    def _stage_version_from(
+        self, plan_id: str, stage: str, manifest: dict, body: str
+    ) -> dict:
+        stored = (manifest.get("stage_versions") or {}).get(stage, {})
+        digest = body_digest(body)
+        if stored.get("digest") == digest:
+            return dict(stored)
+        last = manifest.get("last_write") or {}
+        return {
+            "stage": stage,
+            "digest": digest,
+            "revision": len(
+                [
+                    item
+                    for item in manifest.get("revisions", [])
+                    if item.get("stage") == stage
+                ]
+            )
+            + 1,
+            "bytes": len(body),
+            "at": last.get("at", manifest.get("created_at", "")),
+            "actor": last.get("actor", last.get("by", manifest.get("created_by", ""))),
+            "role": last.get("by", ""),
+            "agent": last.get("agent", ""),
+        }
+
+    def stage_version(self, plan_id: str, stage: str) -> dict:
+        """Return the plaintext CAS token and the write that produced it."""
+        plan_id = self.resolve(plan_id)
+        manifest = self.load(plan_id)
+        if stage not in manifest.get("stages", []):
+            raise PlanError(f"plan {plan_id} has no {stage} stage")
+        path = self.stage_path(plan_id, stage)
+        stored = path.read_text(encoding="utf8")
+        body = unseal(stored) if path.suffix == ".sealed" else stored
+        return self._stage_version_from(plan_id, stage, manifest, body)
+
+    def supersede_stage_writer(
+        self,
+        plan_id: str,
+        stage: str,
+        *,
+        role: str = "",
+        agent: str = "",
+    ) -> dict:
+        """Transfer one stage to a replacement identity of the same writer role."""
+        role = role or current_role() or ARCHITECT
+        identified = self.claim_agent_role(plan_id, role)
+        if agent and identified and agent.strip() != identified:
+            raise PlanError(
+                f"this session is agent {identified!r}; it cannot install "
+                f"{agent.strip()!r} as the replacement writer"
+            )
+        replacement = (agent or identified).strip()
+        if not replacement:
+            raise PlanError(
+                "superseding a stage writer needs a stable GROGU_AGENT identity"
+            )
+        writers = STAGE_WRITERS.get(stage, frozenset({ARCHITECT}))
+        if role not in writers:
+            raise PlanError(
+                f"role {role!r} may not own the {stage} stage "
+                f"(owners: {', '.join(sorted(writers))})"
+            )
+        with self.locked():
+            manifest = self.load(plan_id)
+            if stage not in manifest.get("stages", []):
+                raise PlanError(f"plan {plan_id} has no {stage} stage")
+            active = (manifest.setdefault("stage_writers", {})).get(stage)
+            revoked_agents = {
+                item.get("agent")
+                for item in manifest.get("stage_writer_history", [])
+                if item.get("stage") == stage and item.get("revoked_at")
+            }
+            if replacement in revoked_agents:
+                raise PlanError(
+                    f"agent {replacement!r} was revoked as the {stage} writer "
+                    "and may not take the stage back after a replacement assumed it"
+                )
+            if active and active.get("role") != role:
+                raise PlanError(
+                    f"the {stage} stage is owned by the {active.get('role')}; "
+                    f"a {role} cannot supersede it"
+                )
+            if active and active.get("agent") == replacement:
+                return active
+            stamp = now()
+            if active:
+                revoked = dict(active)
+                revoked.update(
+                    {
+                        "revoked_at": stamp,
+                        "revoked_by": actor(),
+                        "superseded_by": replacement,
+                    }
+                )
+                manifest.setdefault("stage_writer_history", []).append(revoked)
+            current = {
+                "stage": stage,
+                "role": role,
+                "agent": replacement,
+                "claimed_at": stamp,
+                "actor": actor(),
+                "supersedes": active.get("agent", "") if active else "",
+            }
+            manifest["stage_writers"][stage] = current
+            self._save(
+                manifest,
+                "stage_writer_superseded" if active else "stage_writer_claimed",
+                stage=stage,
+                previous=active.get("agent", "") if active else "",
+                agent=replacement,
+            )
+            return current
+
+    def revoke_stage_writer(
+        self, plan_id: str, stage: str, *, role: str = "", agent: str = ""
+    ) -> dict:
+        """Compatibility name for replacing a stale stage writer."""
+        return self.supersede_stage_writer(
+            plan_id, stage, role=role, agent=agent
+        )
+
     def write_stage(
         self,
         plan_id: str,
@@ -2211,6 +2387,7 @@ class PlanStore:
         *,
         role: str = "",
         replace: bool = False,
+        base: Optional[str] = None,
     ) -> dict:
         """Stages are written by the role that owns them; others propose.
 
@@ -2222,7 +2399,7 @@ class PlanStore:
         where work was lost that no other role could recover.
         """
         role = role or current_role() or ARCHITECT
-        self.claim_agent_role(plan_id, role)
+        agent = self.claim_agent_role(plan_id, role)
         writers = STAGE_WRITERS.get(stage, frozenset({ARCHITECT}))
         if role not in writers:
             raise PlanError(
@@ -2299,6 +2476,37 @@ class PlanStore:
             # itself" check was comparing compression ratios, so it fired on
             # honest edits and stayed quiet on real truncation.
             previous_text = (unseal(previous) if sealed and previous else previous)
+            current = self._stage_version_from(
+                plan_id, stage, manifest, previous_text
+            )
+            if base is not None and base.strip() != current["digest"]:
+                writer = current.get("agent") or current.get("actor") or "unknown"
+                raise PlanError(
+                    f"the {stage} stage changed after base {base.strip() or '<empty>'}: "
+                    f"current revision {current['revision']} is {current['digest']}, "
+                    f"written by {current.get('actor') or 'unknown'}"
+                    f" (agent {writer}) at {current.get('at') or 'unknown time'}, "
+                    f"{current.get('bytes', len(previous_text))} bytes. Re-read the "
+                    "stage and retry with its current base."
+                )
+            active = manifest.setdefault("stage_writers", {}).get(stage)
+            if agent:
+                if active and active.get("agent") != agent:
+                    raise PlanError(
+                        f"agent {agent!r} is not the active {role} writer for "
+                        f"{stage}; {active.get('agent')!r} took over at "
+                        f"{active.get('claimed_at', 'an unknown time')}. The stale "
+                        "writer is revoked and may not publish another revision."
+                    )
+                if not active:
+                    manifest["stage_writers"][stage] = {
+                        "stage": stage,
+                        "role": role,
+                        "agent": agent,
+                        "claimed_at": now(),
+                        "actor": actor(),
+                        "supersedes": "",
+                    }
             if changed and previous and state == COMPLETE and not replace:
                 raise PlanError(
                     f"the {stage} stage is complete and this rewrites it "
@@ -2325,13 +2533,28 @@ class PlanStore:
                         f"--revision {revision}` is the text you just replaced."
                     )
             path.write_text(payload, encoding="utf8")
+            stamp = now()
+            version = {
+                "stage": stage,
+                "digest": body_digest(body),
+                "revision": current["revision"] + (1 if changed else 0),
+                "bytes": len(body),
+                "at": stamp,
+                "actor": actor(),
+                "role": role,
+                "agent": agent,
+            }
+            manifest.setdefault("stage_versions", {})[stage] = version
             manifest["last_write"] = {
                 "stage": stage,
                 "by": role,
-                "at": now(),
+                "actor": actor(),
+                "agent": agent,
+                "at": stamp,
                 "was": len(previous_text),
                 "now": len(body),
                 "revision": revision,
+                "digest": version["digest"],
             }
             manifest.setdefault("stage_written", {})[stage] = True
             if changed and manifest.get("stage_state", {}).get(stage) == COMPLETE:
@@ -2419,6 +2642,7 @@ class PlanStore:
                             APPROVED if manifest.get("approved_at") else DRAFT
                         )
             manifest = self._save(manifest, "stage_written", stage=stage, bytes=len(body))
+            manifest["stage_version"] = version
             manifest["warnings"] = warnings + (
                 [
                     "this plan adopts something external ("
@@ -2543,6 +2767,7 @@ class PlanStore:
         workstream = (workstream or os.environ.get("GROGU_WORKSTREAM", "")).strip()
         role = role or current_role()
         owner = STAGE_COMPLETERS.get(stage)
+        claimed_agent = ""
         # Marking the test plan complete is the tester's judgement to make. An
         # engineer who can make it can then finalize the plan and read the
         # sealed assertions, which turns the seal into a formality.
@@ -2557,7 +2782,7 @@ class PlanStore:
                 f"{current_role()}"
             )
         if role and not as_user:
-            self.claim_agent_role(plan_id, role)
+            claimed_agent = self.claim_agent_role(plan_id, role)
         if not role and stage in SEALED_STAGES and state == COMPLETE and not as_user:
             # Default-deny, because the check above was only ever as strong as
             # the caller's willingness to declare itself. An engineer that
@@ -2606,6 +2831,34 @@ class PlanStore:
                     f"{plan_id} {stage} --file ...`); if a write was refused, "
                     "the refusal is the thing to fix"
                 )
+            if state == COMPLETE and not as_user:
+                governance = self._governance_status(manifest)
+                relevant = [
+                    item
+                    for name, item in governance["agents"].items()
+                    if (
+                        (claimed_agent and name == claimed_agent)
+                        or (
+                            not claimed_agent
+                            and item.get("role") == role
+                            and (
+                                not item.get("workstream")
+                                or not workstream
+                                or item.get("workstream") == workstream
+                            )
+                        )
+                    )
+                ]
+                blockers = [
+                    blocker
+                    for item in relevant
+                    for blocker in item.get("blockers", [])
+                ]
+                if blockers:
+                    raise PlanError(
+                        "cannot complete work while checkpoint governance is "
+                        "unresolved: " + "; ".join(blockers)
+                    )
             if stage in SEALED_STAGES and state == COMPLETE:
                 # The dual of the late-defect hole. Reopening testing when a
                 # defect arrives late only covers defects filed *after* a pass;
@@ -3500,6 +3753,7 @@ class PlanStore:
         depends_on: Optional[list] = None,
         model: Optional[str] = None,
         review: Optional[str] = None,
+        required_reviews: Optional[list] = None,
         brief: Optional[str] = None,
         replace: bool = False,
     ) -> dict:
@@ -3552,17 +3806,19 @@ class PlanStore:
             ]
             if unknown:
                 raise PlanError(f"unknown workstream dependency: {', '.join(unknown)}")
-            if review is not None and review and review not in REVIEW_KINDS:
-                raise PlanError(
-                    f"unknown review {review!r}; expected one of "
-                    + ", ".join(REVIEW_KINDS)
-                )
+            if required_reviews is None and review is None:
+                declared_reviews = list(carried.get("required_reviews", []))
+            else:
+                requested = list(required_reviews or [])
+                if review:
+                    requested.append(review)
+                declared_reviews = _required_reviews(requested)
             workstream = {
                 "name": name,
                 "paths": list(paths),
                 "depends_on": list(depends_on or []),
                 "model": (carried.get("model", "") if model is None else model).strip(),
-                "review": carried.get("review", "") if review is None else review,
+                "required_reviews": declared_reviews,
                 "brief": (carried.get("brief", "") if brief is None else brief).strip(),
                 "reviews": list(carried.get("reviews", [])),
             }
@@ -3759,20 +4015,27 @@ class PlanStore:
                     "a bare pass is indistinguishable from a review that did not "
                     "happen"
                 )
-            required = stream.get("review") or ""
+            required = _required_reviews(stream.get("required_reviews", []))
+            if kind.strip() and kind.strip() not in REVIEW_KINDS:
+                raise PlanError(
+                    f"unknown review {kind.strip()!r}; expected one of "
+                    + ", ".join(REVIEW_KINDS)
+                )
             if verdict == PASS and required and not kind.strip():
                 # Defaulting the kind to whatever was required meant a
                 # security review was a label you got for free: record a bare
                 # pass and the gate saw the kind it asked for. The reviewer has
                 # to name what they actually did.
                 raise PlanError(
-                    f"this workstream requires a {required}; say which review "
+                    "this workstream requires "
+                    + ", ".join(required)
+                    + "; say which review "
                     f"you ran with --kind, because defaulting it to the one "
                     f"that was required is the same as not checking"
                 )
             record = {
                 "at": now(),
-                "kind": kind.strip() or required or REVIEW_RUBBER_DUCK,
+                "kind": kind.strip() or REVIEW_RUBBER_DUCK,
                 "verdict": verdict,
                 "model": model.strip(),
                 "findings": findings.strip(),
@@ -3780,6 +4043,232 @@ class PlanStore:
             stream.setdefault("reviews", []).append(record)
             self._save(manifest, "workstream_reviewed", workstream=workstream)
             return record
+
+    # -- local agent governance -------------------------------------------
+
+    @staticmethod
+    def _governance_number(name: str, value: object) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise PlanError(f"{name} must be a non-negative number")
+        return value
+
+    def configure_agent_governance(
+        self,
+        plan_id: str,
+        *,
+        agent: str = "",
+        role: str = "",
+        workstream: str = "",
+        tool_calls: Optional[int] = None,
+        elapsed_seconds: Optional[float] = None,
+        ai_credits: Optional[float] = None,
+        checkpoint_tool_calls: Optional[int] = None,
+    ) -> dict:
+        """Declare observable limits; Grogu records state but controls no process."""
+        identified, bound_role = self._identified_agent()
+        name = (agent or identified).strip()
+        if not name:
+            raise PlanError("agent governance needs a stable agent identity")
+        declared_role = (role or current_role() or bound_role).strip()
+        limits = {
+            key: self._governance_number(key, value)
+            for key, value in {
+                "tool_calls": tool_calls,
+                "elapsed_seconds": elapsed_seconds,
+                "ai_credits": ai_credits,
+                "checkpoint_tool_calls": checkpoint_tool_calls,
+            }.items()
+            if value is not None
+        }
+        if not limits:
+            raise PlanError("agent governance needs at least one declared limit")
+        with self.locked():
+            manifest = self.load(plan_id)
+            entry = (
+                manifest.setdefault("governance", {})
+                .setdefault("agents", {})
+                .setdefault(name, {})
+            )
+            entry.update(
+                {
+                    "agent": name,
+                    "role": declared_role,
+                    "workstream": workstream.strip(),
+                    "limits": limits,
+                    "declared_at": now(),
+                    "declared_by": actor(),
+                }
+            )
+            entry.setdefault("usage", {})
+            entry.setdefault("checkpoints", [])
+            entry.setdefault("recoveries", [])
+            self._save(manifest, "agent_governance_configured", agent=name)
+            return dict(entry)
+
+    def record_agent_usage(
+        self,
+        plan_id: str,
+        *,
+        agent: str = "",
+        tool_calls: Optional[int] = None,
+        elapsed_seconds: Optional[float] = None,
+        ai_credits: Optional[float] = None,
+    ) -> dict:
+        """Record caller-supplied counters; session SQL remains runtime-owned."""
+        identified, _ = self._identified_agent()
+        name = (agent or identified).strip()
+        if not name:
+            raise PlanError("recording usage needs a stable agent identity")
+        values = {
+            key: self._governance_number(key, value)
+            for key, value in {
+                "tool_calls": tool_calls,
+                "elapsed_seconds": elapsed_seconds,
+                "ai_credits": ai_credits,
+            }.items()
+            if value is not None
+        }
+        if not values:
+            raise PlanError("recording usage needs at least one counter")
+        with self.locked():
+            manifest = self.load(plan_id)
+            agents = manifest.setdefault("governance", {}).setdefault("agents", {})
+            if name not in agents:
+                raise PlanError(f"plan {plan_id} has no governance record for {name!r}")
+            agents[name].setdefault("usage", {}).update(values)
+            agents[name]["observed_at"] = now()
+            self._save(manifest, "agent_usage_recorded", agent=name)
+            return dict(agents[name])
+
+    def record_checkpoint(
+        self,
+        plan_id: str,
+        *,
+        agent: str = "",
+        commit: str = "",
+        note: str = "",
+    ) -> dict:
+        identified, _ = self._identified_agent()
+        name = (agent or identified).strip()
+        if not name:
+            raise PlanError("recording a checkpoint needs a stable agent identity")
+        with self.locked():
+            manifest = self.load(plan_id)
+            agents = manifest.setdefault("governance", {}).setdefault("agents", {})
+            if name not in agents:
+                raise PlanError(f"plan {plan_id} has no governance record for {name!r}")
+            checkpoints = agents[name].setdefault("checkpoints", [])
+            checkpoint = {
+                "id": f"c{len(checkpoints) + 1}",
+                "at": now(),
+                "actor": actor(),
+                "commit": commit.strip(),
+                "note": note.strip(),
+                "usage": dict(agents[name].get("usage", {})),
+            }
+            checkpoints.append(checkpoint)
+            self._save(
+                manifest, "agent_checkpoint_recorded", agent=name,
+                checkpoint=checkpoint["id"],
+            )
+            return checkpoint
+
+    def record_checkpoint_recovery(
+        self,
+        plan_id: str,
+        checkpoint: str,
+        *,
+        agent: str = "",
+        status: str,
+        note: str = "",
+    ) -> dict:
+        if status not in ("available", "restored", "failed"):
+            raise PlanError("checkpoint recovery status must be available, restored, or failed")
+        identified, _ = self._identified_agent()
+        name = (agent or identified).strip()
+        if not name:
+            raise PlanError("recording checkpoint recovery needs a stable agent identity")
+        with self.locked():
+            manifest = self.load(plan_id)
+            agents = manifest.setdefault("governance", {}).setdefault("agents", {})
+            if name not in agents:
+                raise PlanError(f"plan {plan_id} has no governance record for {name!r}")
+            known = {
+                item.get("id") for item in agents[name].get("checkpoints", [])
+            }
+            if checkpoint not in known:
+                raise PlanError(f"agent {name!r} has no checkpoint {checkpoint!r}")
+            recovery = {
+                "checkpoint": checkpoint,
+                "status": status,
+                "at": now(),
+                "actor": actor(),
+                "note": note.strip(),
+            }
+            agents[name].setdefault("recoveries", []).append(recovery)
+            self._save(
+                manifest, "agent_checkpoint_recovery", agent=name,
+                checkpoint=checkpoint, status=status,
+            )
+            return recovery
+
+    def _governance_status(self, manifest: dict) -> dict:
+        result = {"agents": {}, "warnings": [], "blockers": []}
+        agents = manifest.get("governance", {}).get("agents", {})
+        for name in sorted(agents):
+            entry = agents[name]
+            usage = entry.get("usage", {})
+            limits = entry.get("limits", {})
+            exceeded = []
+            for key in ("tool_calls", "elapsed_seconds", "ai_credits"):
+                if key in limits and usage.get(key, 0) > limits[key]:
+                    exceeded.append(
+                        f"{key} {usage.get(key, 0)}>{limits[key]}"
+                    )
+            checkpoint_limit = limits.get("checkpoint_tool_calls")
+            checkpoints = entry.get("checkpoints", [])
+            checkpoint_due = False
+            if checkpoint_limit is not None:
+                last_calls = (
+                    checkpoints[-1].get("usage", {}).get("tool_calls", 0)
+                    if checkpoints
+                    else 0
+                )
+                checkpoint_due = (
+                    usage.get("tool_calls", 0) - last_calls >= checkpoint_limit
+                )
+                if checkpoint_due:
+                    exceeded.append(
+                        "checkpoint deadline "
+                        f"{usage.get('tool_calls', 0) - last_calls}>={checkpoint_limit} calls"
+                    )
+            warnings = [
+                f"agent {name} exceeded " + ", ".join(exceeded)
+            ] if exceeded else []
+            blockers = []
+            if exceeded and not checkpoints:
+                blockers.append(
+                    f"agent {name} exceeded its declared budget without a checkpoint"
+                )
+            status = {
+                "agent": name,
+                "role": entry.get("role", ""),
+                "workstream": entry.get("workstream", ""),
+                "limits": dict(limits),
+                "usage": dict(usage),
+                "checkpoints": list(checkpoints),
+                "recoveries": list(entry.get("recoveries", [])),
+                "checkpoint_due": checkpoint_due,
+                "warnings": warnings,
+                "blockers": blockers,
+            }
+            result["agents"][name] = status
+            result["warnings"].extend(warnings)
+            result["blockers"].extend(blockers)
+        return result
+
+    def governance_status(self, plan_id: str) -> dict:
+        return self._governance_status(self.load(plan_id))
 
     def workstream_conflicts(self, plan_id: str) -> list:
         """Overlapping file sets between workstreams that could run together."""
@@ -4031,19 +4520,22 @@ class PlanStore:
                 "retesting around a known failure buries it"
             )
         if stage_gate == GATE_TEST:
-            unreviewed = [
-                f"{stream['name']} ({stream['review']})"
-                for stream in manifest.get("workstreams", [])
-                if stream.get("review")
-                and not any(
-                    review.get("verdict") == PASS
-                    # The kind has to match. A rubber-duck pass does not
-                    # discharge a required security review; accepting any pass
-                    # turns a specific instruction into a formality.
-                    and review.get("kind") == stream["review"]
-                    for review in stream.get("reviews", [])
-                )
-            ]
+            governance = self._governance_status(manifest)
+            blockers.extend(
+                blocker
+                for name, item in governance["agents"].items()
+                if item.get("role") == ENGINEER
+                for blocker in item.get("blockers", [])
+            )
+            unreviewed = []
+            for stream in manifest.get("workstreams", []):
+                for required in stream.get("required_reviews", []):
+                    if not any(
+                        review.get("verdict") == PASS
+                        and review.get("kind") == required
+                        for review in stream.get("reviews", [])
+                    ):
+                        unreviewed.append(f"{stream['name']} ({required})")
             if unreviewed:
                 blockers.append(
                     "the architect asked for a review of: "
@@ -4149,6 +4641,8 @@ class PlanStore:
             "stages": manifest.get("stages", []),
             "stage_state": manifest.get("stage_state", {}),
             "stage_written": manifest.get("stage_written", {}),
+            "stage_versions": manifest.get("stage_versions", {}),
+            "stage_writers": manifest.get("stage_writers", {}),
             "declined_stages": manifest.get("declined_stages", {}),
             "rounds": f"{manifest.get('rounds', 0)}/{manifest.get('max_rounds', DEFAULT_MAX_ROUNDS)}",
             "defect_rounds": f"{manifest.get('defect_rounds', 0)}/{manifest.get('max_defect_rounds', DEFAULT_MAX_DEFECT_ROUNDS)}",
@@ -4160,7 +4654,7 @@ class PlanStore:
                     "depends_on": stream.get("depends_on", []),
                     "brief": stream.get("brief", ""),
                     "model": stream.get("model", ""),
-                    "review": stream.get("review", ""),
+                    "required_reviews": stream.get("required_reviews", []),
                     "state": manifest.get("workstream_state", {}).get(
                         stream["name"], PENDING
                     ),
@@ -4184,6 +4678,7 @@ class PlanStore:
             ],
             "steering_pending": self._steering_pending(manifest),
             "steering_undelivered": self._steering_undelivered(manifest),
+            "governance": self._governance_status(manifest),
         }
 
     def note_agent_presence(self, plan_id: str, role: str) -> bool:
