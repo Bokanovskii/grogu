@@ -29,6 +29,8 @@ interface ControlContextValue {
   error: string | null;
   selectedAgent: string | null;
   drill: AgentDrillResponse | null;
+  drillLoading: boolean;
+  drillError: string | null;
   feedback: FeedbackRecord[];
   selectAgent: (key: string | null) => void;
   refresh: () => Promise<void>;
@@ -50,6 +52,8 @@ export function ControlProvider({
   const [error, setError] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [drill, setDrill] = useState<AgentDrillResponse | null>(null);
+  const [drillLoading, setDrillLoading] = useState(false);
+  const [drillError, setDrillError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<FeedbackRecord[]>([]);
   const selectedRef = useRef<string | null>(null);
   selectedRef.current = selectedAgent;
@@ -104,12 +108,26 @@ export function ControlProvider({
     setSelectedAgent(key);
     if (!key) {
       setDrill(null);
+      setDrillLoading(false);
+      setDrillError(null);
       return;
     }
+    setDrill(null);
+    setDrillLoading(true);
+    setDrillError(null);
     void api
       .controlAgent(key)
-      .then(setDrill)
-      .catch(() => setDrill(null));
+      .then((value) => {
+        setDrill(value);
+        setDrillError(null);
+      })
+      .catch((error) => {
+        setDrill(null);
+        setDrillError(
+          error instanceof Error ? error.message : "The audit timeline is unavailable.",
+        );
+      })
+      .finally(() => setDrillLoading(false));
   }, []);
 
   const sendFeedback = useCallback(
@@ -140,13 +158,15 @@ export function ControlProvider({
       error,
       selectedAgent,
       drill,
+      drillLoading,
+      drillError,
       feedback,
       selectAgent,
       refresh,
       sendFeedback,
       withdrawFeedback,
     }),
-    [snapshot, loading, error, selectedAgent, drill, feedback, selectAgent, refresh, sendFeedback, withdrawFeedback],
+    [snapshot, loading, error, selectedAgent, drill, drillLoading, drillError, feedback, selectAgent, refresh, sendFeedback, withdrawFeedback],
   );
 
   // plan currently only scopes which agents the user usually cares about; the

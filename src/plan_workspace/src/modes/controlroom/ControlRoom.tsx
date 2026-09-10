@@ -64,6 +64,17 @@ export function ControlRoom() {
     actions.openOverlay(nudge ? { kind: "feedbackComposer", agentKey: key, nudge: true } : { kind: "feedbackComposer", agentKey: key });
   };
 
+  const openTimeline = (agent: (typeof allAgents)[number]) => {
+    control.selectAgent(agent.agent_key);
+    actions.patchPanels({ rightCollapsed: false });
+    actions.live(
+      `Opened audit timeline for ${agent.role} ${agent.workstream || agent.agent}`,
+    );
+    window.setTimeout(() => {
+      document.getElementById("control-agents")?.focus();
+    }, 0);
+  };
+
   const activeChips: { label: string; clear: () => void }[] = [
     ...filters.roles.map((r) => ({ label: r, clear: () => setFilters((f) => ({ ...f, roles: f.roles.filter((x) => x !== r) })) })),
     ...filters.plans.map((p) => ({ label: p, clear: () => setFilters((f) => ({ ...f, plans: f.plans.filter((x) => x !== p) })) })),
@@ -172,7 +183,7 @@ export function ControlRoom() {
                   setFocusIndex(i);
                   actions.live(announceAgent(a, now));
                 }}
-                onWatch={() => control.selectAgent(a.agent_key)}
+                onWatch={() => openTimeline(a)}
                 onFeedback={() => openComposer(a.agent_key)}
                 onNudge={() => openComposer(a.agent_key, true)}
                 onNavigate={() => {
@@ -186,8 +197,14 @@ export function ControlRoom() {
             agents={agents}
             now={now}
             selected={control.selectedAgent}
-            onSelect={(k) => control.selectAgent(k)}
-            onWatch={(k) => control.selectAgent(k)}
+            onSelect={(key) => {
+              const agent = agents.find((value) => value.agent_key === key);
+              if (agent) openTimeline(agent);
+            }}
+            onWatch={(key) => {
+              const agent = agents.find((value) => value.agent_key === key);
+              if (agent) openTimeline(agent);
+            }}
           />
         )}
       </div>
