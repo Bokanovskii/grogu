@@ -1385,6 +1385,17 @@ class LoopClosureTests(unittest.TestCase):
         gate = self.store.gate(plan_id, grogu_plans.GATE_IMPLEMENT)
         self.assertTrue(gate["allowed"], gate["blockers"])
 
+    def test_binding_repository_steering_uses_sequence_when_timestamps_tie(self):
+        with mock.patch.object(
+            grogu_plans,
+            "now",
+            return_value="2026-09-10T17:00:00+00:00",
+        ):
+            plan_id = self.plan()
+            self.store.steer("switch to the deterministic client", requires_replan=True)
+            gate = self.store.gate(plan_id, grogu_plans.GATE_IMPLEMENT)
+        self.assertFalse(gate["allowed"])
+
     def test_the_architect_revising_clears_needs_review_without_a_human(self):
         plan_id = self.plan()
         self.store.steer("use a sheet, not a dialog", plan_id=plan_id, requires_replan=True)
