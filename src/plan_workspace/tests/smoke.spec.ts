@@ -366,6 +366,24 @@ test.describe("document mode", () => {
 });
 
 test.describe("dependencies mode", () => {
+  test("uses the session access scope and functional stage filters", async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press("Meta+3");
+    await expect(page.getByRole("heading", { name: "Role context" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Access scope" })).toBeVisible();
+    await expect(page.locator(".deps-scope-note")).toContainText("architect");
+    await expect(page.locator(".dep-node")).toHaveCount(22);
+
+    await page.getByRole("button", { name: "Goal" }).click();
+    await expect(page.locator(".dep-node")).toHaveCount(21);
+    await page.getByRole("tab", { name: "Implementation" }).click();
+    await expect(page.locator(".dep-node")).toHaveCount(1);
+    await expect(page.locator(".dep-node")).toContainText("Implementation-only canvas task");
+    await page.getByRole("tab", { name: "All stages" }).click();
+    await expect(page.locator(".dep-node")).toHaveCount(22);
+    await expect(page.locator(".deps-scope-note")).toContainText("All readable stages");
+  });
+
   test("shows a cycle in the cycles drawer", async ({ page }) => {
     await openApp(page);
     await page.keyboard.press("Meta+3");
@@ -373,7 +391,7 @@ test.describe("dependencies mode", () => {
     await expect(page.locator(".cycle-item").first()).toBeVisible();
     await expect(page.locator(".react-flow__edge-path").first()).toHaveAttribute(
       "d",
-      /^M /,
+      /^M/,
     );
     await expect(page.locator(".react-flow__edge-text").first()).toBeVisible();
     await expect(page.locator(".react-flow__minimap")).toHaveCount(0);

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -8,12 +8,13 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  useReactFlow,
   type Edge,
   type Node,
 } from "@xyflow/react";
 import { ModeLayout } from "../../shell/ModeLayout";
 import { readableStage, useActions, useApp } from "../../state/store";
-import type { EdgeKind, NodeKind, Role } from "../../api/types";
+import { stageLabel, type EdgeKind, type NodeKind } from "../../api/types";
 import { NODE_GLYPH, NODE_LABEL, EDGE_GLYPH } from "../../lib/selection";
 import { Chip, SegmentedControl } from "../../shell/ui";
 import { SealedStagePanel, UnwrittenStagePanel } from "../../shell/StatePanels";
@@ -89,27 +90,39 @@ const depNodeTypes = { dep: DepNode };
 
 function DependenciesGraph({
   edgeKinds,
+  nodeKinds,
+  scope,
   direction,
   setDirection,
 }: {
   edgeKinds: EdgeKind[];
+  nodeKinds: NodeKind[];
+  scope: "stage" | "all";
   direction: "TB" | "LR";
   setDirection: (d: "TB" | "LR") => void;
 }) {
   const state = useApp();
   const actions = useActions();
+  const flow = useReactFlow();
   const selectedId = state.selection[0]?.id;
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const kindSet = useMemo(() => new Set(edgeKinds), [edgeKinds]);
+  const nodeKindSet = useMemo(() => new Set(nodeKinds), [nodeKinds]);
 
   const { nodes, edges } = useMemo(() => {
-    const displayEdges = Object.values(state.edges).filter((e) => kindSet.has(e.kind));
-    const nodeIds = new Set<string>();
-    for (const e of displayEdges) {
-      nodeIds.add(e.from);
-      nodeIds.add(e.to);
-    }
-    const planNodes = Object.values(state.nodes).filter((n) => nodeIds.has(n.id) && n.kind !== "thread");
+    const planNodes = Object.values(state.nodes).filter(
+      (node) =>
+        (scope === "all" || node.stage === state.stage) &&
+        node.kind !== "thread" &&
+        nodeKindSet.has(node.kind),
+    );
+    const nodeIds = new Set(planNodes.map((node) => node.id));
+    const displayEdges = Object.values(state.edges).filter(
+      (edge) =>
+        kindSet.has(edge.kind) &&
+        nodeIds.has(edge.from) &&
+        nodeIds.has(edge.to),
+    );
     const arranged = dagreLayout(planNodes, displayEdges, direction, expandedIds);
     const impact = selectedId ? computeImpact(selectedId, displayEdges, kindSet) : null;
     const cyc = findCycles(displayEdges, kindSet);
@@ -152,7 +165,7 @@ function DependenciesGraph({
       target: e.to,
       type: e.kind === "diagram_edge" ? "straight" : "smoothstep",
       label: e.kind.replaceAll("_", " "),
-      labelStyle: { fontSize: 10 },
+      labelStyle: { fontSize: 11 },
       labelBgPadding: [4, 2],
       labelBgBorderRadius: 3,
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
@@ -166,12 +179,30 @@ function DependenciesGraph({
   }, [
     state.nodes,
     state.edges,
+    state.stage,
+    scope,
     kindSet,
+    nodeKindSet,
     direction,
     selectedId,
     state.selection,
     expandedIds,
   ]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      void flow
+        .fitView({ padding: 0.12, minZoom: 0.65, maxZoom: 1.1, duration: 0 })
+        .then(() => {
+          const viewport = flow.getViewport();
+          void flow.setViewport(
+            { ...viewport, y: direction === "LR" ? 96 : 72 },
+            { duration: 140 },
+          );
+        });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [flow, direction, state.stage, scope, kindSet, nodeKindSet, expandedIds]);
 
   return (
     <div className="deps-wrap">
@@ -191,6 +222,7 @@ function DependenciesGraph({
           })
         }
         fitView
+        fitViewOptions={{ padding: 0.12, minZoom: 0.65, maxZoom: 1.1 }}
         minZoom={0.1}
         maxZoom={4}
         aria-label="Dependency graph"
@@ -215,6 +247,13 @@ function DependenciesGraph({
             <span className="deps-view-note">Auto-arranged view · not saved</span>
           </div>
         </Panel>
+        {nodes.length === 0 ? (
+          <Panel position="top-center">
+            <div className="deps-empty">
+              No {stageLabel(state.stage).toLowerCase()} nodes match these filters.
+            </div>
+          </Panel>
+        ) : null}
       </ReactFlow>
     </div>
   );
@@ -226,15 +265,47 @@ export function DependenciesMode() {
   const status = readableStage(state.stages, state.stage);
   const [direction, setDirection] = useState<"TB" | "LR">("LR");
   const [edgeKinds, setEdgeKinds] = useState<EdgeKind[]>(ALL_DISPLAY_KINDS);
-  const [roleContext, setRoleContext] = useState<Role | "">(state.role || "");
+  const [scope, setScope] = useState<"stage" | "all">("stage");
+  const nodeKinds: NodeKind[] = ["goal", "task", "criterion", "risk", "decision", "directive"];
+  const [visibleNodeKinds, setVisibleNodeKinds] = useState<NodeKind[]>(nodeKinds);
 
   const kindSet = useMemo(() => new Set(edgeKinds), [edgeKinds]);
-  const cycles = useMemo(() => findCycles(Object.values(state.edges), kindSet), [state.edges, kindSet]);
+  const nodeKindSet = useMemo(() => new Set(visibleNodeKinds), [visibleNodeKinds]);
+  const stageNodeIds = useMemo(
+    () =>
+      new Set(
+        Object.values(state.nodes)
+          .filter(
+            (node) =>
+              (scope === "all" || node.stage === state.stage) &&
+              node.kind !== "thread" &&
+              nodeKindSet.has(node.kind),
+          )
+          .map((node) => node.id),
+      ),
+    [state.nodes, state.stage, scope, nodeKindSet],
+  );
+  const cycles = useMemo(
+    () =>
+      findCycles(
+        Object.values(state.edges).filter(
+          (edge) =>
+            stageNodeIds.has(edge.from) &&
+            stageNodeIds.has(edge.to),
+        ),
+        kindSet,
+      ),
+    [state.edges, stageNodeIds, kindSet],
+  );
 
   const toggleKind = (k: EdgeKind) =>
     setEdgeKinds((cur) => (cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k]));
-
-  const nodeKinds: NodeKind[] = ["goal", "task", "criterion", "risk", "decision", "directive"];
+  const toggleNodeKind = (kind: NodeKind) =>
+    setVisibleNodeKinds((current) =>
+      current.includes(kind)
+        ? current.filter((value) => value !== kind)
+        : [...current, kind],
+    );
 
   const left = (
     <div className="deps-filter">
@@ -252,29 +323,41 @@ export function DependenciesMode() {
         <h3 className="filter-heading">Node kinds</h3>
         <div className="filter-chips">
           {nodeKinds.map((k) => (
-            <Chip key={k} glyph={NODE_GLYPH[k]}>
+            <Chip
+              key={k}
+              glyph={NODE_GLYPH[k]}
+              onClick={() => toggleNodeKind(k)}
+              active={visibleNodeKinds.includes(k)}
+            >
               {NODE_LABEL[k]}
             </Chip>
           ))}
         </div>
       </section>
       <section className="filter-group">
-        <h3 className="filter-heading">Role context</h3>
+        <h3 className="filter-heading">View scope</h3>
         <SegmentedControl
-          ariaLabel="Role context"
-          value={roleContext || "engineer"}
-          onChange={(v) => setRoleContext(v as Role)}
+          ariaLabel="Dependency view scope"
+          value={scope}
+          onChange={setScope}
           options={[
-            { value: "engineer", label: "As engineer" },
-            { value: "tester", label: "As tester" },
-            { value: "architect", label: "As architect" },
+            { value: "stage", label: "This stage" },
+            { value: "all", label: "All stages" },
           ]}
         />
-        {roleContext === "tester" && state.stages.sealed.length ? (
-          <div className="deps-sealed-inline">
-            <SealedStagePanel stage={state.stages.sealed[0]!} />
-          </div>
-        ) : null}
+      </section>
+      <section className="filter-group">
+        <h3 className="filter-heading">Access scope</h3>
+        <div className="deps-scope-note">
+          <strong>{state.role || "reviewer"}</strong>
+          <span>
+            {scope === "stage"
+              ? `${stageLabel(state.stage)} only.`
+              : "All readable stages."}{" "}
+            The server has already excluded anything this session role cannot
+            read.
+          </span>
+        </div>
       </section>
     </div>
   );
@@ -333,12 +416,18 @@ export function DependenciesMode() {
       </div>
     ) : (
       <ReactFlowProvider>
-        <DependenciesGraph edgeKinds={edgeKinds} direction={direction} setDirection={setDirection} />
+        <DependenciesGraph
+          edgeKinds={edgeKinds}
+          nodeKinds={visibleNodeKinds}
+          scope={scope}
+          direction={direction}
+          setDirection={setDirection}
+        />
       </ReactFlowProvider>
     );
 
   return (
-    <ModeLayout left={left} leftTitle="Filter" right={right} rightTitle="Legend">
+    <ModeLayout left={left} leftTitle="Filter" right={right} rightTitle="Legend" compact>
       {body}
     </ModeLayout>
   );
