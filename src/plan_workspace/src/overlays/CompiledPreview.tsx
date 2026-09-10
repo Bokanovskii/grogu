@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api/client";
+import { api, ApiFailure } from "../api/client";
 import { stageLabel, type ProjectionResponse } from "../api/types";
 import { Modal, ModalBody, ModalFooter, ModalHeader, ModalTitle } from "../shell/Modal";
 import { useActions, useApp } from "../state/store";
@@ -15,20 +15,31 @@ export function CompiledPreview() {
   const actions = useActions();
   const role = (state.role || "reviewer") as string;
   const [data, setData] = useState<ProjectionResponse | null>(null);
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
   const [synced, setSynced] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
+    setData(null);
+    setError("");
     api
       .projection({ role, stage: state.stage, include: "normative", format: "md" })
       .then((d) => {
         if (!cancelled) setData(d);
       })
-      .catch(() => setData(null));
+      .catch((failure) => {
+        if (cancelled) return;
+        setError(
+          failure instanceof ApiFailure
+            ? failure.message
+            : "The compiler did not return a projection.",
+        );
+      });
     return () => {
       cancelled = true;
     };
-  }, [role, state.stage]);
+  }, [role, state.stage, attempt]);
 
   return (
     <Modal title="Compiled projection" onClose={actions.closeOverlay} width={1100} className="compiled-modal">
@@ -56,17 +67,33 @@ export function CompiledPreview() {
             </button>
           </div>
         ) : null}
-        <label className="sync-scroll-toggle">
-          <input type="checkbox" checked={synced} onChange={(e) => setSynced(e.target.checked)} /> Synced scroll
-        </label>
-        <div className={`compiled-panes${synced ? " is-synced" : ""}`}>
-          <pre className="compiled-source" aria-label="Markdown source">
-            {data?.markdown ?? "Loading…"}
-          </pre>
-          <div className="compiled-rendered" aria-label="Rendered">
-            {data ? <Markdown text={data.markdown} /> : null}
+        {error ? (
+          <div className="compiled-error" role="alert">
+            <strong>Could not compile this preview.</strong>
+            <p>{error}</p>
+            <button
+              type="button"
+              className="btn btn-text"
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              Retry
+            </button>
           </div>
-        </div>
+        ) : (
+          <>
+            <label className="sync-scroll-toggle">
+              <input type="checkbox" checked={synced} onChange={(e) => setSynced(e.target.checked)} /> Synced scroll
+            </label>
+            <div className={`compiled-panes${synced ? " is-synced" : ""}`}>
+              <pre className="compiled-source" aria-label="Markdown source">
+                {data?.markdown ?? "Loading…"}
+              </pre>
+              <div className="compiled-rendered" aria-label="Rendered">
+                {data ? <Markdown text={data.markdown} /> : null}
+              </div>
+            </div>
+          </>
+        )}
         {data && data.elided && data.elided.length ? (
           <div className="elided-panel">
             <strong>

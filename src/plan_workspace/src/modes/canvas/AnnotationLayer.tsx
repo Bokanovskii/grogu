@@ -57,7 +57,7 @@ export function AnnotationLayer({ tool, onDone }: { tool: CanvasTool; onDone: ()
     void e;
     let id: string | null = null;
     if (tool === "frame") {
-      id = await ops.createAnnotation("rectangle", flowRect); // a frame is drawn as a rectangle region
+      id = await ops.createAnnotation("frame", flowRect);
     } else if (tool === "freehand") {
       const flowPts = freehand.map((p) => {
         const fp = screenToFlowPosition({ x: p[0]!, y: p[1]! });
@@ -73,8 +73,16 @@ export function AnnotationLayer({ tool, onDone }: { tool: CanvasTool; onDone: ()
     setDrawing(null);
     setFreehand([]);
     if (id) {
-      // Open the anchoring thread composer for the new annotation.
-      setTimeout(() => actions.openOverlay({ kind: "newComment", nodeId: id! }), 0);
+      if (tool === "frame") {
+        actions.select(id, "region");
+      } else {
+        // Annotation shapes exist to carry feedback, so open their composer
+        // only after the region itself has been durably saved.
+        setTimeout(
+          () => actions.openOverlay({ kind: "newComment", nodeId: id! }),
+          0,
+        );
+      }
     }
     onDone();
   };

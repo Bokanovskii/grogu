@@ -29,6 +29,18 @@ test.describe("boot and shell", () => {
     );
   });
 
+  test("feedback scopes name concrete audiences without redundant actions", async ({ page }) => {
+    await openApp(page);
+    await page.locator(".mode-tab-control").click();
+    await page.locator(".agent-card").first().getByRole("button", { name: "Send feedback" }).click();
+    await expect(page.getByRole("radio", { name: "This agent" })).toBeVisible();
+    await expect(page.getByRole("radio", { name: "All engineers" })).toBeVisible();
+    await expect(page.getByRole("radio", { name: "Everyone on this plan" })).toBeVisible();
+    await expect(page.getByRole("radio", { name: "Engineers on this plan" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save as draft" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Abandon feedback" })).toHaveCount(0);
+  });
+
   test("mode switching by keyboard preserves the shell", async ({ page }) => {
     await openApp(page);
     await page.keyboard.press("Meta+2");
@@ -131,6 +143,24 @@ test.describe("boot and shell", () => {
     await expect(page.locator(".react-flow__node-region")).toHaveCount(before + 1);
   });
 
+  test("Frame creates a grouping container without opening a comment composer", async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press("Meta+2");
+    const frames = page.locator(".cv-region-frame");
+    const before = await frames.count();
+    await page.locator(".tool-palette").getByRole("button", { name: "Frame" }).click();
+    const pane = page.locator(".react-flow__pane");
+    const box = await pane.boundingBox();
+    expect(box).not.toBeNull();
+    await page.mouse.move(box!.x + 360, box!.y + 240);
+    await page.mouse.down();
+    await page.mouse.move(box!.x + 660, box!.y + 440);
+    await page.mouse.up();
+    await expect(page.locator(".status-save")).toContainText("Saved · r");
+    await expect(frames).toHaveCount(before + 1);
+    await expect(page.getByText(/^Comment on reg-/)).toHaveCount(0);
+  });
+
   test("switching to Canvas with a document node selected does not crash", async ({ page }) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -163,6 +193,31 @@ test.describe("boot and shell", () => {
     });
   });
 
+  test("compiled preview reports failures and retries", async ({ page }) => {
+    let attempts = 0;
+    await page.route("**/api/projection?*", async (route) => {
+      attempts += 1;
+      if (attempts === 1) {
+        await route.fulfill({
+          status: 422,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: "compile_failed",
+            message: "Projection temporarily unavailable.",
+          }),
+        });
+      } else {
+        await route.fallback();
+      }
+    });
+    await openApp(page);
+    await page.keyboard.press("Meta+e");
+    await expect(page.getByText("Could not compile this preview.")).toBeVisible();
+    await expect(page.getByText("Projection temporarily unavailable.")).toBeVisible();
+    await page.getByRole("button", { name: "Retry" }).click();
+    await expect(page.locator(".compiled-modal .modal-title")).toContainText("Digest: sha256:");
+  });
+
   test("comment actions stay inside the rail and Reply reflects composer state", async ({ page }) => {
     await openApp(page);
     const card = page.locator(".thread-card").first();
@@ -178,6 +233,18 @@ test.describe("boot and shell", () => {
       expect(box!.x).toBeGreaterThanOrEqual(cardBox!.x);
       expect(box!.x + box!.width).toBeLessThanOrEqual(cardBox!.x + cardBox!.width);
     }
+  });
+
+  test("Ask Grogu routes a revision request instead of creating an empty proposal", async ({ page }) => {
+    await openApp(page);
+    const card = page.locator(".thread-card").first();
+    await card.getByRole("button", { name: "Ask Grogu to revise" }).click();
+    await page.getByRole("textbox", { name: "Instruction" }).fill(
+      "Split this work into two migration steps.",
+    );
+    await page.getByRole("button", { name: "Send request" }).click();
+    await expect(page.getByText(/Revision request f-[^ ]+ sent to the architect/)).toBeVisible();
+    await expect(page.locator(".proposal-modal")).toHaveCount(0);
   });
 });
 

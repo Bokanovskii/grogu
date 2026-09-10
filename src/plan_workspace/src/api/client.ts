@@ -153,7 +153,7 @@ export const api = {
       body: {},
     }),
   reviseThread: (tid: string, instruction: string) =>
-    request<{ proposal: Proposal }>(`/threads/${tid}/revise`, {
+    request<{ request: FeedbackResponse }>(`/threads/${tid}/revise`, {
       method: "POST",
       body: { instruction },
     }),

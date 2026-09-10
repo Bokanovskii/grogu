@@ -200,7 +200,7 @@ export function useCanvasOps() {
     },
 
     async createAnnotation(
-      shape: "rectangle" | "ellipse" | "arrow" | "freehand",
+      shape: "frame" | "rectangle" | "ellipse" | "arrow" | "freehand",
       rect: Rect,
       points?: number[][],
     ): Promise<string | null> {
@@ -217,7 +217,7 @@ export function useCanvasOps() {
             id: regionId,
             kind: "region",
             stage: state.stage,
-            title: `${shape} annotation`,
+            title: shape === "frame" ? "Frame" : `${shape} annotation`,
             body: "",
             attrs,
             geometry: { x: ri(rect.x), y: ri(rect.y), w: ri(Math.max(rect.w, 8)), h: ri(Math.max(rect.h, 8)), z: 5 },

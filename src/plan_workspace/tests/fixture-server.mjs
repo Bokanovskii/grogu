@@ -515,11 +515,26 @@ async function handle(req, res) {
       ext.status = "open";
       t.attrs.status = "open";
     } else if (action === "revise") {
-      const pid = `pr-${state.proposals.length + 4}`;
-      const proposal = { id: pid, at: new Date().toISOString(), from_thread: tid, base: state.HEAD, why: body.instruction ?? "", ops: [{ op: "replace", path: `/nodes/${t.attrs.anchor_node}/title`, value: `${state.graph.nodes[t.attrs.anchor_node]?.title ?? ""} (revised)` }], status: "pending", decided_at: "", decided_by: "", why_not: "" };
-      state.proposals.push(proposal);
-      broadcast("proposal", { id: pid });
-      return json(res, 200, { proposal });
+      const request = makeFeedback(
+        {
+          kind: "role_plan",
+          role: "architect",
+          plan: state.plan,
+          label: "architects on this plan",
+        },
+        `Revision request for ${tid}: ${body.instruction ?? ""}`,
+        true,
+      );
+      state.feedback.push(request);
+      broadcast("feedback", { id: request.id, thread: tid });
+      return json(res, 200, {
+        request: {
+          seq: request.id,
+          delivered_to: request.scope.label,
+          gates_closed: ["implementation"],
+          record: request,
+        },
+      });
     }
     broadcast("thread", { id: tid });
     return json(res, 200, { thread: t });

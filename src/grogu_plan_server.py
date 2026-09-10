@@ -893,15 +893,32 @@ class _Handler(BaseHTTPRequestHandler):
                 thread_id, "open", role=self.context.role
             )
         elif action == "revise":
-            proposal = documents.propose(
+            instruction = str(body.get("instruction", "")).strip()
+            if not instruction:
+                raise grogu_plans.PlanError(
+                    "a revision request needs an instruction"
+                )
+            if not any(
+                thread.get("id") == thread_id
+                for thread in documents.threads(role=self.context.role)
+            ):
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "not found")
+                return
+            request = documents.route_feedback(
                 role=self.context.role,
-                operations=[],
-                why=str(body.get("instruction", "")),
-                base=documents.head(),
-                from_thread=thread_id,
+                scope={
+                    "kind": "role_plan",
+                    "role": grogu_plans.ARCHITECT,
+                    "plan": documents.plan_id,
+                    "label": "architects on this plan",
+                },
+                text=f"Revision request for {thread_id}: {instruction}",
+                binding=True,
             )
-            self.context.events.publish("proposal", {"id": proposal["id"]})
-            self._json(HTTPStatus.OK, {"proposal": proposal})
+            self.context.events.publish(
+                "feedback", {"id": request["seq"], "thread": thread_id}
+            )
+            self._json(HTTPStatus.OK, {"request": request})
             return
         else:
             self._error(HTTPStatus.NOT_FOUND, "not_found", "not found")

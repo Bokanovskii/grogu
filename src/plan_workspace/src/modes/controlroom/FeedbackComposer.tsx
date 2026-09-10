@@ -22,6 +22,15 @@ export function FeedbackComposer({
   const control = useControl();
   const actions = useActions();
   const role = (agent?.role || "engineer") as Role;
+  const rolePlural: Record<Role, string> = {
+    architect: "architects",
+    designer: "designers",
+    engineer: "engineers",
+    tester: "testers",
+    reviewer: "reviewers",
+    supervisor: "supervisors",
+  };
+  const audience = rolePlural[role];
 
   type TargetKind = "agent" | "role" | "plan" | "role_plan";
   const [target, setTarget] = useState<TargetKind>(agent ? "agent" : plan ? "plan" : "role");
@@ -34,17 +43,23 @@ export function FeedbackComposer({
 
   const targets: { value: TargetKind; label: string; enabled: boolean }[] = [
     { value: "agent", label: "This agent", enabled: !!agent },
-    { value: "role", label: `All ${role}`, enabled: true },
-    { value: "plan", label: "This plan", enabled: !!plan },
-    { value: "role_plan", label: `${role} on this plan`, enabled: !!plan },
+    { value: "role", label: `All ${audience}`, enabled: true },
+    { value: "plan", label: "Everyone on this plan", enabled: !!plan },
+    { value: "role_plan", label: `${audience[0]!.toUpperCase()}${audience.slice(1)} on this plan`, enabled: !!plan },
   ];
+  const prompt: Record<TargetKind, string> = {
+    agent: "What should this agent know?",
+    role: `What should all ${audience} know?`,
+    plan: "What should everyone on this plan know?",
+    role_plan: `What should ${audience} on this plan know?`,
+  };
 
   function scopeFor(): FeedbackScope {
     if (target === "agent" && agent)
       return { kind: "agent", agent_key: agent.agent_key, label: `agent ${agent.agent}` };
-    if (target === "plan") return { kind: "plan", plan, label: `plan ${plan}` };
-    if (target === "role_plan") return { kind: "role_plan", role, plan, label: `${role} on ${plan}` };
-    return { kind: "role", role, label: `all ${role}` };
+    if (target === "plan") return { kind: "plan", plan, label: `everyone on plan ${plan}` };
+    if (target === "role_plan") return { kind: "role_plan", role, plan, label: `${audience} on ${plan}` };
+    return { kind: "role", role, label: `all ${audience}` };
   }
 
   const canSend = text.trim().length > 0;
@@ -89,7 +104,7 @@ export function FeedbackComposer({
         rows={3}
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder={`What would you like ${targets.find((t) => t.value === target)?.label.toLowerCase()} to know?`}
+        placeholder={prompt[target]}
         aria-label="Feedback message"
       />
 
@@ -115,24 +130,8 @@ export function FeedbackComposer({
         <button type="button" className="btn btn-text" onClick={() => onCancel?.()}>
           Cancel
         </button>
-        <button type="button" className="btn btn-text" disabled>
-          Save as draft
-        </button>
-        <span className="fc-divider" aria-hidden="true" />
         <button type="button" className="btn btn-primary" disabled={!canSend} onClick={() => void send()}>
           {binding ? "Send as binding" : "Send"}
-        </button>
-      </div>
-      <div className="fc-abandon">
-        <button
-          type="button"
-          className="link-danger"
-          onClick={() => {
-            setText("");
-            onCancel?.();
-          }}
-        >
-          Abandon feedback
         </button>
       </div>
     </div>

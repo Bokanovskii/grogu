@@ -915,6 +915,29 @@ class SecuredPlanServerTests(unittest.TestCase):
             (ROOT / "src" / "plan_workspace" / "dist" / "app.js").read_bytes(),
         )
 
+    def test_thread_revise_routes_a_binding_request_to_the_architect(self):
+        thread = self.documents.add_thread(
+            role="engineer",
+            selector={"type": "node", "id": "task-1"},
+            body="Please revise this task.",
+        )
+        self.exchange()
+        status, _headers, body = self.request(
+            "POST",
+            f"/api/threads/{thread['id']}/revise",
+            {"instruction": "Split this into two migration steps."},
+            origin=True,
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertRegex(payload["request"]["seq"], r"^f-[0-9]+$")
+        manifest = self.store.load(self.plan_id)
+        note = manifest["steering"][-1]
+        self.assertEqual(note["role"], "architect")
+        self.assertTrue(note["binding_feedback"])
+        self.assertIn(thread["id"], note["text"])
+        self.assertEqual(self.documents.proposals(role="engineer"), [])
+
     def test_control_route_never_returns_adversarial_event_content(self):
         self.info["server"].context._shutdown = True
         self.info["server"].shutdown()

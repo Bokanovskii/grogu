@@ -636,6 +636,8 @@ code, pre, kbd { font-family: var(--font-mono); }
   box-shadow: var(--shadow-3);
 }
 .compiled-preview-diff, .compiled-source { font-family: var(--font-mono); font-size: var(--text-mono-sm); white-space: pre-wrap; background: var(--bg-elev-1); padding: var(--space-2); border-radius: var(--radius-3); max-height: 50vh; overflow: auto; }
+.compiled-error { border: 1px solid var(--danger); border-radius: var(--radius-3); background: color-mix(in srgb, var(--danger) 8%, var(--bg)); padding: var(--space-3); }
+.compiled-error p { margin: var(--space-1) 0 var(--space-2); color: var(--neutral-700); }
 .proposal-stale { background: var(--warn-soft); color: var(--neutral-900); padding: var(--space-1) var(--space-2); border-radius: var(--radius-2); font-size: var(--text-sm); display: flex; gap: var(--space-2); align-items: center; }
 .proposal-warn { color: var(--warn); font-size: var(--text-sm); margin-right: auto; }
 .proposal-divider { width: 24px; }

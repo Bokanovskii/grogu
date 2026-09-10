@@ -8,26 +8,33 @@ export function AskGrogu({ threadId }: { threadId: string }) {
   const state = useApp();
   const actions = useActions();
   const [instruction, setInstruction] = useState("");
-  const [status, setStatus] = useState<"compose" | "proposing">("compose");
+  const [status, setStatus] = useState<"compose" | "sending">("compose");
   const thread = state.nodes[threadId];
 
   useEffect(() => {
-    if (status !== "proposing") return;
+    if (status !== "sending") return;
     const timeout = window.setTimeout(() => {
       setStatus("compose");
-      actions.toast("Proposing timed out. Try again.", "warn");
+      actions.toast("Sending the revision request timed out. Try again.", "warn");
     }, 45000);
     return () => window.clearTimeout(timeout);
   }, [status, actions]);
 
   async function propose() {
-    setStatus("proposing");
+    setStatus("sending");
     try {
       const res = await api.reviseThread(threadId, instruction.trim());
-      actions.openOverlay({ kind: "proposalPreview", proposalId: res.proposal.id });
-    } catch {
+      actions.toast(`Revision request ${res.request.seq} sent to the architect.`, "success", {
+        label: "View ledger",
+        event: "noop",
+      });
+      actions.closeOverlay();
+    } catch (error) {
       setStatus("compose");
-      actions.toast("Could not create a proposal.", "danger");
+      actions.toast(
+        error instanceof Error ? error.message : "Could not send the revision request.",
+        "danger",
+      );
     }
   }
 
@@ -56,7 +63,7 @@ export function AskGrogu({ threadId }: { threadId: string }) {
           />
         ) : (
           <div className="ask-proposing">
-            <p>Grogu is proposing…</p>
+            <p>Sending revision request…</p>
             <div className="indeterminate-bar" />
           </div>
         )}
@@ -69,10 +76,10 @@ export function AskGrogu({ threadId }: { threadId: string }) {
         <button
           type="button"
           className="btn btn-primary"
-          disabled={!instruction.trim() || status === "proposing"}
+          disabled={!instruction.trim() || status === "sending"}
           onClick={() => void propose()}
         >
-          Propose
+          Send request
         </button>
       </ModalFooter>
     </Modal>
