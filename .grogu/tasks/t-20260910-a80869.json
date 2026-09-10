@@ -1,0 +1,89 @@
+{
+  "schema_version": 2,
+  "id": "t-20260910-a80869",
+  "title": "Resolve subagent governance friction",
+  "body": "Resolve friction #80-#86 with bounded checkpoints/budget policy, cancellation recovery guidance, per-agent todo cleanup, compare-and-swap plan writes with superseded-writer revocation, and multiple required workstream reviews; ship each independent concern in a small PR and test them together.",
+  "status": "done",
+  "priority": "high",
+  "labels": [
+    "enhancement"
+  ],
+  "issue": null,
+  "assignee": "charlie",
+  "created_at": "2026-09-10T00:37:44+00:00",
+  "created_by": "charlie",
+  "updated_at": "2026-09-10T04:19:50+00:00",
+  "revision": 7,
+  "log": [
+    {
+      "at": "2026-09-10T00:37:44+00:00",
+      "by": "charlie",
+      "event": "created",
+      "text": "Resolve subagent governance friction",
+      "agent": "",
+      "session_id": "",
+      "session_pid": 0
+    },
+    {
+      "at": "2026-09-10T00:37:56+00:00",
+      "by": "charlie",
+      "event": "claim",
+      "agent": "",
+      "session_id": "",
+      "session_pid": 0
+    },
+    {
+      "at": "2026-09-10T01:41:46+00:00",
+      "by": "charlie",
+      "event": "lease-expired",
+      "text": "charlie",
+      "agent": "",
+      "session_id": "",
+      "session_pid": 0
+    },
+    {
+      "at": "2026-09-10T01:41:51+00:00",
+      "by": "charlie",
+      "event": "claim",
+      "agent": "",
+      "session_id": "",
+      "session_pid": 0
+    },
+    {
+      "at": "2026-09-10T03:48:40+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "plan-state-core complete: CAS stage writes, writer supersession, required_reviews migration, governance/checkpoints; 250 tests pass; security review recorded",
+      "agent": "",
+      "session_id": "",
+      "session_pid": 0
+    },
+    {
+      "at": "2026-09-10T03:48:40+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "plan-state-core completed and committed through 4c3f87c",
+      "agent": "",
+      "session_id": "",
+      "session_pid": 0
+    },
+    {
+      "at": "2026-09-10T04:19:50+00:00",
+      "by": "charlie",
+      "event": "release",
+      "agent": "",
+      "session_id": "ce140751-e93b-418d-b3eb-512abe74f52a",
+      "session_pid": 57748,
+      "text": "Completed via merged PRs #57-#60; friction #80-#86 resolved with PR references."
+    }
+  ],
+  "created_by_owner": "charlie",
+  "created_by_agent": "",
+  "created_by_session_id": "",
+  "created_by_session_pid": 0,
+  "assignee_owner": "charlie",
+  "assignee_agent": "",
+  "assignee_session_id": "",
+  "assignee_session_pid": 0,
+  "parent_task_id": null
+}
