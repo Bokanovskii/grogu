@@ -274,6 +274,8 @@ def waiting_on_you(state: dict) -> list:
                 f"steering #{note['seq']} has not reached {who} on {plan_id}: "
                 + note.get("text", "")[:60]
             )
+        for blocker in (summary.get("governance") or {}).get("blockers", []):
+            asks.append(f"{plan_id} agent governance: {blocker}")
     # Skills an agent wrote for the next agent sit in a store nobody looks at
     # until somebody asks. This is the board the user actually reads, and an
     # unaccepted skill is a lesson the next agent will have to relearn.
@@ -395,6 +397,16 @@ def render(state: dict, *, window_minutes: int = DEFAULT_WINDOW_MINUTES) -> str:
         }
         for role, count in sorted(pending.items()):
             lines.append(f"  {count} steering note(s) the {role} has not read yet")
+        governance = summary.get("governance") or {}
+        for warning in governance.get("warnings", []):
+            lines.append(f"  ! governance: {warning}")
+        for blocker in governance.get("blockers", []):
+            lines.append(f"  ! governance blocker: {blocker}")
+        if governance.get("blockers"):
+            lines.append(
+                "  cancel: open Copilot `/tasks`; recover with "
+                "`grogu plan checkpoint-recovery`"
+            )
 
     lines.append("")
     lines.append("steer: grogu plan steer \"<text>\" [--plan <id>] [--role <role>] [--requires-replan]")
