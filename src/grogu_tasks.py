@@ -219,7 +219,7 @@ class TaskStore:
         normalized["created_by_session_pid"] = _coerce_int(
             normalized.get("created_by_session_pid"), 0
         )
-        normalized["created_by_host"] = normalized.get("created_by_host") or ""
+        normalized.pop("created_by_host", None)
         normalized["assignee_owner"] = (
             normalized.get("assignee_owner")
             if normalized.get("assignee_owner") is not None
@@ -230,7 +230,7 @@ class TaskStore:
         normalized["assignee_session_pid"] = _coerce_int(
             normalized.get("assignee_session_pid"), 0
         )
-        normalized["assignee_host"] = normalized.get("assignee_host") or ""
+        normalized.pop("assignee_host", None)
         if "parent_task_id" not in normalized:
             normalized["parent_task_id"] = normalized.get("parent_id") or normalized.get("parent")
         log = []
@@ -253,7 +253,6 @@ class TaskStore:
             "agent": task.get(f"{prefix}_agent") or "",
             "session_id": task.get(f"{prefix}_session_id") or "",
             "session_pid": _coerce_int(task.get(f"{prefix}_session_pid"), 0),
-            "host": task.get(f"{prefix}_host") or "",
         }
 
     def _lease_identity(self, lease: dict) -> dict:
@@ -277,7 +276,6 @@ class TaskStore:
         task[f"{prefix}_agent"] = identity.get("agent") or ""
         task[f"{prefix}_session_id"] = identity.get("session_id") or ""
         task[f"{prefix}_session_pid"] = _coerce_int(identity.get("session_pid"), 0)
-        task[f"{prefix}_host"] = identity.get("host") or ""
 
     def _clear_assignment_fields(self, task: dict) -> None:
         task["assignee"] = None
@@ -285,7 +283,6 @@ class TaskStore:
         task["assignee_agent"] = ""
         task["assignee_session_id"] = ""
         task["assignee_session_pid"] = 0
-        task["assignee_host"] = ""
 
     def _write_task(self, task: dict) -> None:
         self._write_json(self.task_path(task["id"]), self._normalize_task(task))
@@ -459,7 +456,6 @@ class TaskStore:
         entry["agent"] = agent()
         entry["session_id"] = session_id()
         entry["session_pid"] = session_pid()
-        entry["host"] = socket.gethostname()
         if text:
             entry["text"] = text
         task.setdefault("log", []).append(entry)
@@ -499,7 +495,6 @@ class TaskStore:
                 "created_by_agent": identity["agent"],
                 "created_by_session_id": identity["session_id"],
                 "created_by_session_pid": identity["session_pid"],
-                "created_by_host": identity["host"],
                 "parent_task_id": parent_task_id,
                 "updated_at": timestamp,
                 "revision": 0,
