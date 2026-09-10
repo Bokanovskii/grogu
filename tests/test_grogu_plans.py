@@ -879,9 +879,9 @@ class PlanStoreTests(unittest.TestCase):
         self.assertEqual(
             migrated["required_reviews"], [grogu_plans.REVIEW_SECURITY]
         )
-        self.assertNotIn("review", migrated)
+        self.assertEqual(migrated["review"], grogu_plans.REVIEW_SECURITY)
 
-    def test_every_deduped_required_review_kind_blocks_until_recorded(self):
+    def test_every_required_review_kind_blocks_until_recorded(self):
         plan_id = self.plan()
         stream = self.store.add_workstream(
             plan_id,
@@ -890,7 +890,6 @@ class PlanStoreTests(unittest.TestCase):
             required_reviews=[
                 grogu_plans.REVIEW_SECURITY,
                 grogu_plans.REVIEW_CODE,
-                grogu_plans.REVIEW_SECURITY,
             ],
         )
         self.assertEqual(
@@ -911,6 +910,20 @@ class PlanStoreTests(unittest.TestCase):
             kind=grogu_plans.REVIEW_SECURITY, findings="checked trust boundaries",
         )
         self.assertTrue(self.store.gate(plan_id, grogu_plans.GATE_TEST)["allowed"])
+
+    def test_duplicate_required_review_kinds_are_rejected(self):
+        plan_id = self.plan()
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.add_workstream(
+                plan_id,
+                name="auth",
+                paths=["src/auth/**"],
+                required_reviews=[
+                    grogu_plans.REVIEW_SECURITY,
+                    grogu_plans.REVIEW_SECURITY,
+                ],
+            )
+        self.assertIn("duplicate", str(caught.exception))
 
     def test_replacing_workstream_preserves_requirements_and_all_reviews(self):
         plan_id = self.plan()
@@ -2466,6 +2479,26 @@ class PlanStageConcurrencyTests(unittest.TestCase):
         self.assertIn("architect@architect-old", manifest["agents_seen"])
         self.assertIn("architect@architect-new", manifest["agents_seen"])
 
+    def test_anonymous_write_cannot_bypass_an_active_writer(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-one"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "owned draft"
+        )
+        os.environ.pop("GROGU_ROLE")
+        os.environ.pop("GROGU_AGENT")
+        with mock.patch.object(
+            self.store, "_identified_agent", return_value=("", "")
+        ):
+            with self.assertRaises(grogu_plans.PlanError) as caught:
+                self.store.write_stage(
+                    self.plan,
+                    grogu_plans.IMPLEMENTATION,
+                    "anonymous overwrite",
+                    role=grogu_plans.ARCHITECT,
+                )
+        self.assertIn("unidentified caller", str(caught.exception))
+
 
 class PlanGovernanceTests(unittest.TestCase):
     def setUp(self):
@@ -2495,6 +2528,8 @@ class PlanGovernanceTests(unittest.TestCase):
             ai_credits=2,
             checkpoint_tool_calls=4,
         )
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
         self.store.record_agent_usage(
             self.plan,
             agent="engineer-one",
@@ -2502,13 +2537,11 @@ class PlanGovernanceTests(unittest.TestCase):
             elapsed_seconds=61,
             ai_credits=3,
         )
-        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
-        os.environ["GROGU_AGENT"] = "engineer-one"
         with self.assertRaises(grogu_plans.PlanError) as caught:
             self.store.set_stage_state(
                 self.plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
             )
-        self.assertIn("without a checkpoint", str(caught.exception))
+        self.assertIn("without a current checkpoint", str(caught.exception))
         status = self.store.summary(self.plan)["governance"]
         self.assertTrue(status["warnings"])
         self.assertTrue(status["blockers"])
@@ -2516,6 +2549,10 @@ class PlanGovernanceTests(unittest.TestCase):
         checkpoint = self.store.record_checkpoint(
             self.plan, note="saved a recoverable checkpoint"
         )
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.set_stage_state(
+                self.plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+            )
         recovery = self.store.record_checkpoint_recovery(
             self.plan, checkpoint["id"], status="available"
         )
@@ -2523,6 +2560,43 @@ class PlanGovernanceTests(unittest.TestCase):
         self.store.set_stage_state(
             self.plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
         )
+
+    def test_checkpoint_deadline_rearms_after_a_recovered_checkpoint(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
+        self.store.configure_agent_governance(
+            self.plan,
+            agent="engineer-one",
+            role=grogu_plans.ENGINEER,
+            checkpoint_tool_calls=4,
+        )
+        self.store.record_agent_usage(
+            self.plan, agent="engineer-one", tool_calls=4
+        )
+        checkpoint = self.store.record_checkpoint(self.plan)
+        self.store.record_checkpoint_recovery(
+            self.plan, checkpoint["id"], status="available"
+        )
+        self.store.record_agent_usage(
+            self.plan, agent="engineer-one", tool_calls=8
+        )
+        status = self.store.governance_status(self.plan)
+        self.assertTrue(status["agents"]["engineer-one"]["checkpoint_due"])
+        self.assertTrue(status["blockers"])
+
+    def test_partial_governance_update_preserves_other_limits(self):
+        self.store.configure_agent_governance(
+            self.plan,
+            agent="engineer-one",
+            role=grogu_plans.ENGINEER,
+            tool_calls=10,
+            checkpoint_tool_calls=4,
+        )
+        updated = self.store.configure_agent_governance(
+            self.plan, agent="engineer-one", tool_calls=20
+        )
+        self.assertEqual(updated["limits"]["tool_calls"], 20)
+        self.assertEqual(updated["limits"]["checkpoint_tool_calls"], 4)
 
 
 class ParallelCompletionTests(unittest.TestCase):

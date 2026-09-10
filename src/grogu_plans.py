@@ -196,13 +196,6 @@ REVIEW_SECURITY = "security-review"
 REVIEW_KINDS = (REVIEW_RUBBER_DUCK, REVIEW_CODE, REVIEW_SECURITY)
 DESIGN_VERDICTS = (PASS, CHANGES)
 
-GOVERNANCE_LIMITS = (
-    "tool_calls",
-    "elapsed_seconds",
-    "ai_credits",
-    "checkpoint_tool_calls",
-)
-
 DEFAULT_MAX_ROUNDS = 3
 DEFAULT_MAX_DEFECT_ROUNDS = 3
 # A backstop for the stall that produces no bounces: failures piling up on one
@@ -245,13 +238,13 @@ def _required_reviews(value: object) -> list[str]:
     values = [value] if isinstance(value, str) else value
     if not isinstance(values, (list, tuple)):
         raise PlanError("required reviews must be a list of review kinds")
-    unknown = sorted(
-        {
-            str(kind).strip()
-            for kind in values
-            if str(kind).strip() not in REVIEW_KINDS
-        }
-    )
+    cleaned = [str(kind).strip() for kind in values if str(kind).strip()]
+    duplicates = sorted({kind for kind in cleaned if cleaned.count(kind) > 1})
+    if duplicates:
+        raise PlanError(
+            "duplicate required review kind(s): " + ", ".join(duplicates)
+        )
+    unknown = sorted({kind for kind in cleaned if kind not in REVIEW_KINDS})
     if unknown:
         raise PlanError(
             "unknown review "
@@ -259,7 +252,7 @@ def _required_reviews(value: object) -> list[str]:
             + "; expected one of "
             + ", ".join(REVIEW_KINDS)
         )
-    present = {str(kind).strip() for kind in values if str(kind).strip()}
+    present = set(cleaned)
     return [kind for kind in REVIEW_KINDS if kind in present]
 
 
@@ -1902,7 +1895,14 @@ class PlanStore:
             if reviews is None:
                 reviews = stream.get("review", "")
             stream["required_reviews"] = _required_reviews(reviews)
-            stream.pop("review", None)
+            # Keep the old scalar as a read compatibility shim until every CLI
+            # reader has moved to the list. Multi-review state cannot be
+            # represented by it, so only expose the unambiguous one-kind case.
+            stream["review"] = (
+                stream["required_reviews"][0]
+                if len(stream["required_reviews"]) == 1
+                else ""
+            )
         return manifest
 
     def load(self, plan_id: str) -> dict:
@@ -2309,7 +2309,7 @@ class PlanStore:
                 f"this session is agent {identified!r}; it cannot install "
                 f"{agent.strip()!r} as the replacement writer"
             )
-        replacement = (agent or identified).strip()
+        replacement = identified.strip()
         if not replacement:
             raise PlanError(
                 "superseding a stage writer needs a stable GROGU_AGENT identity"
@@ -2507,6 +2507,13 @@ class PlanStore:
                         "actor": actor(),
                         "supersedes": "",
                     }
+            elif active:
+                raise PlanError(
+                    f"the {stage} stage has an active {active.get('role')} writer "
+                    f"({active.get('agent')!r}); an unidentified caller may not "
+                    "bypass that writer. Use the declared agent identity or "
+                    "supersede it explicitly."
+                )
             if changed and previous and state == COMPLETE and not replace:
                 raise PlanError(
                     f"the {stage} stage is complete and this rewrites it "
@@ -2767,7 +2774,6 @@ class PlanStore:
         workstream = (workstream or os.environ.get("GROGU_WORKSTREAM", "")).strip()
         role = role or current_role()
         owner = STAGE_COMPLETERS.get(stage)
-        claimed_agent = ""
         # Marking the test plan complete is the tester's judgement to make. An
         # engineer who can make it can then finalize the plan and read the
         # sealed assertions, which turns the seal into a formality.
@@ -2782,7 +2788,7 @@ class PlanStore:
                 f"{current_role()}"
             )
         if role and not as_user:
-            claimed_agent = self.claim_agent_role(plan_id, role)
+            self.claim_agent_role(plan_id, role)
         if not role and stage in SEALED_STAGES and state == COMPLETE and not as_user:
             # Default-deny, because the check above was only ever as strong as
             # the caller's willingness to declare itself. An engineer that
@@ -2837,15 +2843,11 @@ class PlanStore:
                     item
                     for name, item in governance["agents"].items()
                     if (
-                        (claimed_agent and name == claimed_agent)
-                        or (
-                            not claimed_agent
-                            and item.get("role") == role
-                            and (
-                                not item.get("workstream")
-                                or not workstream
-                                or item.get("workstream") == workstream
-                            )
+                        item.get("role") == role
+                        and (
+                            not item.get("workstream")
+                            or not workstream
+                            or item.get("workstream") == workstream
                         )
                     )
                 ]
@@ -3819,6 +3821,7 @@ class PlanStore:
                 "depends_on": list(depends_on or []),
                 "model": (carried.get("model", "") if model is None else model).strip(),
                 "required_reviews": declared_reviews,
+                "review": declared_reviews[0] if len(declared_reviews) == 1 else "",
                 "brief": (carried.get("brief", "") if brief is None else brief).strip(),
                 "reviews": list(carried.get("reviews", [])),
             }
@@ -4089,12 +4092,14 @@ class PlanStore:
                 .setdefault("agents", {})
                 .setdefault(name, {})
             )
+            merged_limits = dict(entry.get("limits", {}))
+            merged_limits.update(limits)
             entry.update(
                 {
                     "agent": name,
                     "role": declared_role,
                     "workstream": workstream.strip(),
-                    "limits": limits,
+                    "limits": merged_limits,
                     "declared_at": now(),
                     "declared_by": actor(),
                 }
@@ -4119,6 +4124,10 @@ class PlanStore:
         name = (agent or identified).strip()
         if not name:
             raise PlanError("recording usage needs a stable agent identity")
+        if not identified or name != identified:
+            raise PlanError(
+                "agent usage may only be recorded by that identified agent"
+            )
         values = {
             key: self._governance_number(key, value)
             for key, value in {
@@ -4152,6 +4161,10 @@ class PlanStore:
         name = (agent or identified).strip()
         if not name:
             raise PlanError("recording a checkpoint needs a stable agent identity")
+        if not identified or name != identified:
+            raise PlanError(
+                "a checkpoint may only be recorded by that identified agent"
+            )
         with self.locked():
             manifest = self.load(plan_id)
             agents = manifest.setdefault("governance", {}).setdefault("agents", {})
@@ -4188,6 +4201,10 @@ class PlanStore:
         name = (agent or identified).strip()
         if not name:
             raise PlanError("recording checkpoint recovery needs a stable agent identity")
+        if not identified or name != identified:
+            raise PlanError(
+                "checkpoint recovery may only be recorded by that identified agent"
+            )
         with self.locked():
             manifest = self.load(plan_id)
             agents = manifest.setdefault("governance", {}).setdefault("agents", {})
@@ -4246,9 +4263,20 @@ class PlanStore:
                 f"agent {name} exceeded " + ", ".join(exceeded)
             ] if exceeded else []
             blockers = []
-            if exceeded and not checkpoints:
+            latest = checkpoints[-1] if checkpoints else {}
+            latest_recovery = next(
+                (
+                    item
+                    for item in reversed(entry.get("recoveries", []))
+                    if item.get("checkpoint") == latest.get("id")
+                ),
+                {},
+            )
+            recoverable = latest_recovery.get("status") in ("available", "restored")
+            if exceeded and (not latest or checkpoint_due or not recoverable):
                 blockers.append(
-                    f"agent {name} exceeded its declared budget without a checkpoint"
+                    f"agent {name} exceeded its declared budget without a current "
+                    "checkpoint and successful recovery record"
                 )
             status = {
                 "agent": name,
@@ -4655,6 +4683,7 @@ class PlanStore:
                     "brief": stream.get("brief", ""),
                     "model": stream.get("model", ""),
                     "required_reviews": stream.get("required_reviews", []),
+                    "review": stream.get("review", ""),
                     "state": manifest.get("workstream_state", {}).get(
                         stream["name"], PENDING
                     ),
