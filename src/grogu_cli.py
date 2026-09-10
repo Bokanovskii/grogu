@@ -1888,7 +1888,30 @@ def plan_write(args: argparse.Namespace) -> int:
         role=getattr(args, "role", "") or "",
         replace=getattr(args, "replace", False),
         base=getattr(args, "base", None),
+        dry_run=getattr(args, "dry_run", False),
     )
+    if getattr(args, "dry_run", False):
+        if getattr(args, "json", False):
+            write = manifest.get("document_write", {})
+            print_json(
+                {
+                    "base": write.get("base", ""),
+                    "bytes": len(body),
+                    "changed": write.get("changed", []),
+                    "digest": (manifest.get("last_write") or {}).get(
+                        "digest", ""
+                    ),
+                    "dry_run": True,
+                    "plan": plan_id,
+                    "revision": write.get("revision", ""),
+                    "stage": args.stage,
+                    "stages": write.get("stages", []),
+                }
+            )
+            return 0
+        print(f"would write {args.stage} plan for {plan_id} ({len(body)} bytes)")
+        print("dry run: nothing was written")
+        return 0
     for warning in manifest.get("warnings", []):
         print(f"grogu: {warning}", file=sys.stderr)
     print(f"wrote {args.stage} plan for {plan_id} ({len(body)} bytes)")
@@ -5418,7 +5441,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_shape_parser.set_defaults(handler=plan_shape)
 
     plan_write_parser = plan_subparsers.add_parser(
-        "write", help="write a plan stage (architect only)",
+        "write", help="write a plan stage as its owning role",
         parents=[plan_common, role_common],
     )
     _plan_id_argument(plan_write_parser)
@@ -5436,6 +5459,16 @@ def build_parser() -> argparse.ArgumentParser:
             "expected plaintext stage digest from `grogu plan writer`; "
             "refuse if another writer changed the stage"
         ),
+    )
+    plan_write_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate a typed stage write without creating a revision",
+    )
+    plan_write_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit machine-readable dry-run output",
     )
     plan_write_parser.set_defaults(handler=plan_write)
 

@@ -2516,6 +2516,7 @@ class PlanStore:
         role: str = "",
         replace: bool = False,
         base: Optional[str] = None,
+        dry_run: bool = False,
     ) -> dict:
         """Stages are written by the role that owns them; others propose.
 
@@ -2527,7 +2528,6 @@ class PlanStore:
         where work was lost that no other role could recover.
         """
         role = role or current_role() or ARCHITECT
-        identified = self.claim_agent_role(plan_id, role)
         explicit_agent = os.environ.get("GROGU_AGENT", "").strip()
         writers = STAGE_WRITERS.get(stage, frozenset({ARCHITECT}))
         if role not in writers:
@@ -2537,9 +2537,27 @@ class PlanStore:
                 "`grogu plan amend` and let the owner decide"
             )
         if self.is_document_plan(plan_id):
-            return PlanDocumentStore(self, plan_id).replace_stage(
-                stage, body, role=role, replace=replace
+            documents = PlanDocumentStore(self, plan_id)
+            preview = documents.replace_stage(
+                stage,
+                body,
+                role=role,
+                replace=replace,
+                base=base,
+                dry_run=True,
             )
+            if dry_run:
+                return preview
+            return documents.replace_stage(
+                stage,
+                body,
+                role=role,
+                replace=replace,
+                base=base,
+            )
+        if dry_run:
+            raise PlanError("--dry-run is only supported for typed .plan packages")
+        identified = self.claim_agent_role(plan_id, role)
         with self.locked():
             manifest = self.load(plan_id)
             if stage not in manifest.get("stages", []):
@@ -6583,7 +6601,11 @@ class PlanDocumentStore:
         mapping: dict[str, str] = {}
         counters = manifest.setdefault("plandoc", {}).setdefault("counters", {})
         counter_manifest = {"plandoc": {"counters": counters}}
-        occupied = set(target["nodes"]) | set(target["edges"])
+        occupied = (
+            set(target["nodes"])
+            | set(target["edges"])
+            | PlanDocumentStore._all_manifest_object_ids(manifest)
+        )
         for old_id, node in sorted(
             source["nodes"].items(),
             key=lambda item: grogu_plandoc.node_sort_key(item[1]),
@@ -6607,23 +6629,62 @@ class PlanDocumentStore:
             mapping[old_id] = new_id
             occupied.add(new_id)
 
-        def remap(value):
-            if isinstance(value, str):
-                return mapping.get(value, value)
-            if isinstance(value, list):
-                return [remap(item) for item in value]
-            if isinstance(value, dict):
-                return {key: remap(item) for key, item in value.items()}
-            return value
+        destinations = set(mapping.values())
+        if len(destinations) != len(mapping) or destinations & (
+            set(target["nodes"]) | set(target["edges"])
+        ):
+            raise PlanError("one or more requested object ids are already in use")
 
         for old_id, node in source["nodes"].items():
-            copied = remap(copy.deepcopy(node))
+            copied = copy.deepcopy(node)
             copied["id"] = mapping[old_id]
+            attrs = copied.get("attrs")
+            if isinstance(attrs, dict) and attrs.get("diagram") in mapping:
+                attrs["diagram"] = mapping[attrs["diagram"]]
+            if copied["id"] in target["nodes"] or copied["id"] in target["edges"]:
+                raise PlanError("one or more requested object ids are already in use")
             target["nodes"][copied["id"]] = copied
         for old_id, edge in source["edges"].items():
-            copied = remap(copy.deepcopy(edge))
+            copied = copy.deepcopy(edge)
             copied["id"] = mapping[old_id]
+            copied["from"] = mapping.get(copied.get("from"), copied.get("from"))
+            copied["to"] = mapping.get(copied.get("to"), copied.get("to"))
+            if copied["id"] in target["nodes"] or copied["id"] in target["edges"]:
+                raise PlanError("one or more requested object ids are already in use")
             target["edges"][copied["id"]] = copied
+
+    @staticmethod
+    def _assert_stage_replacement_scope(
+        before: dict, after: dict, stage: str
+    ) -> None:
+        for identifier in set(before["nodes"]) | set(after["nodes"]):
+            old = before["nodes"].get(identifier)
+            new = after["nodes"].get(identifier)
+            sample = old or new or {}
+            if sample.get("stage") == stage or sample.get("kind") == "thread":
+                continue
+            if old != new:
+                raise PlanError(
+                    "stage replacement attempted to change content outside "
+                    "the target stage"
+                )
+        target_nodes = {
+            identifier
+            for document in (before, after)
+            for identifier, node in document["nodes"].items()
+            if node.get("stage") == stage
+        }
+        for identifier in set(before["edges"]) | set(after["edges"]):
+            old = before["edges"].get(identifier)
+            new = after["edges"].get(identifier)
+            sample = old or new or {}
+            if {sample.get("from"), sample.get("to")} & target_nodes:
+                continue
+            if old != new:
+                raise PlanError(
+                    "stage replacement attempted to change relationships "
+                    "outside the target stage"
+                )
 
     @staticmethod
     def _migration_diagnostics(document: dict, sources: dict[str, str]) -> list[dict]:
@@ -7078,8 +7139,9 @@ class PlanDocumentStore:
         revision: str = "",
         stages=None,
         record: bool = False,
+        claim: bool = True,
     ) -> dict:
-        effective = self._claim(role)
+        effective = self._claim(role) if claim else self._role(role)
         allowed = ROLE_READABLE_STAGES.get(effective, frozenset())
         if not allowed:
             raise PlanError(f"role {effective!r} may not read plan document stages")
@@ -7107,10 +7169,11 @@ class PlanDocumentStore:
         # Stage authority stays in PlanStore.read_stage.  The call is
         # record-free for polling surfaces but still enforces the role and
         # identified-agent binding before a graph partition is opened.
-        for stage in requested:
-            self.plans.read_stage(
-                self.plan_id, stage, role=effective, record=record
-            )
+        if claim:
+            for stage in requested:
+                self.plans.read_stage(
+                    self.plan_id, stage, role=effective, record=record
+                )
         selected_revision = revision or self.head(repair=True)
         if revision:
             try:
@@ -7616,8 +7679,9 @@ class PlanDocumentStore:
         dry_run: bool = False,
         extra_artifacts: Optional[dict[str, bytes]] = None,
         proposal_guard: str = "",
+        claim: bool = True,
     ) -> dict:
-        effective = self._claim(role)
+        effective = self._claim(role) if claim else self._role(role)
         operations = list(operations or [])
         if len(operations) > self.MAX_PATCH_OPS:
             raise PlanError(
@@ -7645,7 +7709,7 @@ class PlanDocumentStore:
                     "/counters/<prefix> with a non-negative integer"
                 )
             counter_updates[match.group(1)] = value
-        before = self.load(role=effective, record=False)
+        before = self.load(role=effective, record=False, claim=claim)
         current = before["revision"]
         if base and base != current:
             error = grogu_plandoc_patch.StaleRevision(base, current)
@@ -7693,10 +7757,18 @@ class PlanDocumentStore:
         revision = grogu_plandoc_revision.revision_id(next_seq)
         after = self._stamp_revision(before, applied, revision)
         observed_counters = self._counter_state(after)
+        persisted_counters = (
+            manifest.get("plandoc", {}).get("counters", {})
+            if isinstance(manifest.get("plandoc", {}).get("counters", {}), dict)
+            else {}
+        )
+        counter_floor = self._merge_counters(
+            persisted_counters, observed_counters
+        )
         regressed = [
             prefix
             for prefix, value in counter_updates.items()
-            if value < observed_counters.get(prefix, 0)
+            if value < counter_floor.get(prefix, 0)
         ]
         if regressed:
             raise PlanError(
@@ -7828,6 +7900,20 @@ class PlanDocumentStore:
                 error.ops_since = []
                 raise error
             latest_manifest = self.plans.load(self.plan_id)
+            latest_counter_floor = self._merge_counters(
+                latest_manifest.get("plandoc", {}).get("counters", {}),
+                observed_counters,
+            )
+            fresh_regressions = [
+                prefix
+                for prefix, value in counter_updates.items()
+                if value < latest_counter_floor.get(prefix, 0)
+            ]
+            if fresh_regressions:
+                raise PlanError(
+                    "counter updates cannot move behind existing ids: "
+                    + ", ".join(sorted(fresh_regressions))
+                )
             fresh_hidden_collisions = sorted(
                 (
                     added
@@ -8006,9 +8092,11 @@ class PlanDocumentStore:
         *,
         role: str,
         replace: bool = False,
+        base: Optional[str] = None,
+        dry_run: bool = False,
     ) -> dict:
         """Import a legacy stage write into the graph, then recompile it."""
-        effective = self._claim(role)
+        effective = self._role(role) if dry_run else self._claim(role)
         if effective not in STAGE_WRITERS.get(stage, frozenset()):
             raise PlanError(
                 f"role {effective!r} may not write the {stage} stage"
@@ -8048,9 +8136,23 @@ class PlanDocumentStore:
                     + ", ".join(sorted(vague))
                 )
         state = manifest.get("stage_state", {}).get(stage)
-        previous = self.plans.read_stage(
-            self.plan_id, stage, role=effective, record=False
-        )
+        if dry_run:
+            path = self.plans.stage_path(self.plan_id, stage)
+            stored = path.read_text(encoding="utf8")
+            previous = unseal(stored) if path.suffix == ".sealed" else stored
+        else:
+            previous = self.plans.read_stage(
+                self.plan_id, stage, role=effective, record=False
+            )
+        current_version = self.plans.stage_version(self.plan_id, stage)
+        if base is not None and base.strip() != current_version["digest"]:
+            raise PlanError(
+                f"the {stage} stage changed after base "
+                f"{base.strip() or '<empty>'}: current revision "
+                f"{current_version['revision']} is {current_version['digest']}, "
+                f"{current_version['bytes']} bytes. Re-read the stage and retry "
+                "with its current base."
+            )
         if state == COMPLETE and not replace:
             raise PlanError(
                 f"the {stage} stage is complete and this rewrites it "
@@ -8058,13 +8160,30 @@ class PlanDocumentStore:
                 "Pass --replace if you mean it; the compiled text you replace "
                 "is kept either way."
             )
-        before = self.load_all(role=effective)
+        before = self.load(role=effective, record=False, claim=not dry_run)
         working = copy.deepcopy(before)
         removed_nodes = {
             node_id
             for node_id, node in working["nodes"].items()
             if node.get("stage") == stage and node.get("kind") != "thread"
         }
+        for edge in working["edges"].values():
+            endpoints = {edge.get("from"), edge.get("to")}
+            if not endpoints & removed_nodes:
+                continue
+            foreign = endpoints - removed_nodes
+            if any(
+                (
+                    working["nodes"].get(identifier, {}).get("stage") != stage
+                    and working["nodes"].get(identifier, {}).get("kind")
+                    != "thread"
+                )
+                for identifier in foreign
+            ):
+                raise PlanError(
+                    "stage replacement cannot remove content referenced "
+                    "outside the target stage; update that dependency first"
+                )
         working["edges"] = {
             edge_id: edge
             for edge_id, edge in working["edges"].items()
@@ -8092,6 +8211,7 @@ class PlanDocumentStore:
             stage=stage,
             removed_nodes=removed_nodes,
         )
+        self._assert_stage_replacement_scope(before, working, stage)
         working = grogu_plandoc_schema.validate_document(working)
         operations = grogu_plandoc_patch.diff(before, working)
         if operations:
@@ -8100,14 +8220,30 @@ class PlanDocumentStore:
                 base=before["revision"],
                 operations=operations,
                 intent=f"import and compile {stage} stage",
-                origin="legacy-stage-adapter",
+                origin="stage-write",
+                dry_run=dry_run,
+                claim=not dry_run,
             )
         else:
             result = {
                 "revision": before["revision"],
                 "changed": [],
                 "digest": grogu_plandoc.document_digest(before),
+                "dry_run": dry_run,
             }
+        if dry_run:
+            returned = copy.deepcopy(manifest)
+            returned["dry_run"] = True
+            returned["document_write"] = result
+            returned["last_write"] = {
+                "stage": stage,
+                "by": effective,
+                "was": len(previous),
+                "now": len(body),
+                "source_bytes": len(body),
+                "digest": body_digest(body),
+            }
+            return returned
         compiled = self.plans.read_stage(
             self.plan_id, stage, role=effective, record=False
         )

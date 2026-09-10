@@ -4094,7 +4094,10 @@ class PlanDocumentPlanStoreTests(unittest.TestCase):
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         self.store = grogu_plans.PlanStore(self.root)
         self.plan = grogu_plans.PlanDocumentStore.create(
-            self.store, "Document-backed plan", evaluation=True
+            self.store,
+            "Document-backed plan",
+            design=True,
+            evaluation=True,
         )["id"]
         self.documents = grogu_plans.PlanDocumentStore.for_plan(
             self.store, self.plan
@@ -4119,6 +4122,238 @@ class PlanDocumentPlanStoreTests(unittest.TestCase):
         self.assertIn("meta:", compiled)
         self.assertNotEqual(compiled, source)
         self.assertEqual(result["document_write"]["revision"], "r0002")
+
+    def test_designer_stage_write_preserves_other_partitions(self):
+        implementation = (
+            "# Implementation\n\n"
+            "Build the partition-safe adapter and preserve every other stage.\n"
+        )
+        testing = (
+            "# Testing\n\n"
+            "Exercise role-scoped writes and compare every untouched partition.\n"
+        )
+        evaluation = (
+            "# Evaluation\n\n"
+            "Run concurrent stage writes and confirm no committed object is lost.\n"
+        )
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "architect-one"}):
+            self.store.write_stage(
+                self.plan, "implementation", implementation, role="architect"
+            )
+            self.store.write_stage(
+                self.plan, "testing", testing, role="architect"
+            )
+            self.store.write_stage(
+                self.plan, "evaluation", evaluation, role="architect"
+            )
+        testing_path = self.store.stage_path(self.plan, "testing")
+        evaluation_path = self.store.stage_path(self.plan, "evaluation")
+        sealed_before = {
+            "testing": testing_path.read_bytes(),
+            "evaluation": evaluation_path.read_bytes(),
+        }
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "designer-one"}):
+            result = self.store.write_stage(
+                self.plan,
+                "design",
+                valid_design_spec(),
+                role="designer",
+            )
+        self.assertEqual(result["document_write"]["stages"], ["design"])
+        self.assertEqual(testing_path.read_bytes(), sealed_before["testing"])
+        self.assertEqual(evaluation_path.read_bytes(), sealed_before["evaluation"])
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "engineer-one"}):
+            self.assertIn(
+                "Acceptance criteria",
+                self.store.read_stage(self.plan, "design", role="engineer"),
+            )
+
+    def test_later_architect_write_does_not_replace_design_nodes(self):
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "designer-two"}):
+            self.store.write_stage(
+                self.plan,
+                "design",
+                valid_design_spec(),
+                role="designer",
+            )
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "reviewer-two"}):
+            before = self.documents.load(role="reviewer")
+        design_before = {
+            identifier: value
+            for identifier, value in before["nodes"].items()
+            if value.get("stage") == "design"
+        }
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "architect-two"}):
+            self.store.write_stage(
+                self.plan,
+                "implementation",
+                "# Implementation\n\n"
+                "Implement the approved behavior without changing the design.\n",
+                role="architect",
+            )
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "reviewer-two"}):
+            after = self.documents.load(role="reviewer")
+        self.assertEqual(
+            {
+                identifier: value
+                for identifier, value in after["nodes"].items()
+                if value.get("stage") == "design"
+            },
+            design_before,
+        )
+        self.assertEqual(len(after["nodes"]), len(set(after["nodes"])))
+
+    def test_stage_import_does_not_rewrite_identifier_like_prose(self):
+        source = (
+            "# Implementation\n\n"
+            "## Literal reference\n\n"
+            "The text note-1 is an example for the reader, not a graph reference.\n"
+        )
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "architect-prose"}):
+            self.store.write_stage(
+                self.plan, "implementation", source, role="architect"
+            )
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "engineer-prose"}):
+            compiled = self.store.read_stage(
+                self.plan, "implementation", role="engineer"
+            )
+        self.assertIn(
+            "The text note-1 is an example for the reader", compiled
+        )
+
+    def test_stage_write_refuses_visible_foreign_dependencies_atomically(self):
+        reviewer = self.documents.load(role="reviewer")
+        design = grogu_plandoc.make_node(
+            "note-1",
+            "note",
+            "Design dependency",
+            stage="design",
+            body="The implementation depends on this design decision.",
+            revision=reviewer["revision"],
+        )
+        implementation = grogu_plandoc.make_node(
+            "task-1",
+            "task",
+            "Implementation consumer",
+            stage="implementation",
+            body="Build the behavior described by the design.",
+            revision=reviewer["revision"],
+        )
+        edge = grogu_plandoc.make_edge(
+            "edge-1",
+            "depends_on",
+            "task-1",
+            "note-1",
+            revision=reviewer["revision"],
+        )
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "architect-edge"}):
+            nodes_result = self.documents.patch(
+                role="architect",
+                base=reviewer["revision"],
+                operations=[
+                    {"op": "add", "path": "/nodes/note-1", "value": design},
+                    {"op": "add", "path": "/nodes/task-1", "value": implementation},
+                ],
+            )
+            self.documents.patch(
+                role="architect",
+                base=nodes_result["revision"],
+                operations=[
+                    {"op": "add", "path": "/edges/edge-1", "value": edge},
+                ],
+            )
+        head_before = self.documents.head()
+        package = self.store.plan_dir(self.plan)
+        manifest_before = (package / "manifest.json").read_bytes()
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "designer-edge"}):
+            with self.assertRaisesRegex(
+                grogu_plans.PlanError, "referenced outside the target stage"
+            ):
+                self.store.write_stage(
+                    self.plan,
+                    "design",
+                    valid_design_spec(),
+                    role="designer",
+                )
+        self.assertEqual(self.documents.head(), head_before)
+        self.assertEqual((package / "manifest.json").read_bytes(), manifest_before)
+
+    def test_stage_import_reserves_hidden_object_ids(self):
+        reviewer = self.documents.load(role="reviewer")
+        hidden = grogu_plandoc.make_node(
+            "note-1",
+            "note",
+            "Hidden testing note",
+            stage="testing",
+            body="This node must survive a designer stage import.",
+            revision=reviewer["revision"],
+        )
+        self.documents.patch(
+            role="reviewer",
+            base=reviewer["revision"],
+            operations=[{"op": "add", "path": "/nodes/note-1", "value": hidden}],
+        )
+        manifest = self.store.load(self.plan)
+        manifest["plandoc"]["counters"]["note"] = 0
+        self.store._write_json(
+            self.store.plan_dir(self.plan) / "manifest.json", manifest
+        )
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "designer-three"}):
+            self.store.write_stage(
+                self.plan,
+                "design",
+                valid_design_spec(),
+                role="designer",
+            )
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "reviewer-three"}):
+            after = self.documents.load(role="reviewer")
+        self.assertEqual(after["nodes"]["note-1"]["stage"], "testing")
+        self.assertEqual(after["nodes"]["note-1"]["title"], "Hidden testing note")
+        self.assertTrue(
+            any(
+                identifier != "note-1" and node.get("stage") == "design"
+                for identifier, node in after["nodes"].items()
+            )
+        )
+
+    def test_stage_write_dry_run_and_base_are_side_effect_free(self):
+        package = self.store.plan_dir(self.plan)
+        head_before = self.documents.head()
+        manifest_before = (package / "manifest.json").read_bytes()
+        partitions_before = self.documents._current_partition_payloads()
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "designer-four"}):
+            preview = self.store.write_stage(
+                self.plan,
+                "design",
+                valid_design_spec(),
+                role="designer",
+                dry_run=True,
+            )
+        self.assertTrue(preview["dry_run"])
+        self.assertEqual(self.documents.head(), head_before)
+        self.assertEqual((package / "manifest.json").read_bytes(), manifest_before)
+        self.assertEqual(
+            self.documents._current_partition_payloads(), partitions_before
+        )
+        current = self.store.stage_version(self.plan, "design")
+        with mock.patch.dict(os.environ, {"GROGU_AGENT": "designer-four"}):
+            with self.assertRaisesRegex(
+                grogu_plans.PlanError, "changed after base"
+            ):
+                self.store.write_stage(
+                    self.plan,
+                    "design",
+                    valid_design_spec(),
+                    role="designer",
+                    base="sha256:not-current",
+                )
+            self.store.write_stage(
+                self.plan,
+                "design",
+                valid_design_spec(),
+                role="designer",
+                base=current["digest"],
+            )
 
     def test_stage_write_refuses_its_own_compiled_artifact_as_input(self):
         source = (

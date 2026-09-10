@@ -61,6 +61,7 @@ One UX stage (`design` internally) on the plan, written with the required struct
 
 ```sh
 grogu design template "<change>" | ...      # the skeleton
+grogu plan write <id> design --role designer --file spec.md --dry-run
 grogu plan write <id> design --role designer --file -
 ```
 
@@ -155,6 +156,7 @@ implementation diverged (the engineer's), and say which.
 If the spec was ambiguous, rewriting it is the answer:
 
 ```sh
+grogu plan write <id> design --role designer --file spec.md --dry-run
 grogu plan write <id> design --role designer --file spec.md
 ```
 

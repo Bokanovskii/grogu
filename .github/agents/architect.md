@@ -94,7 +94,10 @@ Every plan has at least two stages, written separately:
   `grogu plan shape <id> --decline evaluation --why '...'` — a missing stage
   otherwise reads the same whether you ruled it out or never considered it.
 
-Write each with `grogu plan write <id> <stage> --role architect --file -`.
+Preflight each source with `grogu plan write <id> <stage> --role architect
+--file <path> --dry-run`, then write it with the same command without
+`--dry-run`. A preflight creates no plan revision; a concurrent writer may
+still require a fresh stage digest before the live write.
 
 You are usually spawned onto a plan someone else created, so its shape is not
 yours until you set it. `grogu plan shape` is how you add the design or
