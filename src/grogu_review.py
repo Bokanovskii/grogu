@@ -13,6 +13,7 @@ from pathlib import Path
 
 import grogu_markdown
 import grogu_mermaid
+import grogu_plandoc_anchor as _plandoc_anchor
 import grogu_plans
 
 SCHEMA_VERSION = 1
@@ -517,12 +518,212 @@ def reanchor_mermaid(anchor: dict, body: str, blocks: list) -> dict:
     }
 
 
+# The package compiler owns these anchor primitives now. Keep the public names
+# here as compatibility adapters so existing callers and tests exercise the
+# exact shared implementation rather than a second copy that can drift.
+digest = _plandoc_anchor.digest
+text_anchor = _plandoc_anchor.text_anchor
+mermaid_anchor = _plandoc_anchor.mermaid_anchor
+reanchor_text = _plandoc_anchor.reanchor_text
+reanchor_mermaid = _plandoc_anchor.reanchor_mermaid
+
+
 class ReviewStore:
     """Read and mutate one repository's local-only plan review state."""
 
     def __init__(self, plans: "grogu_plans.PlanStore") -> None:
         self.plans = plans
         self._mutex = threading.RLock()
+
+    def _document(self, plan_id: str):
+        if not self.plans.is_document_plan(plan_id):
+            return None
+        return grogu_plans.PlanDocumentStore.for_plan(self.plans, plan_id)
+
+    @staticmethod
+    def _document_role(role: str = "") -> str:
+        return role or grogu_plans.current_role() or grogu_plans.REVIEWER
+
+    def _document_state(self, plan_id: str, *, role: str = "") -> dict:
+        service = self._document(plan_id)
+        if service is None:
+            raise ReviewError(f"{plan_id} is not a plan document package")
+        effective = self._document_role(role)
+        manifest = self.plans.load(plan_id)
+        thread_values = service.threads(role=effective)
+        aliases = {
+            thread["id"]: thread.get("legacy_id") or thread["id"]
+            for thread in thread_values
+        }
+        threads = []
+        for value in thread_values:
+            selector = value.get("selector", {})
+            if selector.get("type") == "text":
+                quote = selector.get("quote", {})
+                position = selector.get("position", {})
+                anchor = {
+                    "kind": "text",
+                    "stage": value.get("stage", ""),
+                    "revision": int(service.head()[1:]),
+                    "start": int(position.get("start", 0)),
+                    "end": int(position.get("end", 0)),
+                    "exact": str(quote.get("exact", "")),
+                    "prefix": str(quote.get("prefix", "")),
+                    "suffix": str(quote.get("suffix", "")),
+                    "body_digest": str(selector.get("body_digest", "")),
+                }
+            else:
+                anchor = {
+                    "kind": "object",
+                    "stage": value.get("stage", ""),
+                    "selector": copy.deepcopy(selector),
+                }
+            comments = [
+                {
+                    "seq": index,
+                    "at": comment.get("at", ""),
+                    "author": comment.get("author", ""),
+                    "body": comment.get("body", ""),
+                }
+                for index, comment in enumerate(value.get("comments", []), 1)
+            ]
+            threads.append(
+                {
+                    "id": aliases[value["id"]],
+                    "graph_id": value["id"],
+                    "stage": value.get("stage", ""),
+                    "round": value.get("round", 1),
+                    "status": value.get("status", OPEN),
+                    "created_at": value.get("created_at", ""),
+                    "author": comments[0]["author"] if comments else "",
+                    "anchor": anchor,
+                    "anchor_state": (
+                        ANCHORED
+                        if value.get("anchor_state") == "resolved"
+                        else value.get("anchor_state", ANCHORED)
+                    ),
+                    "anchor_confidence": (
+                        1.0 if value.get("anchor_state") == "resolved" else 0.9
+                    ),
+                    "anchor_revision": int(service.head()[1:]),
+                    "anchor_history": copy.deepcopy(
+                        value.get("anchor_history", [])
+                    ),
+                    "comments": comments,
+                    "resolved_at": value.get("resolved_at", ""),
+                    "resolved_by": value.get("resolved_by", ""),
+                }
+            )
+        rounds = copy.deepcopy(manifest.get("review_rounds", []))
+        for item in rounds:
+            item["thread_ids"] = [
+                aliases.get(thread_id, thread_id)
+                for thread_id in item.get("thread_ids", [])
+            ]
+            if "requested_thread_ids" in item:
+                item["requested_thread_ids"] = [
+                    aliases.get(thread_id, thread_id)
+                    for thread_id in item.get("requested_thread_ids", [])
+                ]
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "plan": plan_id,
+            "created_at": manifest.get("created_at", ""),
+            "updated_at": manifest.get("updated_at", ""),
+            "stage_digests": {},
+            "stage_revisions": {},
+            "rounds": rounds,
+            "threads": threads,
+        }
+
+    def _selector_from_legacy_anchor(
+        self,
+        plan_id: str,
+        stage: str,
+        anchor: dict,
+        *,
+        role: str,
+    ) -> dict:
+        service = self._document(plan_id)
+        if service is None:
+            raise ReviewError(f"{plan_id} is not a plan document package")
+        current_body = self.plans.read_stage(
+            plan_id, stage, role=role, record=False
+        )
+        if anchor.get("body_digest") and anchor.get("body_digest") != digest(
+            current_body
+        ):
+            raise ReviewError("the plan changed; reload it before adding this comment")
+        document = service.load(role=role, stages=[stage], record=False)
+        if anchor.get("kind") == "text":
+            exact = str(anchor.get("exact", ""))
+            body_matches = []
+            title_matches = []
+            for node in document["nodes"].values():
+                if node.get("kind") == "thread":
+                    continue
+                start = node.get("body", "").find(exact)
+                if exact and start >= 0:
+                    body_matches.append((node, start))
+                if exact and exact in node.get("title", ""):
+                    title_matches.append(node)
+            if len(body_matches) == 1:
+                node, start = body_matches[0]
+                return {
+                    "type": "text",
+                    "node": node["id"],
+                    "quote": {
+                        "exact": exact,
+                        "prefix": node["body"][max(0, start - 32) : start],
+                        "suffix": node["body"][
+                            start + len(exact) : start + len(exact) + 32
+                        ],
+                    },
+                    "position": {
+                        "start": start,
+                        "end": start + len(exact),
+                    },
+                    "body_digest": grogu_plans.grogu_plandoc_anchor.digest(
+                        node["body"]
+                    ),
+                }
+            if len(title_matches) == 1:
+                return {
+                    "type": "object",
+                    "id": title_matches[0]["id"],
+                    "part": "title",
+                }
+            raise ReviewError(
+                "the selected text does not map to exactly one graph node"
+            )
+        if anchor.get("kind") == "mermaid":
+            diagrams = sorted(
+                (
+                    node
+                    for node in document["nodes"].values()
+                    if node.get("kind") == "diagram"
+                ),
+                key=grogu_plans.grogu_plandoc.node_sort_key,
+            )
+            index = int(anchor.get("block_index", 0) or 0)
+            if index >= len(diagrams):
+                raise ReviewError("the selected diagram no longer exists")
+            diagram = diagrams[index]
+            if anchor.get("target") == "node":
+                wanted = str(anchor.get("node_id", ""))
+                child = next(
+                    (
+                        node
+                        for node in document["nodes"].values()
+                        if node.get("attrs", {}).get("diagram") == diagram["id"]
+                        and node.get("attrs", {}).get("mermaid_id") == wanted
+                    ),
+                    None,
+                )
+                if child:
+                    return {"type": "node", "id": child["id"]}
+            return {"type": "node", "id": diagram["id"]}
+        raise ReviewError("thread requires a text or Mermaid anchor")
 
     def path(self, plan_id: str) -> Path:
         return self.plans.plan_dir(plan_id) / "review.json"
@@ -571,6 +772,8 @@ class ReviewStore:
 
     def load(self, plan_id: str) -> dict:
         self.plans.load(plan_id)
+        if self._document(plan_id) is not None:
+            return self._document_state(plan_id)
         with self._mutex:
             state = self._load_unlocked(plan_id)
             role = grogu_plans.current_role() or grogu_plans.REVIEWER
@@ -586,6 +789,10 @@ class ReviewStore:
 
     @staticmethod
     def _revision(manifest: dict, stage: str) -> int:
+        plandoc = manifest.get("plandoc") or {}
+        head = str(plandoc.get("head", ""))
+        if re.fullmatch(r"r[0-9]{4,}", head):
+            return int(head[1:])
         return len(
             [
                 item
@@ -712,6 +919,8 @@ class ReviewStore:
 
     def sync(self, plan_id: str, *, role: str) -> dict:
         """Re-anchor changed readable stages, preserving every thread."""
+        if self._document(plan_id) is not None:
+            return self._document_state(plan_id, role=role)
         readable = grogu_plans.ROLE_READABLE_STAGES.get(role)
         if readable is None:
             raise ReviewError(f"unknown role {role!r}")
@@ -882,6 +1091,24 @@ class ReviewStore:
         body,
         author="",
     ) -> dict:
+        service = self._document(plan_id)
+        if service is not None:
+            role = self._document_role()
+            selector = self._selector_from_legacy_anchor(
+                plan_id, stage, anchor, role=role
+            )
+            value = service.add_thread(
+                role=role,
+                selector=selector,
+                body=body,
+                kind="discussion",
+            )
+            state = self._document_state(plan_id, role=role)
+            return next(
+                item
+                for item in state["threads"]
+                if item.get("graph_id") == value["id"]
+            )
         if not isinstance(anchor, dict) or anchor.get("kind") not in {"text", "mermaid"}:
             raise ReviewError("thread requires a text or Mermaid anchor")
         if anchor.get("stage") != stage:
@@ -935,6 +1162,17 @@ class ReviewStore:
         raise ReviewError(f"{stage} changed repeatedly while adding the comment")
 
     def reply(self, plan_id, thread_id, body, *, author="") -> dict:
+        service = self._document(plan_id)
+        if service is not None:
+            role = self._document_role()
+            value = service.reply_thread(thread_id, body, role=role)
+            state = self._document_state(plan_id, role=role)
+            return next(
+                item
+                for item in state["threads"]
+                if item.get("graph_id") == value["id"]
+                or item.get("id") == thread_id
+            )
         with self._mutex, self.plans.locked():
             state = self._load_unlocked(plan_id)
             thread = self._thread(state, thread_id)
@@ -946,6 +1184,19 @@ class ReviewStore:
             return copy.deepcopy(thread)
 
     def resolve_thread(self, plan_id, thread_id, *, note="", author="") -> dict:
+        service = self._document(plan_id)
+        if service is not None:
+            role = self._document_role()
+            value = service.set_thread_status(
+                thread_id, "resolved", role=role, note=note
+            )
+            state = self._document_state(plan_id, role=role)
+            return next(
+                item
+                for item in state["threads"]
+                if item.get("graph_id") == value["id"]
+                or item.get("id") == thread_id
+            )
         with self._mutex, self.plans.locked():
             state = self._load_unlocked(plan_id)
             thread = self._thread(state, thread_id)
@@ -961,6 +1212,19 @@ class ReviewStore:
             return copy.deepcopy(thread)
 
     def reopen_thread(self, plan_id, thread_id) -> dict:
+        service = self._document(plan_id)
+        if service is not None:
+            role = self._document_role()
+            value = service.set_thread_status(
+                thread_id, "open", role=role
+            )
+            state = self._document_state(plan_id, role=role)
+            return next(
+                item
+                for item in state["threads"]
+                if item.get("graph_id") == value["id"]
+                or item.get("id") == thread_id
+            )
         with self._mutex, self.plans.locked():
             state = self._load_unlocked(plan_id)
             if state.get("approval_pending"):
@@ -978,6 +1242,21 @@ class ReviewStore:
             return copy.deepcopy(thread)
 
     def threads(self, plan_id, *, stage="", status="") -> list:
+        if self._document(plan_id) is not None:
+            values = self._document_state(plan_id)["threads"]
+            if stage:
+                values = [
+                    thread
+                    for thread in values
+                    if thread.get("stage") == stage
+                ]
+            if status:
+                values = [
+                    thread
+                    for thread in values
+                    if thread.get("status") == status
+                ]
+            return copy.deepcopy(values)
         state = self.load(plan_id)
         values = state["threads"]
         if stage:
@@ -1008,6 +1287,88 @@ class ReviewStore:
 
     def request_changes(self, plan_id, *, note="", role="") -> dict:
         effective_role = role or grogu_plans.current_role() or grogu_plans.REVIEWER
+        if self._document(plan_id) is not None:
+            with self._mutex, self.plans.locked():
+                state = self._document_state(plan_id, role=effective_role)
+                if (
+                    state["rounds"]
+                    and state["rounds"][-1].get("state") == ROUND_REQUESTED
+                    and state["rounds"][-1].get("steering_seq")
+                ):
+                    return copy.deepcopy(state["rounds"][-1])
+                review_round = (
+                    state["rounds"][-1]
+                    if state["rounds"]
+                    and state["rounds"][-1].get("state") == ROUND_OPEN
+                    else None
+                )
+                if review_round is None:
+                    raise ReviewError("there is no open review round")
+                open_threads = [
+                    thread
+                    for thread in state["threads"]
+                    if thread.get("status") == OPEN
+                    and thread.get("id") in review_round.get("thread_ids", [])
+                ]
+                if not open_threads:
+                    raise ReviewError(
+                        "there are no open comments to request changes for"
+                    )
+                lines = []
+                if note.strip():
+                    lines.extend([note.strip(), ""])
+                lines.extend(
+                    [
+                        f"Review round {review_round['number']} — "
+                        f"{len(open_threads)} open comment(s). Read them with",
+                        f"`grogu review list {plan_id} --json`.",
+                        "",
+                    ]
+                )
+                for thread in open_threads:
+                    comment = thread.get("comments", [{}])[-1].get("body", "")
+                    lines.extend(
+                        [
+                            f"[{thread['id']} {thread['stage']}]",
+                            "  " + str(comment).replace("\n", "\n  "),
+                            "",
+                        ]
+                    )
+                manifest = self.plans.load(plan_id)
+                rounds = manifest.setdefault("review_rounds", [])
+                current = next(
+                    (
+                        item
+                        for item in rounds
+                        if item.get("number") == review_round["number"]
+                    ),
+                    None,
+                )
+                if current is None or current.get("state") != ROUND_OPEN:
+                    raise ReviewError("review round changed while requesting changes")
+                steering = self.plans._append_plan_steering_unlocked(
+                    manifest,
+                    text="\n".join(lines).rstrip(),
+                    role=grogu_plans.ARCHITECT,
+                    requires_replan=True,
+                    author=grogu_plans.current_role() or "user",
+                )
+                current["state"] = ROUND_REQUESTED
+                current["requested_at"] = _now()
+                current["note"] = note
+                current["requested_thread_ids"] = [
+                    thread.get("graph_id", thread["id"])
+                    for thread in open_threads
+                ]
+                current["steering_seq"] = int(steering.get("seq", 0))
+                self.plans._save(
+                    manifest,
+                    "steering",
+                    role=grogu_plans.ARCHITECT,
+                    seq=current["steering_seq"],
+                    requires_replan=True,
+                )
+                return copy.deepcopy(current)
         with self._mutex:
             for _ in range(4):
                 preliminary = self.sync(plan_id, role=effective_role)
@@ -1158,6 +1519,18 @@ class ReviewStore:
 
     def approve(self, plan_id, *, confirm_open=False, note="") -> dict:
         self.plans.load(plan_id)
+        if self._document(plan_id) is not None:
+            open_ids = [
+                thread["id"]
+                for thread in self._document_state(plan_id)["threads"]
+                if thread.get("status") == OPEN
+            ]
+            if open_ids and not confirm_open:
+                raise ReviewError(
+                    "open review threads must be confirmed before approval: "
+                    + ", ".join(open_ids)
+                )
+            return self.plans.approve(plan_id, note=note)
         marker = _now()
         with self._mutex, self.plans.locked():
             state = self._load_unlocked(plan_id)
@@ -1185,6 +1558,27 @@ class ReviewStore:
                     self._write_unlocked(state)
 
     def summary(self, plan_id: str) -> dict:
+        if self._document(plan_id) is not None:
+            state = self._document_state(plan_id)
+            open_count = sum(
+                thread.get("status") == OPEN for thread in state["threads"]
+            )
+            resolved_count = sum(
+                thread.get("status") == RESOLVED for thread in state["threads"]
+            )
+            orphaned_count = sum(
+                thread.get("anchor_state") == ORPHANED
+                for thread in state["threads"]
+            )
+            current_round = state["rounds"][-1] if state["rounds"] else {}
+            return {
+                "round": int(current_round.get("number", 0)),
+                "round_state": current_round.get("state", ""),
+                "open": open_count,
+                "resolved": resolved_count,
+                "orphaned": orphaned_count,
+                "threads": len(state["threads"]),
+            }
         role = grogu_plans.current_role() or grogu_plans.REVIEWER
         state = (
             self.sync(plan_id, role=role)

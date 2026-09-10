@@ -38,6 +38,11 @@ and design gates, the loops and the finish steps are all specified there. Do not
 reconstruct that process from memory; the skill is the source of truth and
 `docs/pipeline.md` is the reasoning behind it.
 
+New planning cycles use `grogu plan doc create`, which stores one typed `.plan`
+package and compiles role-bounded Markdown for agents. `grogu plan new` is
+legacy compatibility only. Non-software work and requests triaged `direct`
+still do not enter a planning cycle.
+
 Treat `grogu plan gate` as binding. It is a state check rather than advice, and
 when the user asked for a plan directly it refuses work until they approve it —
 autopilot does not waive user review. The testing and evaluation plans are

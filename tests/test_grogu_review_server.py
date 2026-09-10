@@ -451,8 +451,11 @@ class GroguReviewServerTests(unittest.TestCase):
             time.sleep(0.5)
             with self.assertRaises((OSError, ConnectionRefusedError)):
                 c = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
-                c.request("GET", "/api/plan")
-                c.getresponse()
+                try:
+                    c.request("GET", "/api/plan")
+                    c.getresponse()
+                finally:
+                    c.close()
 
             # 3. Server with 1-second idle timeout exits on its own
             info_idle = grogu_review_server.serve(plan_id, block=False, store=store, timeout=1.0)
@@ -460,8 +463,11 @@ class GroguReviewServerTests(unittest.TestCase):
             time.sleep(2.0)
             with self.assertRaises((OSError, ConnectionRefusedError)):
                 c = http.client.HTTPConnection("127.0.0.1", port_idle, timeout=1)
-                c.request("GET", "/api/plan")
-                c.getresponse()
+                try:
+                    c.request("GET", "/api/plan")
+                    c.getresponse()
+                finally:
+                    c.close()
 
 
 if __name__ == "__main__":

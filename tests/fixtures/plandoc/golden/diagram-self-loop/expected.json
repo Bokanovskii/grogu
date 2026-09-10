@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "kind": "grogu.plan_projection",
+  "title": "Diagram self-loop",
+  "nodes": [
+    {
+      "id": "dia-1",
+      "kind": "diagram",
+      "stage": "implementation",
+      "title": "Loop",
+      "body": "flowchart LR\n  A --> A\n",
+      "attrs": {
+        "source": "flowchart LR\n  A --> A\n"
+      },
+      "order": 1000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "note-1",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "A",
+      "body": "",
+      "attrs": {
+        "mermaid_id": "A",
+        "source": "mermaid"
+      },
+      "order": 2000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-1",
+      "kind": "contains",
+      "from": "dia-1",
+      "to": "note-1",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-2",
+      "kind": "diagram_edge",
+      "from": "note-1",
+      "to": "note-1",
+      "attrs": {
+        "edge_index": 0,
+        "label": "",
+        "operator": "-->",
+        "pair_ordinal": 0
+      },
+      "created_rev": "r0001"
+    }
+  ],
+  "elided": [],
+  "provenance": {
+    "plan_id": "p-golden-loop",
+    "revision": "r0001",
+    "role": "reviewer",
+    "stages": [
+      "implementation"
+    ],
+    "include": "all",
+    "compiler": 1,
+    "graph_digest": "sha256:fe035bf50dddec223d5e4901b2c7adbcc04efd80840fa5e653acf8a9149dac95",
+    "projection_id": "sha256:cf9a3e58d745117fb5d23f8f83c4486be96cc89908eef0e6e92e62358de43dfc",
+    "source_at": "",
+    "source_actor": "",
+    "source_role": "",
+    "source_agent": "",
+    "sealed_relationships": 0,
+    "budget_chars": null,
+    "budget_exceeded": false,
+    "since": "",
+    "depth": null,
+    "source_provenance": {},
+    "canvas": {
+      "snap": 8
+    }
+  },
+  "projection_digest": "sha256:18b73c42a470a275a6827d239088881bbcafa545ac833ebfde141df21ecc26b2"
+}

@@ -682,10 +682,16 @@ def serve(
     watchdog = threading.Thread(target=_watchdog, args=(context,), daemon=True)
     watchdog.start()
     if not block:
-        thread = threading.Thread(
-            target=httpd.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True
-        )
+        def run_server() -> None:
+            try:
+                httpd.serve_forever(poll_interval=0.5)
+            finally:
+                httpd.server_close()
+
+        thread = threading.Thread(target=run_server, daemon=True)
         thread.start()
+        info["server"] = httpd
+        info["thread"] = thread
         return info
     try:
         httpd.serve_forever(poll_interval=0.5)

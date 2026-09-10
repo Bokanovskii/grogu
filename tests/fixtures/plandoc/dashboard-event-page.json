@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "agent_key": "repo-plan-agent-run",
+  "events": [
+    {
+      "id": "event-17",
+      "sequence": 17,
+      "occurred_at": "2026-09-05T20:09:58Z",
+      "collected_at": "2026-09-05T20:09:59Z",
+      "source": "session",
+      "basis": "observed",
+      "kind": "tool.execution_start",
+      "action": {
+        "event_id": "event-17",
+        "tool_call_id": "tool-9",
+        "kind": "tool.execution_start",
+        "tool_name": "python",
+        "phase": "started",
+        "at": "2026-09-05T20:09:58Z",
+        "duration_ms": null,
+        "refs": [
+          {
+            "plan_id": "p-20260905-fixture",
+            "revision": "r0007",
+            "object_id": "task-2",
+            "edge_id": null,
+            "frame_id": null,
+            "artifact_id": null,
+            "relation": "affected"
+          }
+        ],
+        "basis": "observed"
+      },
+      "refs": [
+        {
+          "plan_id": "p-20260905-fixture",
+          "revision": "r0007",
+          "object_id": "task-2",
+          "edge_id": null,
+          "frame_id": null,
+          "artifact_id": null,
+          "relation": "affected"
+        }
+      ],
+      "safe_code": null,
+      "summary": null
+    }
+  ],
+  "next_cursor": null,
+  "gap": false,
+  "truncated": false
+}

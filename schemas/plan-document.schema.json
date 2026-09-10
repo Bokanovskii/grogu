@@ -1,0 +1,536 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grogu.dev/schemas/plan-document.schema.json",
+  "title": "Grogu typed plan document",
+  "description": "Runtime parsers additionally reject duplicate JSON keys before validation and NFC-normalize all strings for canonical:v1.",
+  "$ref": "#/$defs/document",
+  "$defs": {
+    "safeInteger": {
+      "type": "integer",
+      "minimum": -9007199254740992,
+      "maximum": 9007199254740992
+    },
+    "nonnegativeSafeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "stableId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*-[1-9][0-9]*$",
+      "maxLength": 128
+    },
+    "revisionId": {
+      "type": "string",
+      "pattern": "^r[0-9]{4,}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "canonicalValue": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "boolean"},
+        {"$ref": "#/$defs/safeInteger"},
+        {"type": "string"},
+        {
+          "type": "array",
+          "items": {"$ref": "#/$defs/canonicalValue"}
+        },
+        {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/canonicalValue"}
+        }
+      ]
+    },
+    "extensionMap": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+        "maxLength": 253
+      },
+      "additionalProperties": {"$ref": "#/$defs/canonicalValue"}
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "w", "h", "z"],
+      "properties": {
+        "x": {"$ref": "#/$defs/safeInteger"},
+        "y": {"$ref": "#/$defs/safeInteger"},
+        "w": {"$ref": "#/$defs/safeInteger", "exclusiveMinimum": 0},
+        "h": {"$ref": "#/$defs/safeInteger", "exclusiveMinimum": 0},
+        "z": {"$ref": "#/$defs/safeInteger"}
+      }
+    },
+    "textSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "node", "quote", "position", "body_digest"],
+      "properties": {
+        "type": {"const": "text"},
+        "node": {"$ref": "#/$defs/stableId"},
+        "quote": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exact", "prefix", "suffix"],
+          "properties": {
+            "exact": {"type": "string", "minLength": 1},
+            "prefix": {"type": "string"},
+            "suffix": {"type": "string"}
+          }
+        },
+        "position": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["start", "end"],
+          "properties": {
+            "start": {"$ref": "#/$defs/nonnegativeSafeInteger"},
+            "end": {"$ref": "#/$defs/nonnegativeSafeInteger"}
+          }
+        },
+        "body_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "selector": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id"],
+          "properties": {
+            "type": {"const": "node"},
+            "id": {"$ref": "#/$defs/stableId"}
+          }
+        },
+        {"$ref": "#/$defs/textSelector"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id", "part"],
+          "properties": {
+            "type": {"const": "object"},
+            "id": {"$ref": "#/$defs/stableId"},
+            "part": {
+              "type": "string",
+              "pattern": "^(title|body|attrs\\..+)$",
+              "maxLength": 256
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id"],
+          "properties": {
+            "type": {"const": "edge"},
+            "id": {
+              "type": "string",
+              "pattern": "^edge-[1-9][0-9]*$",
+              "maxLength": 128
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "from", "to", "ordinal"],
+          "properties": {
+            "type": {"const": "edge"},
+            "from": {"$ref": "#/$defs/stableId"},
+            "to": {"$ref": "#/$defs/stableId"},
+            "ordinal": {"$ref": "#/$defs/nonnegativeSafeInteger"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id"],
+          "properties": {
+            "type": {"const": "region"},
+            "id": {
+              "type": "string",
+              "pattern": "^reg-[1-9][0-9]*$",
+              "maxLength": 128
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "op", "members"],
+          "properties": {
+            "type": {"const": "composite"},
+            "op": {"enum": ["all", "any"]},
+            "members": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"$ref": "#/$defs/selector"}
+            }
+          }
+        }
+      ]
+    },
+    "comment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "at", "author", "body"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+        },
+        "author": {"type": "string", "minLength": 1, "maxLength": 256},
+        "body": {"type": "string", "minLength": 1, "maxLength": 8000},
+        "role": {
+          "enum": ["architect", "designer", "engineer", "tester", "reviewer", "supervisor"]
+        },
+        "revision": {"$ref": "#/$defs/revisionId"}
+      }
+    },
+    "directiveAttrs": {
+      "type": "object",
+      "required": ["binding", "audience", "status"],
+      "properties": {
+        "binding": {"enum": ["must", "should"]},
+        "audience": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": ["architect", "designer", "engineer", "tester", "reviewer", "supervisor", "everyone"]
+          }
+        },
+        "status": {"enum": ["active", "satisfied", "withdrawn", "superseded"]}
+      },
+      "additionalProperties": {"$ref": "#/$defs/canonicalValue"}
+    },
+    "threadAttrs": {
+      "type": "object",
+      "required": ["selector", "comments", "status"],
+      "properties": {
+        "selector": {"$ref": "#/$defs/selector"},
+        "comments": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/comment"}
+        },
+        "status": {"enum": ["open", "resolved"]},
+        "anchor_state": {"enum": ["resolved", "shifted", "orphaned", "anchored"]}
+      },
+      "additionalProperties": {"$ref": "#/$defs/canonicalValue"}
+    },
+    "nodeBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "stage", "title", "body", "attrs", "order", "created_rev", "updated_rev"],
+      "properties": {
+        "id": {"$ref": "#/$defs/stableId"},
+        "kind": {
+          "enum": ["goal", "directive", "constraint", "invariant", "decision", "criterion", "task", "risk", "question", "note", "evidence", "reference", "diagram", "region", "thread"]
+        },
+        "stage": {"enum": ["", "design", "implementation", "testing", "evaluation"]},
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\r\\n]+$"
+        },
+        "body": {"type": "string"},
+        "attrs": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/canonicalValue"}
+        },
+        "ext": {"$ref": "#/$defs/extensionMap"},
+        "geometry": {"$ref": "#/$defs/geometry"},
+        "order": {"$ref": "#/$defs/safeInteger"},
+        "created_rev": {"$ref": "#/$defs/revisionId"},
+        "updated_rev": {"$ref": "#/$defs/revisionId"}
+      }
+    },
+    "node": {
+      "allOf": [
+        {"$ref": "#/$defs/nodeBase"},
+        {
+          "if": {"properties": {"kind": {"const": "directive"}}},
+          "then": {
+            "properties": {
+              "id": {"pattern": "^dir-[1-9][0-9]*$"},
+              "attrs": {"$ref": "#/$defs/directiveAttrs"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "thread"}}},
+          "then": {
+            "properties": {
+              "id": {"pattern": "^thr-[1-9][0-9]*$"},
+              "attrs": {"$ref": "#/$defs/threadAttrs"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "goal"}}},
+          "then": {"properties": {"id": {"pattern": "^goal-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "constraint"}}},
+          "then": {"properties": {"id": {"pattern": "^con-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "invariant"}}},
+          "then": {"properties": {"id": {"pattern": "^inv-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "decision"}}},
+          "then": {"properties": {"id": {"pattern": "^dec-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "criterion"}}},
+          "then": {"properties": {"id": {"pattern": "^crit-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "task"}}},
+          "then": {"properties": {"id": {"pattern": "^task-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "risk"}}},
+          "then": {"properties": {"id": {"pattern": "^risk-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "question"}}},
+          "then": {"properties": {"id": {"pattern": "^qn-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "note"}}},
+          "then": {"properties": {"id": {"pattern": "^note-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "evidence"}}},
+          "then": {"properties": {"id": {"pattern": "^ev-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "reference"}}},
+          "then": {"properties": {"id": {"pattern": "^ref-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "diagram"}}},
+          "then": {"properties": {"id": {"pattern": "^dia-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "region"}}},
+          "then": {"properties": {"id": {"pattern": "^reg-[1-9][0-9]*$"}}}
+        }
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "from", "to", "attrs", "created_rev"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^edge-[1-9][0-9]*$",
+          "maxLength": 128
+        },
+        "kind": {
+          "enum": ["depends_on", "blocks", "refines", "contains", "validates", "supersedes", "derives_from", "references", "answers", "anchors", "diagram_edge"]
+        },
+        "from": {"$ref": "#/$defs/stableId"},
+        "to": {"$ref": "#/$defs/stableId"},
+        "attrs": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/canonicalValue"}
+        },
+        "ext": {"$ref": "#/$defs/extensionMap"},
+        "created_rev": {"$ref": "#/$defs/revisionId"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "diagram_edge"}}},
+          "then": {
+            "properties": {
+              "attrs": {
+                "type": "object",
+                "required": ["operator", "label"],
+                "properties": {
+                  "operator": {"type": "string"},
+                  "label": {"type": "string"},
+                  "pair_ordinal": {"$ref": "#/$defs/nonnegativeSafeInteger"},
+                  "edge_index": {"$ref": "#/$defs/nonnegativeSafeInteger"}
+                },
+                "additionalProperties": {"$ref": "#/$defs/canonicalValue"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "canvas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snap"],
+      "properties": {
+        "snap": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740992
+        },
+        "viewport": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y", "zoom_milli"],
+          "properties": {
+            "x": {"$ref": "#/$defs/safeInteger"},
+            "y": {"$ref": "#/$defs/safeInteger"},
+            "zoom_milli": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740992
+            }
+          }
+        }
+      }
+    },
+    "patchOperation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "path", "value"],
+          "properties": {
+            "op": {"enum": ["add", "replace", "test"]},
+            "path": {"type": "string", "pattern": "^(?:/(?:[^~/]|~[01])*)*$"},
+            "value": {"$ref": "#/$defs/canonicalValue"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "path"],
+          "properties": {
+            "op": {"const": "remove"},
+            "path": {"type": "string", "pattern": "^(?:/(?:[^~/]|~[01])*)*$"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "path", "from"],
+          "properties": {
+            "op": {"enum": ["copy", "move"]},
+            "path": {"type": "string", "pattern": "^(?:/(?:[^~/]|~[01])*)*$"},
+            "from": {"type": "string", "pattern": "^(?:/(?:[^~/]|~[01])*)*$"}
+          }
+        }
+      ]
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "revision", "seq", "parent", "at", "actor", "role", "agent", "intent", "origin", "ops", "before_digest", "after_digest"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "revision": {"$ref": "#/$defs/revisionId"},
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "parent": {
+          "type": "string",
+          "pattern": "^(?:|r[0-9]{4,})$"
+        },
+        "at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+        },
+        "actor": {"type": "string", "minLength": 1, "maxLength": 256},
+        "role": {
+          "enum": ["architect", "designer", "engineer", "tester", "reviewer", "supervisor"]
+        },
+        "agent": {"type": "string", "minLength": 1, "maxLength": 256},
+        "intent": {"type": "string", "minLength": 1, "maxLength": 8000},
+        "origin": {"type": "string", "minLength": 1, "maxLength": 256},
+        "ops": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/patchOperation"}
+        },
+        "before_digest": {"$ref": "#/$defs/digest"},
+        "after_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "projectionSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "stages", "include", "budget_chars", "since", "compiler"],
+      "properties": {
+        "role": {
+          "enum": ["architect", "designer", "engineer", "tester", "reviewer", "supervisor"]
+        },
+        "stages": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["design", "implementation", "testing", "evaluation"]}
+        },
+        "include": {"enum": ["normative", "all"]},
+        "budget_chars": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "since": {
+          "type": "string",
+          "pattern": "^(?:|r[0-9]{4,})$"
+        },
+        "compiler": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740992
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "kind", "plan_id", "title", "revision", "nodes", "edges"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "kind": {"const": "grogu.plan_document"},
+        "plan_id": {
+          "type": "string",
+          "pattern": "^p-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\r\\n]+$"
+        },
+        "revision": {"$ref": "#/$defs/revisionId"},
+        "partition": {"enum": ["open", "testing", "evaluation"]},
+        "nodes": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/node"}
+        },
+        "edges": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/edge"}
+        },
+        "canvas": {"$ref": "#/$defs/canvas"},
+        "provenance": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/canonicalValue"}
+        }
+      }
+    }
+  }
+}

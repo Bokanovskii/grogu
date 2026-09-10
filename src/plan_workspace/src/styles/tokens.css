@@ -1,0 +1,145 @@
+/*
+ * Design tokens. Every value here is fixed by the design stage; nothing invents
+ * an in-between value. Light theme is the default; dark theme is applied when
+ * the root carries data-theme="dark" (or the OS prefers dark and the user has
+ * not overridden). Colour carries meaning only where the token name says so.
+ */
+
+:root {
+  /* Spacing scale — 4px base, 8px rhythm */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Type ramp — system fonts only, no webfont */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Liberation Sans", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --text-xs: 11px;
+  --lh-xs: 16px;
+  --text-sm: 13px;
+  --lh-sm: 20px;
+  --text-md: 14px;
+  --lh-md: 22px;
+  --text-lg: 16px;
+  --lh-lg: 24px;
+  --text-xl: 20px;
+  --lh-xl: 28px;
+  --text-2xl: 24px;
+  --lh-2xl: 32px;
+  --text-mono-sm: 12px;
+  --lh-mono-sm: 18px;
+
+  /* Radius */
+  --radius-1: 2px;
+  --radius-2: 4px;
+  --radius-3: 6px;
+  --radius-4: 8px;
+  --radius-5: 12px;
+
+  /* Elevation */
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --elev-2: 0 6px 24px rgba(0, 0, 0, 0.1);
+
+  /* Motion */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 260ms;
+  --easing: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  /* Chrome heights (fixed) */
+  --h-topbar: 48px;
+  --h-modebar: 40px;
+  --h-statusbar: 32px;
+
+  /* Colour — light theme */
+  --bg: #ffffff;
+  --bg-elev-1: #f7f7f8;
+  --bg-elev-2: #efeff1;
+  --bg-elev-3: #e7e7ea;
+  --neutral-100: #eeeef1;
+  --neutral-300: #c9c9ce;
+  --neutral-500: #66666f;
+  --neutral-700: #4b4b54;
+  --neutral-900: #101014;
+  --accent: #3255ff;
+  --accent-soft: #e4eaff;
+  --warn: #b4560a;
+  --warn-soft: #fbead0;
+  --danger: #b0202e;
+  --success: #0e7a46;
+  --on-strong: #ffffff;
+  --canvas-grid: #d9d9df;
+
+  --shadow-alpha-1: 0.06;
+  --shadow-alpha-2: 0.1;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0b0b0f;
+  --bg-elev-1: #141419;
+  --bg-elev-2: #1b1b22;
+  --bg-elev-3: #22222a;
+  --neutral-100: #22222a;
+  --neutral-300: #39394a;
+  --neutral-500: #8c8c96;
+  --neutral-700: #b4b4be;
+  --neutral-900: #f0f0f5;
+  --accent: #7c97ff;
+  --accent-soft: #1e2440;
+  --warn: #f3b270;
+  --warn-soft: #3b2a12;
+  --danger: #f17a85;
+  --success: #5fcb98;
+  --on-strong: #0b0b0f;
+  --canvas-grid: #292932;
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --elev-2: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* Follow the OS when the user has not explicitly chosen, without duplicating
+ * the palette: data-theme="system" defers to the media query. */
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] {
+    --bg: #0b0b0f;
+    --bg-elev-1: #141419;
+    --bg-elev-2: #1b1b22;
+    --bg-elev-3: #22222a;
+    --neutral-100: #22222a;
+    --neutral-300: #39394a;
+    --neutral-500: #8c8c96;
+    --neutral-700: #b4b4be;
+    --neutral-900: #f0f0f5;
+    --accent: #7c97ff;
+    --accent-soft: #1e2440;
+    --warn: #f3b270;
+    --warn-soft: #3b2a12;
+    --danger: #f17a85;
+    --success: #5fcb98;
+    --on-strong: #0b0b0f;
+    --canvas-grid: #292932;
+    --elev-1: 0 1px 2px rgba(0, 0, 0, 0.24);
+    --elev-2: 0 6px 24px rgba(0, 0, 0, 0.4);
+  }
+}
+
+/* High-contrast: lift secondary text, thicken focus rings, replace elevation
+ * with borders. */
+:root[data-contrast="high"] {
+  --neutral-500: var(--neutral-700);
+  --focus-width: 4px;
+  --elev-1: 0 0 0 1px var(--neutral-300);
+  --elev-2: 0 0 0 1px var(--neutral-300);
+}
+
+:root {
+  --focus-width: 2px;
+}

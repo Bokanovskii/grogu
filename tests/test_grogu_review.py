@@ -650,5 +650,128 @@ class GroguReviewTests(unittest.TestCase):
             self.assertEqual(t_s4["anchor_history"][2]["state"], grogu_review.ORPHANED)
 
 
+class PlanDocumentReviewAdapterTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.plan = grogu_plans.PlanDocumentStore.create(
+            self.store, "Review package"
+        )["id"]
+        self.source = (
+            "# Review package — implementation plan\n\n"
+            "## Work\n\nA unique phrase belongs to one graph node.\n"
+        )
+        self.store.write_stage(
+            self.plan,
+            "implementation",
+            self.source,
+            role="architect",
+        )
+        self.review = grogu_review.ReviewStore(self.store)
+
+    def _anchor(self):
+        compiled = self.store.read_stage(
+            self.plan, "implementation", role="reviewer"
+        )
+        start = compiled.index("unique phrase")
+        return grogu_review.text_anchor(
+            compiled,
+            start,
+            start + len("unique phrase"),
+            stage="implementation",
+            revision=2,
+        )
+
+    def test_legacy_comment_command_writes_a_graph_thread_not_review_json(self):
+        thread = self.review.add_thread(
+            self.plan,
+            stage="implementation",
+            anchor=self._anchor(),
+            body="Please make this clearer.",
+        )
+        self.assertFalse(self.review.path(self.plan).exists())
+        self.assertTrue(thread["graph_id"].startswith("thr-"))
+        document = grogu_plans.PlanDocumentStore.for_plan(
+            self.store, self.plan
+        ).load(role="reviewer")
+        self.assertEqual(
+            document["nodes"][thread["graph_id"]]["kind"], "thread"
+        )
+
+    def test_request_changes_routes_one_binding_note_through_plan_store(self):
+        self.review.add_thread(
+            self.plan,
+            stage="implementation",
+            anchor=self._anchor(),
+            body="Please revise.",
+        )
+        review_round = self.review.request_changes(
+            self.plan, note="Address the open comment", role="reviewer"
+        )
+        self.assertEqual(review_round["state"], grogu_review.ROUND_REQUESTED)
+        steering = self.store.load(self.plan)["steering"]
+        self.assertEqual(len(steering), 1)
+        self.assertTrue(steering[0]["requires_replan"])
+
+        retried = self.review.request_changes(
+            self.plan, note="Address the open comment", role="reviewer"
+        )
+        self.assertEqual(retried["steering_seq"], review_round["steering_seq"])
+        self.assertEqual(len(self.store.load(self.plan)["steering"]), 1)
+
+    def test_concurrent_request_changes_is_idempotent(self):
+        self.review.add_thread(
+            self.plan,
+            stage="implementation",
+            anchor=self._anchor(),
+            body="Please revise concurrently.",
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    lambda _index: self.review.request_changes(
+                        self.plan,
+                        note="Address the open comment",
+                        role="reviewer",
+                    ),
+                    range(2),
+                )
+            )
+        self.assertEqual(
+            {result["steering_seq"] for result in results},
+            {results[0]["steering_seq"]},
+        )
+        self.assertEqual(len(self.store.load(self.plan)["steering"]), 1)
+
+    def test_package_reply_and_resolve_are_append_only_revisions(self):
+        service = grogu_plans.PlanDocumentStore.for_plan(
+            self.store, self.plan
+        )
+        document = service.load(role="reviewer")
+        note = next(
+            node
+            for node in document["nodes"].values()
+            if node["stage"] == "implementation" and node["kind"] == "note"
+        )
+        created = service.add_thread(
+            role="reviewer",
+            selector={"type": "node", "id": note["id"]},
+            body="Initial",
+        )
+        self.review.reply(self.plan, created["id"], "Reply")
+        self.review.resolve_thread(self.plan, created["id"], note="Done")
+        revisions = service.revisions(role="reviewer")
+        self.assertEqual(
+            [item["revision"] for item in revisions[-3:]],
+            ["r0003", "r0004", "r0005"],
+        )
+        self.assertEqual(
+            service.threads(role="reviewer")[0]["status"], "resolved"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 import _sandbox  # noqa: E402,F401  (redirects GROGU_HOME and HOME away from the real one)
 
 import grogu_design  # noqa: E402
+import grogu_plandoc  # noqa: E402
 import grogu_plans  # noqa: E402
 import grogu_tasks  # noqa: E402
 
@@ -3947,6 +3948,113 @@ class PaddedStageTests(unittest.TestCase):
             )
         )
         self.assertEqual(grogu_plans.padded_body(body), "")
+
+
+class PlanDocumentPlanStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        self.store = grogu_plans.PlanStore(self.root)
+        self.plan = grogu_plans.PlanDocumentStore.create(
+            self.store, "Document-backed plan", evaluation=True
+        )["id"]
+        self.documents = grogu_plans.PlanDocumentStore.for_plan(
+            self.store, self.plan
+        )
+
+    def test_stage_write_imports_then_compiles_instead_of_landing_source_bytes(self):
+        source = (
+            "# Document-backed plan — implementation plan\n\n"
+            "## Work\n\nImplement the adapter and verify its output.\n"
+        )
+        result = self.store.write_stage(
+            self.plan,
+            grogu_plans.IMPLEMENTATION,
+            source,
+            role=grogu_plans.ARCHITECT,
+        )
+        compiled = self.store.read_stage(
+            self.plan,
+            grogu_plans.IMPLEMENTATION,
+            role=grogu_plans.ENGINEER,
+        )
+        self.assertIn("meta:", compiled)
+        self.assertNotEqual(compiled, source)
+        self.assertEqual(result["document_write"]["revision"], "r0002")
+
+    def test_stage_write_refuses_its_own_compiled_artifact_as_input(self):
+        source = (
+            "# Document-backed plan — implementation plan\n\n"
+            "## Work\n\nImplement the adapter and verify its output.\n"
+        )
+        self.store.write_stage(
+            self.plan, "implementation", source, role="architect"
+        )
+        artifact = self.store.stage_path(self.plan, "implementation")
+        self.assertTrue(artifact.is_file())
+        # The library-level store still imports strings; the CLI is the path
+        # boundary and tests it separately. The graph remains the only truth.
+        self.assertTrue(
+            self.documents.verify(role=grogu_plans.REVIEWER)["ok"]
+        )
+
+    def test_binding_feedback_blocks_only_until_target_acknowledges(self):
+        # Mark the two required stages written so unrelated gate blockers do
+        # not obscure the feedback behavior.
+        self.store.write_stage(
+            self.plan,
+            "implementation",
+            "# Implementation\n\nBuild the requested behavior completely.\n",
+            role="architect",
+        )
+        self.store.write_stage(
+            self.plan,
+            "testing",
+            "# Testing\n\nRun independent checks against every boundary.\n",
+            role="architect",
+        )
+        receipt = self.documents.route_feedback(
+            role="reviewer",
+            scope={"kind": "role", "role": "engineer", "label": "engineers"},
+            text="Re-check the migration boundary",
+            binding=True,
+        )
+        blocked = self.store.gate(self.plan, grogu_plans.GATE_IMPLEMENT)
+        self.assertTrue(
+            any(receipt["seq"] in item for item in blocked["blockers"])
+        )
+        self.store.ack_steering(
+            role="engineer", plan_id=self.plan, agent="engineer-one"
+        )
+        reopened = self.store.gate(self.plan, grogu_plans.GATE_IMPLEMENT)
+        self.assertFalse(
+            any(receipt["seq"] in item for item in reopened["blockers"])
+        )
+
+    def test_role_projection_never_contains_a_sealed_node(self):
+        reviewer = self.documents.load(role="reviewer")
+        hidden = grogu_plandoc.make_node(
+            "crit-1",
+            "criterion",
+            "Hidden assertion",
+            stage="testing",
+            body="Do not expose this",
+            revision=reviewer["revision"],
+        )
+        self.documents.patch(
+            role="reviewer",
+            base=reviewer["revision"],
+            operations=[
+                {"op": "add", "path": "/nodes/crit-1", "value": hidden}
+            ],
+        )
+        projection = self.documents.projection(
+            role="engineer", stages=["implementation"], include="all"
+        )
+        self.assertNotIn("crit-1", projection["payload"])
+        self.assertNotIn("Do not expose this", projection["payload"])
 
     def test_a_repeated_boilerplate_line_does_not_condemn_a_real_plan(self):
         # A checklist repeats "Record the result." after every step; that is a

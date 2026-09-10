@@ -30,6 +30,7 @@ are refused, including after a fresh shell loses the role environment.
 from __future__ import annotations
 
 import base64
+import copy
 import datetime as dt
 import hashlib
 import uuid
@@ -37,6 +38,7 @@ import fnmatch
 import json
 import os
 import re
+import shutil
 import sys
 import subprocess
 import secrets
@@ -47,6 +49,16 @@ from typing import Iterator, List, Optional, Tuple
 
 import grogu_platform
 import grogu_privacy
+import grogu_markdown
+import grogu_agentevents
+import grogu_controlroom
+import grogu_plandoc
+import grogu_plandoc_anchor
+import grogu_plandoc_canon
+import grogu_plandoc_compile
+import grogu_plandoc_patch
+import grogu_plandoc_revision
+import grogu_plandoc_schema
 from grogu_tasks import actor, primary_worktree, repository_root, session_id
 import grogu_worktrees
 
@@ -1810,7 +1822,22 @@ class PlanStore:
     # `review.json` carries the user's unfiltered words about the plan (the
     # review workspace's threads and covering notes), so it is local-only for
     # the same reason and by the same enforcement as the manifest.
-    _LOCAL_ONLY = "manifest.json\nrevisions/\n*.sealed\nreview.json\n"
+    _LOCAL_ONLY = (
+        "manifest.json\n"
+        "revisions/\n"
+        "*.sealed\n"
+        "review.json\n"
+        "HEAD\n"
+        "graph/\n"
+        "log/\n"
+        "snapshots/\n"
+        "proposals/\n"
+        "projections/\n"
+        "revision-meta/\n"
+        "legacy/\n"
+        "recovery/\n"
+        "registrations/\n"
+    )
 
     def _protect_working_state(self) -> None:
         try:
@@ -1841,7 +1868,25 @@ class PlanStore:
             return
 
     def plan_dir(self, plan_id: str) -> Path:
+        legacy = self.plans_dir / plan_id
+        package = self.plans_dir / f"{plan_id}.plan"
+        if legacy.exists() and package.exists():
+            raise PlanError(
+                f"plan {plan_id} exists in both layouts: {legacy} and {package}. "
+                "Remove the one you do not want, then retry; Grogu refuses a "
+                "dual-path plan because neither copy can be treated as the "
+                "single writable truth."
+            )
+        return package if package.exists() else legacy
+
+    def legacy_plan_dir(self, plan_id: str) -> Path:
         return self.plans_dir / plan_id
+
+    def document_plan_dir(self, plan_id: str) -> Path:
+        return self.plans_dir / f"{plan_id}.plan"
+
+    def is_document_plan(self, plan_id: str) -> bool:
+        return self.plan_dir(plan_id) == self.document_plan_dir(plan_id)
 
     def manifest_path(self, plan_id: str) -> Path:
         return self.plan_dir(plan_id) / "manifest.json"
@@ -1914,10 +1959,15 @@ class PlanStore:
     def list_plans(self) -> list:
         if not self.plans_dir.is_dir():
             return []
+        plan_ids = set()
+        for path in self.plans_dir.iterdir():
+            if not path.is_dir():
+                continue
+            name = path.name
+            plan_ids.add(name[:-5] if name.endswith(".plan") else name)
         plans = [
-            self._read_json(path / "manifest.json")
-            for path in sorted(self.plans_dir.iterdir())
-            if path.is_dir()
+            self._read_json(self.plan_dir(plan_id) / "manifest.json")
+            for plan_id in sorted(plan_ids)
         ]
         return [
             self._migrate_manifest(plan) for plan in plans if plan.get("id")
@@ -2010,6 +2060,8 @@ class PlanStore:
             raise PlanError(
                 f"{stage} is not optional; every plan has implementation and testing"
             )
+        if self.is_document_plan(plan_id):
+            return PlanDocumentStore(self, plan_id).add_stage(stage, role=role)
         with self.locked():
             manifest = self.load(plan_id)
             if manifest.get("status") in (COMPLETE, SUPERSEDED):
@@ -2043,6 +2095,8 @@ class PlanStore:
             raise PlanError(f"role {role!r} may not reset a stage; that is the architect's")
         if stage not in STAGES:
             raise PlanError(f"unknown stage {stage!r}")
+        if self.is_document_plan(plan_id):
+            return PlanDocumentStore(self, plan_id).reset_stage(stage, role=role)
         with self.locked():
             manifest = self.load(plan_id)
             if stage not in manifest.get("stages", []):
@@ -2426,6 +2480,10 @@ class PlanStore:
                 f"role {role!r} may not write the {stage} stage "
                 f"(owners: {', '.join(sorted(writers))}); propose a change with "
                 "`grogu plan amend` and let the owner decide"
+            )
+        if self.is_document_plan(plan_id):
+            return PlanDocumentStore(self, plan_id).replace_stage(
+                stage, body, role=role, replace=replace
             )
         with self.locked():
             manifest = self.load(plan_id)
@@ -3111,22 +3169,14 @@ class PlanStore:
         with self.locked():
             if plan_id:
                 manifest = self.load(plan_id)
-                notes = manifest.setdefault("steering", [])
-                note = {
-                    "seq": len(notes) + 1,
-                    "at": now(),
-                    "actor": actor(),
-                    "role": role,
-                    "from": author,
-                    "relayed_by": relayed_by,
-                    "text": text.strip(),
-                    "requires_replan": bool(requires_replan),
-                }
-                notes.append(note)
-                if requires_replan:
-                    # Steering that invalidates the plan must stop the pipeline,
-                    # not race it.
-                    manifest["status"] = NEEDS_REVIEW
+                note = self._append_plan_steering_unlocked(
+                    manifest,
+                    text=text,
+                    role=role,
+                    requires_replan=requires_replan,
+                    author=author,
+                    relayed_by=relayed_by,
+                )
                 self._save(
                     manifest,
                     "steering",
@@ -3149,6 +3199,32 @@ class PlanStore:
             payload["notes"].append(note)
             self._write_json(self.steering_path, payload)
             return note
+
+    @staticmethod
+    def _append_plan_steering_unlocked(
+        manifest: dict,
+        *,
+        text: str,
+        role: str,
+        requires_replan: bool,
+        author: str,
+        relayed_by: str = "",
+    ) -> dict:
+        notes = manifest.setdefault("steering", [])
+        note = {
+            "seq": len(notes) + 1,
+            "at": now(),
+            "actor": actor(),
+            "role": role,
+            "from": author,
+            "relayed_by": relayed_by,
+            "text": text.strip(),
+            "requires_replan": bool(requires_replan),
+        }
+        notes.append(note)
+        if requires_replan:
+            manifest["status"] = NEEDS_REVIEW
+        return note
 
     def retract_steering(self, seq: int, *, plan_id: str = "") -> dict:
         """Take back a note, because append-only means noise only grows.
@@ -3190,10 +3266,30 @@ class PlanStore:
             if note.get("role") in ("all", key.split("@")[0])
         )
 
+    def _feedback_acknowledged(self, manifest: dict, note: dict) -> bool:
+        acked = manifest.get("steering_acked", {}) or {}
+        seq = int(note.get("seq", 0) or 0)
+        target_role = str(note.get("role", "all"))
+        target_agent = str(note.get("target_agent", ""))
+        if target_agent:
+            return int(
+                acked.get(f"{target_role}@{target_agent}", 0) or 0
+            ) >= seq
+        matching = [
+            int(value or 0)
+            for key, value in acked.items()
+            if target_role == "all"
+            or key == target_role
+            or key.startswith(target_role + "@")
+        ]
+        return bool(matching) and max(matching) >= seq
+
     def steering(self, *, role: str = "all", plan_id: str = "", unread: bool = False) -> dict:
         """Steering visible to `role`, newest last, cheap enough to poll."""
         if role != "all" and role not in ROLES:
             raise PlanError(f"unknown role {role!r}")
+
+        caller_agent = self._identified_agent()[0]
 
         def visible(notes: list, acked: int) -> list:
             selected = [
@@ -3204,7 +3300,13 @@ class PlanStore:
                 # goes stale. Steering the plan's owner cannot see is the one
                 # kind that silently invalidates everything downstream of it.
                 if (role in ("all", ARCHITECT) or note.get("role") in ("all", role))
+                and (
+                    role in ("all", ARCHITECT)
+                    or not note.get("target_agent")
+                    or note.get("target_agent") == caller_agent
+                )
                 and not note.get("retracted")
+                and not note.get("withdrawn")
             ]
             if unread:
                 selected = [note for note in selected if note.get("seq", 0) > acked]
@@ -4600,6 +4702,40 @@ class PlanStore:
         if missing:
             blockers.append(f"plan stages not written: {', '.join(missing)}")
 
+        pending_feedback = [
+            note
+            for note in manifest.get("steering", [])
+            if note.get("binding_feedback")
+            and not note.get("withdrawn")
+            and stage_gate in note.get("gates", [])
+            and not self._feedback_acknowledged(manifest, note)
+        ]
+        caller_role = current_role()
+        caller_agent = self._identified_agent()[0]
+        for note in pending_feedback:
+            can_read_feedback = (
+                not caller_role
+                or caller_role == ARCHITECT
+                or (
+                    note.get("role") in {"all", caller_role}
+                    and (
+                        not note.get("target_agent")
+                        or note.get("target_agent") == caller_agent
+                    )
+                )
+            )
+            summary = (
+                str(note.get("text", "")).replace("\n", " ")
+                if can_read_feedback
+                else "feedback addressed to another role"
+            )
+            if len(summary) > 120:
+                summary = summary[:117] + "..."
+            blockers.append(
+                "awaiting binding feedback acknowledgement: "
+                f"{note.get('feedback_id', 'feedback')} {summary!r}"
+            )
+
         if stage_gate == GATE_TEST:
             checks = [
                 item
@@ -5802,3 +5938,4085 @@ class PlanStore:
             "attachments": self.attachments(plan_id) if plan_id else [],
             "summary": self.summary(plan_id) if plan_id else {},
         }
+
+
+class PlanDocumentStore:
+    """The `.plan` package facade used by PlanStore, the CLI, and HTTP.
+
+    The graph is authoritative.  Stage Markdown remains at the legacy paths,
+    but only this facade's compiler writes it.  A role-bounded load opens only
+    partitions that role can read; sealed partition bytes may be copied as
+    opaque data during a generation, but are never decoded for an unreadable
+    role.
+    """
+
+    SCHEMA_VERSION = 1
+    FORMAT = "grogu.plan_package"
+    MAX_PATCH_OPS = 500
+    MAX_REQUEST_BYTES = 256 * 1024
+    _PARTITION_PATHS = {
+        grogu_plandoc.OPEN_PARTITION: "graph/open.json",
+        TESTING: "graph/testing.sealed",
+        EVALUATION: "graph/evaluation.sealed",
+    }
+
+    def __init__(self, plans: PlanStore, plan_id: str):
+        self.plans = plans
+        self.plan_id = plan_id
+        self.package = plans.document_plan_dir(plan_id)
+        self.last_recovery: list[str] = []
+
+    # -- identity and paths ----------------------------------------------
+
+    @classmethod
+    def for_plan(cls, plans: PlanStore, reference: str) -> "PlanDocumentStore":
+        plan_id = plans.resolve(reference)
+        if not plans.is_document_plan(plan_id):
+            raise PlanError(
+                f"plan {plan_id} uses the legacy layout; run "
+                f"`grogu plan doc migrate {plan_id}` first"
+            )
+        return cls(plans, plan_id)
+
+    @staticmethod
+    def _role(role: str, *, fallback: str = REVIEWER) -> str:
+        effective = (role or current_role() or fallback).strip().lower()
+        if effective not in ROLES:
+            raise PlanError(
+                f"unknown role {effective!r}; expected one of {', '.join(ROLES)}"
+            )
+        return effective
+
+    def _claim(self, role: str) -> str:
+        effective = self._role(role)
+        self.plans.claim_agent_role(self.plan_id, effective)
+        return effective
+
+    def _partition_path(self, partition: str, *, revision: str = "") -> Path:
+        relative = self._PARTITION_PATHS[partition]
+        if revision:
+            return self.package / "recovery" / revision / relative
+        return self.package / relative
+
+    def _stage_relative(self, stage: str) -> str:
+        return f"{stage}.sealed" if stage in SEALED_STAGES else f"{stage}.md"
+
+    def _stage_path(self, stage: str, *, revision: str = "") -> Path:
+        relative = self._stage_relative(stage)
+        if revision:
+            return self.package / "recovery" / revision / "artifacts" / relative
+        if stage in SEALED_STAGES and (self.package / f"{stage}.md").is_file():
+            return self.package / f"{stage}.md"
+        return self.package / relative
+
+    # -- canonical serialization ----------------------------------------
+
+    @staticmethod
+    def _sealed_bytes(value: dict) -> bytes:
+        plain = grogu_plandoc_canon.pretty_dumps(value)
+        return seal(plain).encode("utf8")
+
+    @staticmethod
+    def _open_bytes(value: dict) -> bytes:
+        return grogu_plandoc_canon.pretty_dumpb(value)
+
+    @classmethod
+    def _partition_bytes(cls, document: dict) -> dict[str, bytes]:
+        partitions = grogu_plandoc.split_partitions(document)
+        return {
+            cls._PARTITION_PATHS[name]: (
+                cls._open_bytes(partition)
+                if name == grogu_plandoc.OPEN_PARTITION
+                else cls._sealed_bytes(partition)
+            )
+            for name, partition in partitions.items()
+        }
+
+    @staticmethod
+    def _storage_state(
+        partitions: dict[str, bytes],
+        *,
+        object_metadata: Optional[dict[str, dict[str, list[str]]]] = None,
+    ) -> dict:
+        return {
+            relative: {
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                **(
+                    {
+                        "objects": copy.deepcopy(
+                            object_metadata.get(relative, {})
+                        )
+                    }
+                    if object_metadata is not None
+                    else {}
+                ),
+            }
+            for relative, payload in sorted(partitions.items())
+        }
+
+    @staticmethod
+    def _partition_object_metadata(
+        document: dict,
+        partitions: dict[str, dict],
+    ) -> dict[str, dict[str, list[str]]]:
+        values: dict[str, dict[str, list[str]]] = {}
+        for name, partition in partitions.items():
+            objects: dict[str, list[str]] = {}
+            for node_id, node in partition.get("nodes", {}).items():
+                objects[node_id] = [str(node.get("stage", ""))]
+            for edge_id, edge in partition.get("edges", {}).items():
+                stages = {
+                    str(document["nodes"][endpoint].get("stage", ""))
+                    for endpoint in (edge.get("from"), edge.get("to"))
+                    if endpoint in document.get("nodes", {})
+                }
+                objects[edge_id] = sorted(stages)
+            values[PlanDocumentStore._PARTITION_PATHS[name]] = dict(
+                sorted(
+                    objects.items(),
+                    key=lambda item: grogu_plandoc_canon.id_sort_key(item[0]),
+                )
+            )
+        return values
+
+    @staticmethod
+    def _partition_relationship_metadata(
+        partitions: dict[str, dict],
+    ) -> dict[str, dict[str, list[str]]]:
+        return {
+            PlanDocumentStore._PARTITION_PATHS[name]: {
+                edge_id: [
+                    str(edge.get("from", "")),
+                    str(edge.get("to", "")),
+                ]
+                for edge_id, edge in sorted(
+                    partition.get("edges", {}).items(),
+                    key=lambda item: grogu_plandoc_canon.id_sort_key(item[0]),
+                )
+            }
+            for name, partition in partitions.items()
+        }
+
+    @staticmethod
+    def _artifact_bytes(stage: str, markdown: str) -> bytes:
+        return (
+            seal(markdown).encode("utf8")
+            if stage in SEALED_STAGES
+            else markdown.encode("utf8")
+        )
+
+    @staticmethod
+    def _read_json_file(path: Path) -> dict:
+        try:
+            return grogu_plandoc_canon.loads(
+                grogu_plandoc_revision.safe_read(path)
+            )
+        except FileNotFoundError as error:
+            raise PlanError(f"missing plan package part: {path}") from error
+        except (UnicodeDecodeError, ValueError) as error:
+            raise PlanError(f"invalid plan package part {path}: {error}") from error
+
+    def _read_partition(
+        self,
+        partition: str,
+        *,
+        revision: str,
+        recover: bool = True,
+    ) -> dict:
+        current = not revision
+        target_revision = revision or self.head(repair=recover)
+        path = self._partition_path(partition, revision=revision)
+        recovery = self._partition_path(partition, revision=target_revision)
+        try:
+            raw = grogu_plandoc_revision.safe_read(path)
+        except (FileNotFoundError, grogu_plandoc_revision.RevisionError) as error:
+            if not current or not recover:
+                raise PlanError(f"missing or unsafe plan partition {path}") from error
+            try:
+                raw = grogu_plandoc_revision.safe_read(recovery)
+                grogu_plandoc_revision.atomic_write(path, raw)
+                self.last_recovery.append(
+                    f"restored {path.relative_to(self.package)} from {target_revision}"
+                )
+            except (FileNotFoundError, grogu_plandoc_revision.RevisionError) as inner:
+                raise PlanError(f"cannot recover plan partition {path}") from inner
+        try:
+            if partition == grogu_plandoc.OPEN_PARTITION:
+                value = grogu_plandoc_canon.loads(raw)
+            else:
+                value = grogu_plandoc_canon.loads(unseal(raw.decode("utf8")))
+        except (UnicodeDecodeError, ValueError, zlib.error) as error:
+            if not current or not recover:
+                raise PlanError(f"invalid plan partition {path}: {error}") from error
+            try:
+                restored = grogu_plandoc_revision.safe_read(recovery)
+                if restored == raw:
+                    raise PlanError(f"invalid recovery partition {recovery}") from error
+                grogu_plandoc_revision.atomic_write(path, restored)
+                self.last_recovery.append(
+                    f"restored corrupted {path.relative_to(self.package)} "
+                    f"from {target_revision}"
+                )
+                raw = restored
+                value = (
+                    grogu_plandoc_canon.loads(raw)
+                    if partition == grogu_plandoc.OPEN_PARTITION
+                    else grogu_plandoc_canon.loads(unseal(raw.decode("utf8")))
+                )
+            except (FileNotFoundError, UnicodeDecodeError, ValueError) as inner:
+                raise PlanError(f"cannot recover corrupted partition {path}") from inner
+        # A partition only changes when content in it changes, so its stored
+        # revision may lag HEAD.  The role-bounded materialization is stamped
+        # with the selected revision without rewriting or decoding any other
+        # partition.
+        value["revision"] = target_revision
+        return value
+
+    # -- package creation and migration ---------------------------------
+
+    @staticmethod
+    def _counter_state(document: dict) -> dict:
+        counters: dict[str, int] = {}
+        for node in document.get("nodes", {}).values():
+            prefix, _, number = str(node.get("id", "")).rpartition("-")
+            if number.isdigit():
+                counters[prefix] = max(counters.get(prefix, 0), int(number))
+        for edge in document.get("edges", {}).values():
+            prefix, _, number = str(edge.get("id", "")).rpartition("-")
+            if number.isdigit():
+                counters[prefix] = max(counters.get(prefix, 0), int(number))
+        return counters
+
+    @staticmethod
+    def _merge_counters(existing: dict, observed: dict) -> dict:
+        keys = set(existing) | set(observed)
+        return {
+            key: max(
+                int(existing.get(key, 0) or 0),
+                int(observed.get(key, 0) or 0),
+            )
+            for key in sorted(keys)
+        }
+
+    @staticmethod
+    def _manifest_object_metadata(manifest: dict) -> dict[str, dict[str, list[str]]]:
+        state = manifest.get("plandoc", {}).get("partition_state", {})
+        return {
+            relative: copy.deepcopy(
+                details.get("objects", {})
+                if isinstance(details, dict)
+                and isinstance(details.get("objects", {}), dict)
+                else {}
+            )
+            for relative, details in state.items()
+            if relative in PlanDocumentStore._PARTITION_PATHS.values()
+        }
+
+    @staticmethod
+    def _manifest_relationship_metadata(
+        manifest: dict,
+    ) -> dict[str, dict[str, list[str]]]:
+        state = manifest.get("plandoc", {}).get("partition_state", {})
+        return {
+            relative: copy.deepcopy(
+                details.get("relationships", {})
+                if isinstance(details, dict)
+                and isinstance(details.get("relationships", {}), dict)
+                else {}
+            )
+            for relative, details in state.items()
+            if relative in PlanDocumentStore._PARTITION_PATHS.values()
+        }
+
+    @classmethod
+    def _all_manifest_object_ids(cls, manifest: dict) -> set[str]:
+        return {
+            identifier
+            for objects in cls._manifest_object_metadata(manifest).values()
+            for identifier in objects
+        }
+
+    @staticmethod
+    def _graph_timestamp(value: str = "") -> str:
+        text = str(value or "").strip()
+        if text:
+            try:
+                parsed = dt.datetime.fromisoformat(
+                    text.replace("Z", "+00:00")
+                )
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=dt.timezone.utc)
+                return (
+                    parsed.astimezone(dt.timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+            except ValueError:
+                pass
+        return grogu_plandoc_revision.utc_now()
+
+    @classmethod
+    def create(
+        cls,
+        plans: PlanStore,
+        title: str,
+        *,
+        task_id: str = "",
+        design: bool = False,
+        evaluation: bool = False,
+        review_required: bool = False,
+        requested_by: str = "",
+    ) -> dict:
+        with plans.locked():
+            plan_id = plans._new_id()
+            stages = (
+                ([DESIGN] if design else [])
+                + [IMPLEMENTATION, TESTING]
+                + ([EVALUATION] if evaluation else [])
+            )
+            manifest = {
+                "schema_version": SCHEMA_VERSION,
+                "id": plan_id,
+                "task_id": task_id,
+                "title": title,
+                "status": DRAFT,
+                "stages": stages,
+                "stage_state": {stage: PENDING for stage in stages},
+                "stage_written": {stage: False for stage in stages},
+                "review_required": bool(review_required),
+                "requested_by": requested_by or actor(),
+                "created_at": now(),
+                "updated_at": now(),
+                "created_by": actor(),
+                "session_id": session_id(),
+                "rounds": 0,
+                "max_rounds": max_rounds(),
+                "defect_rounds": 0,
+                "max_defect_rounds": max_defect_rounds(),
+                "escalated": False,
+                "workstreams": [],
+                "amendments": [],
+                "defects": [],
+                "steering": [],
+                "steering_acked": {role: 0 for role in ROLES},
+                "access_log": [],
+                "events": [{"at": now(), "actor": actor(), "event": "created"}],
+                "plandoc": {
+                    "schema_version": cls.SCHEMA_VERSION,
+                    "format": cls.FORMAT,
+                    "compiler_version": grogu_plandoc_compile.COMPILER_VERSION,
+                    "counters": {},
+                    "parts": [],
+                },
+            }
+            package = plans.document_plan_dir(plan_id)
+            package.mkdir(parents=True)
+            plans._write_json(package / "manifest.json", manifest)
+            document = grogu_plandoc.new_document(
+                plan_id, title, revision="r0001"
+            )
+            service = cls(plans, plan_id)
+            service._write_initial_generation(
+                manifest,
+                document,
+                origin="create",
+                intent="create plan document package",
+            )
+            return plans.load(plan_id)
+
+    @classmethod
+    def migrate(
+        cls,
+        plans: PlanStore,
+        reference: str,
+        *,
+        role: str = "",
+        dry_run: bool = False,
+    ) -> dict:
+        plan_id = plans.resolve(reference)
+        legacy = plans.legacy_plan_dir(plan_id)
+        package = plans.document_plan_dir(plan_id)
+        if package.exists():
+            if legacy.exists():
+                plans.plan_dir(plan_id)  # raises the collision with both paths
+            raise PlanError(f"plan {plan_id} is already a .plan package")
+        if not legacy.is_dir():
+            raise PlanError(f"legacy plan directory was not found: {legacy}")
+        effective = cls._role(role)
+        plans.claim_agent_role(plan_id, effective)
+        manifest = plans.load(plan_id)
+        readable = ROLE_READABLE_STAGES.get(effective, frozenset())
+        written_stages = [
+            stage
+            for stage in manifest.get("stages", [])
+            if manifest.get("stage_written", {}).get(stage)
+        ]
+        forbidden = [stage for stage in written_stages if stage not in readable]
+        if forbidden:
+            raise PlanError(
+                f"role {effective!r} cannot migrate {plan_id}: migration must "
+                "read every written stage through PlanStore.read_stage, and "
+                f"{', '.join(forbidden)} is outside that role"
+            )
+        sources = {
+            stage: plans.read_stage(plan_id, stage, role=effective)
+            for stage in written_stages
+        }
+        review_state = {}
+        review_path = legacy / "review.json"
+        if review_path.is_file():
+            review_state = plans._read_json(review_path)
+        steps = [
+            "copy",
+            "parse",
+            "import diagrams",
+            "import threads",
+            "compile",
+            "verify",
+        ]
+        if dry_run:
+            return {
+                "plan": plan_id,
+                "from": str(legacy),
+                "to": str(package),
+                "steps": steps,
+                "written_stages": written_stages,
+                "dry_run": True,
+            }
+
+        staging = plans.plans_dir / f".{plan_id}.plan.migrating-{os.getpid()}"
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+        try:
+            shutil.copytree(
+                legacy,
+                staging / "legacy" / "pre-migration",
+                symlinks=True,
+            )
+            migrated_manifest = copy.deepcopy(manifest)
+            migrated_manifest["plandoc"] = {
+                "schema_version": cls.SCHEMA_VERSION,
+                "format": cls.FORMAT,
+                "compiler_version": grogu_plandoc_compile.COMPILER_VERSION,
+                "counters": {},
+                "parts": [],
+                "migrated_at": now(),
+                "migrated_from": str(legacy),
+            }
+            document = grogu_plandoc.new_document(
+                plan_id,
+                str(manifest.get("title", plan_id)),
+                revision="r0001",
+            )
+            for stage in written_stages:
+                imported = grogu_plandoc_compile.import_markdown(
+                    sources[stage],
+                    plan_id=plan_id,
+                    stage=stage,
+                    revision="r0001",
+                )
+                cls._merge_imported(document, imported, migrated_manifest)
+            cls._migrate_review_threads(
+                document,
+                review_state,
+                migrated_manifest,
+            )
+            document["revision"] = "r0001"
+            document["title"] = str(manifest.get("title", plan_id))
+            document["provenance"] = {
+                "at": now(),
+                "actor": actor(),
+                "role": effective,
+                "agent": os.environ.get("GROGU_AGENT", "") or "migration",
+                "origin": "migration",
+            }
+            grogu_plandoc_schema.validate_document(document)
+            diagnostics = cls._migration_diagnostics(document, sources)
+            failed = [item for item in diagnostics if not item["equivalent"]]
+            if failed:
+                raise PlanError(
+                    "migration produced a non-equivalent artifact; the legacy "
+                    "directory is untouched: "
+                    + "; ".join(
+                        f"{item['stage']}: {item['message']}" for item in failed
+                    )
+                )
+            plans._write_json(staging / "manifest.json", migrated_manifest)
+            service = cls(plans, plan_id)
+            service.package = staging
+            service._write_initial_generation(
+                migrated_manifest,
+                document,
+                origin="migration",
+                intent="migrate legacy plan without dropping source text",
+            )
+            # Verify the complete staged package before the legacy path moves.
+            service._verify_integrity(migrated_manifest)
+            with plans.locked():
+                if package.exists():
+                    raise PlanError(
+                        f"refusing migration because {package} appeared while "
+                        "the package was being built"
+                    )
+                os.replace(staging, package)
+                try:
+                    shutil.rmtree(legacy)
+                except OSError as error:
+                    # This is the one intentionally safe failure state: both
+                    # paths remain and every command refuses until repaired.
+                    raise PlanError(
+                        f"the verified package is at {package}, but the legacy "
+                        f"path could not be removed ({error}); both paths now "
+                        "exist, so remove the one you do not want"
+                    ) from error
+            return {
+                "plan": plan_id,
+                "from": str(legacy),
+                "to": str(package),
+                "steps": steps,
+                "revision": "r0001",
+                "diagnostics": diagnostics,
+                "review_threads": len(
+                    [
+                        node
+                        for node in document["nodes"].values()
+                        if node["kind"] == "thread"
+                    ]
+                ),
+                "dry_run": False,
+            }
+        except Exception:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+            raise
+
+    @staticmethod
+    def _merge_imported(target: dict, source: dict, manifest: dict) -> None:
+        mapping: dict[str, str] = {}
+        counters = manifest.setdefault("plandoc", {}).setdefault("counters", {})
+        counter_manifest = {"plandoc": {"counters": counters}}
+        occupied = set(target["nodes"]) | set(target["edges"])
+        for old_id, node in sorted(
+            source["nodes"].items(),
+            key=lambda item: grogu_plandoc.node_sort_key(item[1]),
+        ):
+            new_id = grogu_plandoc.allocate_id(
+                counter_manifest,
+                node["kind"],
+                existing_ids=occupied,
+            )
+            mapping[old_id] = new_id
+            occupied.add(new_id)
+        for old_id, edge in sorted(
+            source["edges"].items(),
+            key=lambda item: grogu_plandoc.edge_sort_key(item[1]),
+        ):
+            new_id = grogu_plandoc.allocate_id(
+                counter_manifest,
+                "edge",
+                existing_ids=occupied,
+            )
+            mapping[old_id] = new_id
+            occupied.add(new_id)
+
+        def remap(value):
+            if isinstance(value, str):
+                return mapping.get(value, value)
+            if isinstance(value, list):
+                return [remap(item) for item in value]
+            if isinstance(value, dict):
+                return {key: remap(item) for key, item in value.items()}
+            return value
+
+        for old_id, node in source["nodes"].items():
+            copied = remap(copy.deepcopy(node))
+            copied["id"] = mapping[old_id]
+            target["nodes"][copied["id"]] = copied
+        for old_id, edge in source["edges"].items():
+            copied = remap(copy.deepcopy(edge))
+            copied["id"] = mapping[old_id]
+            target["edges"][copied["id"]] = copied
+
+    @staticmethod
+    def _migration_diagnostics(document: dict, sources: dict[str, str]) -> list[dict]:
+        diagnostics = []
+        for stage, source in sources.items():
+            spans = sorted(
+                (
+                    int(node["attrs"]["source_start"]),
+                    int(node["attrs"]["source_end"]),
+                    node["body"],
+                )
+                for node in document["nodes"].values()
+                if node["stage"] == stage
+                and node["kind"] == "note"
+                and node.get("attrs", {}).get("source") == "markdown-import"
+            )
+            exact_spans = all(
+                0 <= start <= end <= len(source)
+                and source[start:end] == body
+                for start, end, body in spans
+            )
+            represented = "".join(body for _start, _end, body in spans)
+            diagnostics.append(
+                {
+                    "stage": stage,
+                    # Headings are represented structurally as node titles;
+                    # their original bytes remain in legacy/pre-migration.
+                    # Every prose span imported into the graph must still be
+                    # byte-exact, which detects parser loss without pretending
+                    # the normalized compiler is a byte-for-byte copier.
+                    "equivalent": exact_spans,
+                    "source_digest": hashlib.sha256(
+                        source.encode("utf8")
+                    ).hexdigest(),
+                    "represented_digest": hashlib.sha256(
+                        represented.encode("utf8")
+                    ).hexdigest(),
+                    "message": (
+                        "imported prose spans are byte-exact and the complete "
+                        "source is retained in legacy/pre-migration"
+                        if exact_spans
+                        else "an imported source span differs from the legacy stage"
+                    ),
+                }
+            )
+        return diagnostics
+
+    @classmethod
+    def _migrate_review_threads(
+        cls,
+        document: dict,
+        state: dict,
+        manifest: dict,
+    ) -> None:
+        threads = state.get("threads", []) if isinstance(state, dict) else []
+        if not isinstance(threads, list):
+            return
+        manifest["review_rounds"] = copy.deepcopy(
+            state.get("rounds", []) if isinstance(state.get("rounds"), list) else []
+        )
+        counters = manifest.setdefault("plandoc", {}).setdefault("counters", {})
+        counter_manifest = {"plandoc": {"counters": counters}}
+        for legacy in threads:
+            if not isinstance(legacy, dict):
+                continue
+            selector = cls._selector_for_legacy_anchor(document, legacy)
+            stage = str(legacy.get("stage", ""))
+            thread_id = grogu_plandoc.allocate_id(
+                counter_manifest,
+                "thread",
+                existing_ids=document["nodes"],
+            )
+            comments = []
+            for index, comment in enumerate(legacy.get("comments", []), 1):
+                if not isinstance(comment, dict) or not str(comment.get("body", "")).strip():
+                    continue
+                item = {
+                    "id": f"{thread_id}-c{index}",
+                    "at": cls._graph_timestamp(str(comment.get("at") or "")),
+                    "author": str(comment.get("author") or actor()),
+                    "body": str(comment.get("body", "")),
+                    "revision": "r0001",
+                }
+                comments.append(item)
+            if not comments:
+                continue
+            attrs = {
+                "selector": selector,
+                "comments": comments,
+                "status": (
+                    "resolved"
+                    if legacy.get("status") == "resolved"
+                    else "open"
+                ),
+                "anchor_state": (
+                    "orphaned"
+                    if legacy.get("anchor_state") == "orphaned"
+                    else (
+                        "shifted"
+                        if legacy.get("anchor_state") == "shifted"
+                        else "resolved"
+                    )
+                ),
+                "thread_kind": "discussion",
+                "round": int(legacy.get("round", 1) or 1),
+                "legacy_id": str(legacy.get("id", "")),
+                "anchor_history": copy.deepcopy(
+                    legacy.get("anchor_history", [])
+                ),
+            }
+            node = grogu_plandoc.make_node(
+                thread_id,
+                "thread",
+                f"Review thread {attrs['legacy_id'] or thread_id}",
+                stage=stage,
+                body="",
+                attrs=attrs,
+                order=2_000_000 + len(document["nodes"]),
+                revision="r0001",
+                ext={"dev.grogu.review": copy.deepcopy(legacy)},
+            )
+            document["nodes"][thread_id] = node
+
+    @staticmethod
+    def _selector_for_legacy_anchor(document: dict, thread: dict) -> dict:
+        anchor = thread.get("anchor") if isinstance(thread.get("anchor"), dict) else {}
+        stage = str(thread.get("stage", ""))
+        if anchor.get("kind") == "text":
+            start = int(anchor.get("start", 0) or 0)
+            end = int(anchor.get("end", start) or start)
+            owner = next(
+                (
+                    node
+                    for node in sorted(
+                        document["nodes"].values(),
+                        key=grogu_plandoc.node_sort_key,
+                    )
+                    if node["stage"] == stage
+                    and node["kind"] == "note"
+                    and node.get("attrs", {}).get("source") == "markdown-import"
+                    and int(node["attrs"].get("source_start", 0)) <= start
+                    and int(node["attrs"].get("source_end", 0)) >= end
+                ),
+                None,
+            )
+            if owner is not None:
+                offset = int(owner["attrs"]["source_start"])
+                return {
+                    "type": "text",
+                    "node": owner["id"],
+                    "quote": {
+                        "exact": str(anchor.get("exact", "")),
+                        "prefix": str(anchor.get("prefix", "")),
+                        "suffix": str(anchor.get("suffix", "")),
+                    },
+                    "position": {
+                        "start": max(0, start - offset),
+                        "end": max(0, end - offset),
+                    },
+                    "body_digest": grogu_plandoc_anchor.digest(owner["body"]),
+                }
+        # Mermaid anchors carry stable ids when possible.  Fall back to an
+        # orphaned node selector rather than inventing a fuzzy graph target.
+        if anchor.get("kind") == "mermaid":
+            diagram_nodes = [
+                node
+                for node in document["nodes"].values()
+                if node["stage"] == stage and node["kind"] == "diagram"
+            ]
+            block_index = int(anchor.get("block_index", 0) or 0)
+            if block_index < len(diagram_nodes):
+                diagram = sorted(diagram_nodes, key=grogu_plandoc.node_sort_key)[
+                    block_index
+                ]
+                if anchor.get("target") == "node":
+                    wanted = str(anchor.get("node_id", ""))
+                    child = next(
+                        (
+                            node
+                            for node in document["nodes"].values()
+                            if node.get("attrs", {}).get("diagram") == diagram["id"]
+                            and node.get("attrs", {}).get("mermaid_id") == wanted
+                        ),
+                        None,
+                    )
+                    if child is not None:
+                        return {"type": "node", "id": child["id"]}
+                return {"type": "node", "id": diagram["id"]}
+        fallback = next(
+            (
+                node
+                for node in document["nodes"].values()
+                if node["stage"] == stage and node["kind"] != "thread"
+            ),
+            None,
+        )
+        if fallback is not None:
+            return {"type": "node", "id": fallback["id"]}
+        # The schema requires a stable id even for an orphaned selector.  The
+        # caller sets anchor_state=orphaned, so the target may be absent.
+        return {"type": "node", "id": "note-1"}
+
+    def _write_initial_generation(
+        self,
+        manifest: dict,
+        document: dict,
+        *,
+        origin: str,
+        intent: str,
+    ) -> None:
+        partitions = self._partition_bytes(document)
+        artifacts, results = self._compiled_stage_artifacts(
+            document, manifest, stages=manifest.get("stages", [])
+        )
+        recovery = self._recovery_artifacts(
+            "r0001", partitions=partitions, stage_artifacts=artifacts
+        )
+        before = {}
+        split = grogu_plandoc.split_partitions(document)
+        object_metadata = self._partition_object_metadata(document, split)
+        relationship_metadata = self._partition_relationship_metadata(split)
+        after = self._storage_state(
+            partitions,
+            object_metadata=object_metadata,
+        )
+        empty = grogu_plandoc.new_document(
+            self.plan_id,
+            str(manifest.get("title", self.plan_id)),
+            revision="r0000",
+        )
+        operations = grogu_plandoc_patch.diff(empty, document)
+        visibility = self._operation_visibility(empty, document, operations)
+        envelope = grogu_plandoc_revision.make_revision(
+            before,
+            after,
+            seq=1,
+            actor=actor(),
+            role=current_role() or REVIEWER,
+            agent=os.environ.get("GROGU_AGENT", "") or "grogu",
+            intent=intent,
+            origin=origin,
+            ops=operations,
+        )
+        grogu_plandoc_revision.write_generation(
+            self.package,
+            envelope,
+            partitions=partitions,
+            artifacts={
+                **artifacts,
+                **recovery,
+                "revision-meta/r0001.json": grogu_plandoc_canon.pretty_dumpb(
+                    visibility
+                ),
+            },
+            base="",
+            identity_checks=[
+                lambda evidence=result["identities"]: all(evidence.values())
+                for result in results.values()
+            ],
+        )
+        manifest.setdefault("plandoc", {})["counters"] = self._counter_state(
+            document
+        )
+        self._update_manifest_parts(
+            manifest,
+            partitions,
+            artifacts,
+            envelope,
+            object_metadata=object_metadata,
+            relationship_metadata=relationship_metadata,
+        )
+        self.plans._write_json(self.package / "manifest.json", manifest)
+        for stage, result in results.items():
+            spec = self._projection_spec(REVIEWER, [stage])
+            grogu_plandoc_compile.write_cache(
+                self.package, result["ir"], spec, format="md"
+            )
+            grogu_plandoc_compile.write_cache(
+                self.package, result["ir"], spec, format="json"
+            )
+
+    @staticmethod
+    def _recovery_artifacts(
+        revision: str,
+        *,
+        partitions: dict[str, bytes],
+        stage_artifacts: dict[str, bytes],
+    ) -> dict[str, bytes]:
+        values = {
+            f"recovery/{revision}/{relative}": payload
+            for relative, payload in partitions.items()
+        }
+        values.update(
+            {
+                f"recovery/{revision}/artifacts/{relative}": payload
+                for relative, payload in stage_artifacts.items()
+            }
+        )
+        return values
+
+    def _compiled_stage_artifacts(
+        self,
+        document: dict,
+        manifest: dict,
+        *,
+        stages,
+    ) -> tuple[dict[str, bytes], dict[str, dict]]:
+        artifacts: dict[str, bytes] = {}
+        results: dict[str, dict] = {}
+        partitions = grogu_plandoc.split_partitions(document)
+        reviewer_view = grogu_plandoc.load_visible(
+            lambda name: partitions[name],
+            REVIEWER,
+            sealed_relationship_count=int(
+                manifest.get("plandoc", {}).get(
+                    "sealed_relationship_count", 0
+                )
+            ),
+        )
+        for stage in STAGES:
+            if stage not in stages:
+                continue
+            spec = self._projection_spec(REVIEWER, [stage])
+            result = grogu_plandoc_compile.compile_checked(
+                reviewer_view, spec
+            )
+            artifacts[self._stage_relative(stage)] = self._artifact_bytes(
+                stage, result["markdown"]
+            )
+            results[stage] = result
+        return artifacts, results
+
+    @staticmethod
+    def _projection_spec(
+        role: str,
+        stages,
+        *,
+        include: str = "all",
+        budget: Optional[int] = None,
+        since: str = "",
+        depth: Optional[int] = None,
+    ) -> dict:
+        value = {
+            "role": role,
+            "stages": list(stages),
+            "include": include,
+            "budget_chars": budget,
+            "since": since,
+            "compiler": grogu_plandoc_compile.COMPILER_VERSION,
+        }
+        if depth is not None:
+            value["depth"] = depth
+        return grogu_plandoc_schema.validate_projection_spec(value)
+
+    def _update_manifest_parts(
+        self,
+        manifest: dict,
+        partitions: dict[str, bytes],
+        artifacts: dict[str, bytes],
+        envelope: dict,
+        *,
+        object_metadata: Optional[dict[str, dict[str, list[str]]]] = None,
+        relationship_metadata: Optional[
+            dict[str, dict[str, list[str]]]
+        ] = None,
+    ) -> None:
+        entries = []
+        for relative, payload in sorted({**partitions, **artifacts}.items()):
+            if relative.startswith("graph/"):
+                role = "graph-partition"
+                media = "application/json"
+                if relative.endswith(".sealed"):
+                    media = "application/vnd.grogu.sealed+text"
+            else:
+                role = "compiled-stage"
+                media = (
+                    "application/vnd.grogu.sealed+text"
+                    if relative.endswith(".sealed")
+                    else "text/markdown"
+                )
+            entries.append(
+                {
+                    "path": relative,
+                    "media_type": media,
+                    "role": role,
+                    "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                    "relationships": [
+                        {
+                            "kind": "compiled-from"
+                            if role == "compiled-stage"
+                            else "materializes",
+                            "target": envelope["revision"],
+                        }
+                    ],
+                }
+            )
+        partition_state = self._storage_state(
+            partitions,
+            object_metadata=object_metadata,
+        )
+        if relationship_metadata is not None:
+            for relative, relationships in relationship_metadata.items():
+                partition_state.setdefault(relative, {})[
+                    "relationships"
+                ] = copy.deepcopy(relationships)
+        manifest.setdefault("plandoc", {}).update(
+            {
+                "schema_version": self.SCHEMA_VERSION,
+                "format": self.FORMAT,
+                "compiler_version": grogu_plandoc_compile.COMPILER_VERSION,
+                "head": envelope["revision"],
+                "partition_state": partition_state,
+                "parts": entries,
+            }
+        )
+
+    # -- revision-safe reads ---------------------------------------------
+
+    def _revision_complete(self, envelope: dict) -> bool:
+        revision = str(envelope.get("revision", ""))
+        return all(
+            self._partition_path(name, revision=revision).is_file()
+            for name in self._PARTITION_PATHS
+        )
+
+    def head(self, *, repair: bool = True) -> str:
+        try:
+            head = grogu_plandoc_revision.read_head(self.package)
+            grogu_plandoc_revision.read_revision(self.package, head)
+            if self._revision_complete(
+                grogu_plandoc_revision.read_revision(self.package, head)
+            ):
+                return head
+        except (grogu_plandoc_revision.RevisionError, FileNotFoundError):
+            pass
+        try:
+            recovered = grogu_plandoc_revision.recover_head(
+                self.package,
+                repair=repair,
+                is_complete=self._revision_complete,
+            )
+        except grogu_plandoc_revision.RevisionError as error:
+            raise PlanError(f"could not recover {self.plan_id} HEAD: {error}") from error
+        if repair:
+            self.last_recovery.append(f"recovered HEAD to {recovered}")
+        return recovered
+
+    def load(
+        self,
+        *,
+        role: str,
+        revision: str = "",
+        stages=None,
+        record: bool = False,
+    ) -> dict:
+        effective = self._claim(role)
+        allowed = ROLE_READABLE_STAGES.get(effective, frozenset())
+        if not allowed:
+            raise PlanError(f"role {effective!r} may not read plan document stages")
+        manifest = self.plans.load(self.plan_id)
+        source_stages = (
+            list(stages)
+            if stages is not None
+            else [
+                stage
+                for stage in manifest.get("stages", [])
+                if stage in allowed
+            ]
+        )
+        requested = [
+            stage
+            for stage in source_stages
+            if stage in manifest.get("stages", [])
+        ]
+        unreadable = set(requested) - set(allowed)
+        if unreadable:
+            raise PlanError(
+                f"role {effective!r} may not read stage(s): "
+                + ", ".join(sorted(unreadable))
+            )
+        # Stage authority stays in PlanStore.read_stage.  The call is
+        # record-free for polling surfaces but still enforces the role and
+        # identified-agent binding before a graph partition is opened.
+        for stage in requested:
+            self.plans.read_stage(
+                self.plan_id, stage, role=effective, record=record
+            )
+        selected_revision = revision or self.head(repair=True)
+        if revision:
+            try:
+                grogu_plandoc_revision.read_revision(self.package, revision)
+            except grogu_plandoc_revision.RevisionError as error:
+                raise PlanError(str(error)) from error
+
+        def loader(name: str) -> dict:
+            return self._read_partition(
+                name,
+                revision=selected_revision if revision else "",
+                recover=not bool(revision),
+            )
+
+        visible = grogu_plandoc.load_visible(
+            loader,
+            effective,
+            sealed_relationship_count=int(
+                manifest.get("plandoc", {}).get(
+                    "sealed_relationship_count", 0
+                )
+            ),
+        )
+        visible["revision"] = selected_revision
+        if requested:
+            keep = set(requested) | {""}
+            node_ids = {
+                node_id
+                for node_id, node in visible["nodes"].items()
+                if node.get("stage", "") in keep
+            }
+            visible["nodes"] = {
+                node_id: node
+                for node_id, node in visible["nodes"].items()
+                if node_id in node_ids
+            }
+            visible["edges"] = {
+                edge_id: edge
+                for edge_id, edge in visible["edges"].items()
+                if edge.get("from") in node_ids and edge.get("to") in node_ids
+            }
+            visible = grogu_plandoc_schema.validate_document(visible)
+        return visible
+
+    def load_all(self, *, role: str, revision: str = "") -> dict:
+        effective = self._claim(role)
+        if not set(STAGES).issubset(ROLE_READABLE_STAGES.get(effective, ())):
+            raise PlanError(
+                f"role {effective!r} cannot materialize every partition"
+            )
+        selected_revision = revision or self.head(repair=True)
+        partitions = {
+            name: self._read_partition(
+                name,
+                revision=selected_revision if revision else "",
+                recover=not bool(revision),
+            )
+            for name in self._PARTITION_PATHS
+        }
+        document = grogu_plandoc.merge_partitions(partitions)
+        document["revision"] = selected_revision
+        return document
+
+    # -- projections and verification -----------------------------------
+
+    def projection(
+        self,
+        *,
+        role: str,
+        stages=None,
+        include: str = "normative",
+        budget: Optional[int] = None,
+        since: str = "",
+        format: str = "md",
+        use_cache: bool = True,
+    ) -> dict:
+        effective = self._claim(role)
+        if format not in {"md", "json"}:
+            raise PlanError("projection format must be md or json")
+        manifest = self.plans.load(self.plan_id)
+        allowed = ROLE_READABLE_STAGES.get(effective, frozenset())
+        source_stages = (
+            list(stages)
+            if stages is not None
+            else [
+                stage
+                for stage in manifest.get("stages", [])
+                if stage in allowed
+            ]
+        )
+        selected = [
+            stage
+            for stage in source_stages
+            if stage in manifest.get("stages", [])
+        ]
+        unreadable = set(selected) - set(
+            allowed
+        )
+        if unreadable:
+            raise PlanError(
+                f"role {effective!r} may not compile stage(s): "
+                + ", ".join(sorted(unreadable))
+            )
+        head = self.head(repair=True)
+        spec = self._projection_spec(
+            effective,
+            selected,
+            include=include,
+            budget=budget,
+            since=since,
+        )
+        if use_cache:
+            try:
+                cached = grogu_plandoc_compile.read_cache(
+                    self.package, head, spec, format=format
+                )
+            except grogu_plandoc_compile.CompileError as error:
+                raise PlanError(str(error)) from error
+            if cached is not None:
+                payload = (
+                    cached.payload.decode("utf8")
+                    if format == "md"
+                    else grogu_plandoc_canon.loads(cached.payload)
+                )
+                return {
+                    "plan": self.plan_id,
+                    "revision": head,
+                    "role": effective,
+                    "stages": selected,
+                    "include": include,
+                    "budget": budget,
+                    "format": format,
+                    "etag": cached.etag,
+                    "payload": payload,
+                    "cached": True,
+                }
+        document = self.load(
+            role=effective,
+            stages=selected,
+            record=False,
+        )
+        try:
+            result = grogu_plandoc_compile.compile_checked(document, spec)
+            grogu_plandoc_compile.write_cache(
+                self.package, result["ir"], spec, format=format
+            )
+        except (
+            grogu_plandoc_compile.CompileError,
+            grogu_plandoc_schema.SchemaError,
+        ) as error:
+            field = getattr(error, "field", "")
+            detail = f" ({field})" if field else ""
+            raise PlanError(f"projection is not equivalent{detail}: {error}") from error
+        return {
+            "plan": self.plan_id,
+            "revision": head,
+            "role": effective,
+            "stages": selected,
+            "include": include,
+            "budget": budget,
+            "format": format,
+            "etag": result["ir"].projection_digest,
+            "payload": (
+                result["markdown"] if format == "md" else result["json"]
+            ),
+            "identities": result["identities"],
+            "elided": [
+                {"id": item.id, "kind": item.kind, "detail": item.detail}
+                for item in result["ir"].elided
+            ],
+            "cached": False,
+        }
+
+    def verify(self, *, role: str) -> dict:
+        effective = self._claim(role)
+        head = self.head(repair=False)
+        manifest = self.plans.load(self.plan_id)
+        try:
+            integrity = self._verify_integrity(manifest)
+        except (
+            grogu_plandoc_revision.RevisionError,
+            FileNotFoundError,
+        ) as error:
+            raise PlanError(f"package integrity failed: {error}") from error
+        stages = [
+            stage
+            for stage in manifest.get("stages", [])
+            if stage in ROLE_READABLE_STAGES.get(effective, ())
+        ]
+        projections = {}
+        for stage in stages:
+            try:
+                actual = grogu_plandoc_revision.safe_read(
+                    self._stage_path(stage)
+                )
+            except FileNotFoundError as error:
+                raise PlanError(f"compiled artifact is missing for {stage}") from error
+            try:
+                markdown = (
+                    unseal(actual.decode("utf8"))
+                    if self._stage_path(stage).suffix == ".sealed"
+                    else actual.decode("utf8")
+                )
+                parsed = grogu_plandoc_compile.parse(markdown)
+                source_revision = parsed.provenance.revision
+                document = self.load(
+                    role=effective,
+                    revision=source_revision,
+                    stages=[stage],
+                    record=False,
+                )
+                # The tracked artifact is the reviewer projection. Recompile
+                # its stated source revision, not HEAD: an unrelated revision
+                # does not make an unchanged stage projection stale.
+                spec = self._projection_spec(REVIEWER, [stage])
+                result = grogu_plandoc_compile.compile_checked(document, spec)
+                expected = (
+                    result["markdown"].encode("utf8")
+                    if self._stage_path(stage).suffix == ".md"
+                    else self._artifact_bytes(stage, result["markdown"])
+                )
+            except (
+                UnicodeDecodeError,
+                ValueError,
+                grogu_plandoc_compile.CompileError,
+            ) as error:
+                raise PlanError(
+                    f"compiled {stage} artifact is invalid: {error}"
+                ) from error
+            if actual != expected:
+                raise PlanError(
+                    f"compiled {stage} artifact differs from a fresh compile "
+                    f"of its stated revision {source_revision}; run "
+                    f"`grogu plan doc compile {self.plan_id}`"
+                )
+            projections[stage] = result["identities"]
+        return {
+            **integrity,
+            "plan": self.plan_id,
+            "role": effective,
+            "projections": projections,
+            "recoveries": list(self.last_recovery),
+        }
+
+    def _verify_integrity(self, manifest: dict) -> dict:
+        raw_partitions = {
+            relative: grogu_plandoc_revision.safe_read(self.package / relative)
+            for relative in self._PARTITION_PATHS.values()
+        }
+        object_metadata = {
+            relative: copy.deepcopy(
+                manifest.get("plandoc", {})
+                .get("partition_state", {})
+                .get(relative, {})
+                .get("objects", {})
+            )
+            for relative in raw_partitions
+        }
+        return grogu_plandoc_revision.verify_package(
+            self.package,
+            materialized=self._storage_state(
+                raw_partitions,
+                object_metadata=object_metadata,
+            ),
+        )
+
+    def compile(
+        self,
+        *,
+        role: str,
+        stages=None,
+        check: bool = False,
+    ) -> dict:
+        effective = self._claim(role)
+        manifest = self.plans.load(self.plan_id)
+        selected = [
+            stage
+            for stage in (stages or manifest.get("stages", []))
+            if stage in manifest.get("stages", [])
+            and stage in ROLE_READABLE_STAGES.get(effective, ())
+        ]
+        if stages and set(stages) - set(selected):
+            raise PlanError(
+                f"role {effective!r} cannot compile every requested stage"
+            )
+        if check:
+            verified = self.verify(role=effective)
+            return {
+                "plan": self.plan_id,
+                "revision": verified["head"],
+                "role": effective,
+                "checked": True,
+                "changed": [],
+                "ok": True,
+                "identities": verified["projections"],
+            }
+        document = self.load(role=effective, stages=selected, record=False)
+        changed = []
+        results = {}
+        for stage in selected:
+            spec = self._projection_spec(REVIEWER, [stage])
+            result = grogu_plandoc_compile.compile_checked(document, spec)
+            path = self._stage_path(stage)
+            payload = (
+                result["markdown"].encode("utf8")
+                if path.suffix == ".md"
+                else self._artifact_bytes(stage, result["markdown"])
+            )
+            try:
+                current = grogu_plandoc_revision.safe_read(path)
+            except FileNotFoundError:
+                current = b""
+            if current != payload:
+                changed.append(stage)
+                if not check:
+                    grogu_plandoc_revision.atomic_write(path, payload)
+            if not check:
+                grogu_plandoc_compile.write_cache(
+                    self.package, result["ir"], spec, format="md"
+                )
+                grogu_plandoc_compile.write_cache(
+                    self.package, result["ir"], spec, format="json"
+                )
+            results[stage] = result["identities"]
+        return {
+            "plan": self.plan_id,
+            "revision": self.head(repair=True),
+            "role": effective,
+            "checked": bool(check),
+            "changed": changed,
+            "ok": not (check and changed),
+            "identities": results,
+        }
+
+    # -- writes and history ----------------------------------------------
+
+    @staticmethod
+    def _reserved_ids(operations) -> tuple[set[str], set[str]]:
+        added: set[str] = set()
+        removed: set[str] = set()
+        pattern = re.compile(r"^/(?:nodes|edges)/([^/]+)$")
+        for operation in operations:
+            if not isinstance(operation, dict):
+                continue
+            path = str(operation.get("path", ""))
+            match = pattern.fullmatch(path)
+            if not match:
+                continue
+            if operation.get("op") == "add":
+                added.add(match.group(1))
+            elif operation.get("op") == "remove":
+                removed.add(match.group(1))
+        return added, removed
+
+    @staticmethod
+    def _changed_ids(operations) -> list[str]:
+        changed = set()
+        pattern = re.compile(r"^/(?:nodes|edges)/([^/]+)")
+        for operation in operations:
+            for key in ("path", "from"):
+                match = pattern.match(str(operation.get(key, "")))
+                if match:
+                    changed.add(match.group(1))
+        return sorted(changed, key=grogu_plandoc_canon.id_sort_key)
+
+    @staticmethod
+    def _object_stages(document: dict, bucket: str, identifier: str) -> list[str]:
+        if bucket == "nodes":
+            node = document.get("nodes", {}).get(identifier)
+            return [str(node.get("stage", ""))] if isinstance(node, dict) else []
+        edge = document.get("edges", {}).get(identifier)
+        if not isinstance(edge, dict):
+            return []
+        return sorted(
+            {
+                str(document["nodes"][endpoint].get("stage", ""))
+                for endpoint in (edge.get("from"), edge.get("to"))
+                if endpoint in document.get("nodes", {})
+            }
+        )
+
+    @classmethod
+    def _operation_visibility(
+        cls,
+        before: dict,
+        after: dict,
+        operations,
+    ) -> dict:
+        entries = []
+        for operation in operations:
+            stages = set()
+            identifiers = []
+            for key in ("path", "from"):
+                match = re.match(
+                    r"^/(nodes|edges)/([^/]+)",
+                    str(operation.get(key, "")),
+                )
+                if not match:
+                    continue
+                bucket, identifier = match.groups()
+                identifiers.append(identifier)
+                stages.update(cls._object_stages(after, bucket, identifier))
+                stages.update(cls._object_stages(before, bucket, identifier))
+            entries.append(
+                {
+                    "stages": sorted(stages),
+                    "objects": sorted(
+                        set(identifiers),
+                        key=grogu_plandoc_canon.id_sort_key,
+                    ),
+                }
+            )
+        return {"schema_version": 1, "ops": entries}
+
+    def _revision_meta_path(self, revision: str) -> Path:
+        return self.package / "revision-meta" / f"{revision}.json"
+
+    def _read_revision_meta(self, revision: str) -> dict:
+        try:
+            value = self._read_json_file(self._revision_meta_path(revision))
+        except PlanError:
+            return {}
+        entries = value.get("ops", [])
+        if not isinstance(entries, list):
+            return {}
+        return value
+
+    @staticmethod
+    def _stamp_revision(before: dict, after: dict, revision: str) -> dict:
+        stamped = copy.deepcopy(after)
+        stamped["revision"] = revision
+        for node_id, node in stamped["nodes"].items():
+            previous = before.get("nodes", {}).get(node_id)
+            if previous is None:
+                node["created_rev"] = revision
+                node["updated_rev"] = revision
+            elif grogu_plandoc_canon.digest(previous) != grogu_plandoc_canon.digest(node):
+                node["created_rev"] = previous["created_rev"]
+                node["updated_rev"] = revision
+        for edge_id, edge in stamped["edges"].items():
+            previous = before.get("edges", {}).get(edge_id)
+            if previous is None:
+                edge["created_rev"] = revision
+            elif "created_rev" not in edge:
+                edge["created_rev"] = previous["created_rev"]
+        return grogu_plandoc_schema.validate_document(stamped)
+
+    @staticmethod
+    def _partitions_touched(before: dict, after: dict, changed_ids) -> set[str]:
+        partitions = set()
+        for document in (before, after):
+            split = grogu_plandoc.split_partitions(document)
+            for name, partition in split.items():
+                if any(
+                    identifier in partition.get(bucket, {})
+                    for identifier in changed_ids
+                    for bucket in ("nodes", "edges")
+                ):
+                    partitions.add(name)
+        return partitions
+
+    @staticmethod
+    def _stages_touched(before: dict, after: dict, changed_ids, manifest: dict) -> list[str]:
+        stages = set()
+        plan_level = False
+        for identifier in changed_ids:
+            for document in (before, after):
+                node = document.get("nodes", {}).get(identifier)
+                if node:
+                    stage = node.get("stage", "")
+                    plan_level = plan_level or not stage
+                    if stage:
+                        stages.add(stage)
+                edge = document.get("edges", {}).get(identifier)
+                if edge:
+                    for endpoint in (edge.get("from"), edge.get("to")):
+                        endpoint_node = document.get("nodes", {}).get(endpoint)
+                        if endpoint_node and endpoint_node.get("stage"):
+                            stages.add(endpoint_node["stage"])
+        if plan_level:
+            stages.update(manifest.get("stages", []))
+        return [stage for stage in STAGES if stage in stages]
+
+    def _current_partition_payloads(self) -> dict[str, bytes]:
+        values = {}
+        for relative in self._PARTITION_PATHS.values():
+            try:
+                values[relative] = grogu_plandoc_revision.safe_read(
+                    self.package / relative
+                )
+            except FileNotFoundError as error:
+                raise PlanError(f"missing plan partition {relative}") from error
+        return values
+
+    def patch(
+        self,
+        *,
+        role: str,
+        base: str,
+        operations,
+        intent: str = "",
+        origin: str = "cli",
+        dry_run: bool = False,
+        extra_artifacts: Optional[dict[str, bytes]] = None,
+        proposal_guard: str = "",
+    ) -> dict:
+        effective = self._claim(role)
+        operations = list(operations or [])
+        if len(operations) > self.MAX_PATCH_OPS:
+            raise PlanError(
+                f"patch has {len(operations)} operations; maximum is "
+                f"{self.MAX_PATCH_OPS}"
+            )
+        graph_operations = []
+        counter_updates: dict[str, int] = {}
+        for operation in operations:
+            path = str(operation.get("path", ""))
+            if not path.startswith("/counters/"):
+                graph_operations.append(operation)
+                continue
+            match = re.fullmatch(r"/counters/([a-z][a-z0-9_-]*)", path)
+            value = operation.get("value")
+            if (
+                match is None
+                or operation.get("op") not in {"add", "replace"}
+                or isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                raise PlanError(
+                    "counter updates must add or replace "
+                    "/counters/<prefix> with a non-negative integer"
+                )
+            counter_updates[match.group(1)] = value
+        before = self.load(role=effective, record=False)
+        current = before["revision"]
+        if base and base != current:
+            error = grogu_plandoc_patch.StaleRevision(base, current)
+            error.ops_since = self.ops_since(base, role=effective)
+            raise error
+        added, removed = self._reserved_ids(graph_operations)
+        manifest = self.plans.load(self.plan_id)
+        visible_ids = set(before.get("nodes", {})) | set(
+            before.get("edges", {})
+        )
+        hidden_collisions = sorted(
+            added & self._all_manifest_object_ids(manifest),
+            key=grogu_plandoc_canon.id_sort_key,
+        )
+        if hidden_collisions:
+            # Do not say which partition owns the id. The caller learns only
+            # that the globally unique id is unavailable.
+            raise PlanError(
+                "one or more requested object ids are already in use"
+            )
+        readable = ROLE_READABLE_STAGES[effective]
+        # This call deliberately precedes schema validation and application.
+        # It examines pointer paths and the minimum stage metadata needed to
+        # refuse an unreadable target before a parser can walk its value.
+        grogu_plandoc_patch.assert_patch_authorized(
+            before,
+            graph_operations,
+            readable,
+            authorized_new_ids=added,
+            authorized_remove_ids=removed,
+        )
+        try:
+            applied = grogu_plandoc_patch.apply_patch(
+                before,
+                graph_operations,
+                base=base or current,
+                current_revision=current,
+                readable_stages=readable,
+                authorized_new_ids=added,
+                authorized_remove_ids=removed,
+            )
+        except grogu_plandoc_patch.PatchError:
+            raise
+        next_seq = int(current[1:]) + 1
+        revision = grogu_plandoc_revision.revision_id(next_seq)
+        after = self._stamp_revision(before, applied, revision)
+        observed_counters = self._counter_state(after)
+        regressed = [
+            prefix
+            for prefix, value in counter_updates.items()
+            if value < observed_counters.get(prefix, 0)
+        ]
+        if regressed:
+            raise PlanError(
+                "counter updates cannot move behind existing ids: "
+                + ", ".join(sorted(regressed))
+            )
+        # Re-run authorization over the validated result so a move or nested
+        # replacement cannot smuggle a selector across the seal.
+        grogu_plandoc_patch.assert_patch_authorized(
+            after,
+            graph_operations,
+            readable,
+            authorized_new_ids=added,
+            authorized_remove_ids=removed,
+            after=True,
+        )
+        relationship_metadata = self._manifest_relationship_metadata(
+            manifest
+        )
+        object_metadata = self._manifest_object_metadata(manifest)
+        removed_nodes = {
+            node_id
+            for node_id in before.get("nodes", {})
+            if node_id not in after.get("nodes", {})
+        }
+        repartitioned_nodes = {
+            node_id
+            for node_id in before.get("nodes", {})
+            if node_id in after.get("nodes", {})
+            and before["nodes"][node_id].get("stage", "")
+            != after["nodes"][node_id].get("stage", "")
+        }
+        for relative, relationships in relationship_metadata.items():
+            for edge_id, endpoints in relationships.items():
+                endpoint_set = set(endpoints)
+                edge_stages = set(
+                    object_metadata.get(relative, {}).get(edge_id, [])
+                )
+                if endpoint_set & repartitioned_nodes:
+                    raise PlanError(
+                        "move or remove relationships before changing a "
+                        "connected node's stage"
+                    )
+                if (
+                    endpoint_set & removed_nodes
+                    and edge_stages - (set(readable) | {""})
+                ):
+                    raise PlanError(
+                        f"role {effective!r} cannot remove an object that is "
+                        "referenced outside that role's view"
+                    )
+        changed = self._changed_ids(operations)
+        touched_partitions = self._partitions_touched(
+            before, after, changed
+        )
+        if (
+            grogu_plandoc.OPEN_PARTITION in touched_partitions
+            and not {DESIGN, IMPLEMENTATION}.issubset(readable)
+        ):
+            raise PlanError(
+                f"role {effective!r} cannot rewrite the shared open graph "
+                "partition without access to both design and implementation"
+            )
+        allowed_stages = set(readable) | {""}
+        manifest_objects = self._manifest_object_metadata(manifest)
+        if any(
+            set(stages) - allowed_stages
+            for partition in touched_partitions
+            for stages in manifest_objects.get(
+                self._PARTITION_PATHS[partition], {}
+            ).values()
+        ):
+            # A role-bounded materialization omits cross-seal relationships.
+            # Re-serializing that partial partition would silently delete
+            # them, while decoding them here would expose hidden ids. Refuse
+            # the write and require a role that can see the whole partition.
+            raise PlanError(
+                f"role {effective!r} cannot rewrite a graph partition that "
+                "contains relationships outside that role's view"
+            )
+        affected_stages = [
+            stage
+            for stage in self._stages_touched(
+                before, after, changed, manifest
+            )
+            if stage in readable
+        ]
+        checks = {}
+        stage_artifacts = {}
+        for stage in affected_stages:
+            result = grogu_plandoc_compile.compile_checked(
+                after, self._projection_spec(REVIEWER, [stage])
+            )
+            stage_artifacts[self._stage_relative(stage)] = self._artifact_bytes(
+                stage, result["markdown"]
+            )
+            checks[stage] = result
+        if dry_run:
+            return {
+                "plan": self.plan_id,
+                "base": current,
+                "revision": revision,
+                "changed": changed,
+                "stages": affected_stages,
+                "digest": grogu_plandoc.document_digest(after),
+                "dry_run": True,
+                "identities": {
+                    stage: result["identities"]
+                    for stage, result in checks.items()
+                },
+            }
+
+        with self.plans.locked():
+            if proposal_guard:
+                guarded = self._read_json_file(
+                    self._proposal_path(proposal_guard)
+                )
+                if guarded.get("status") != "pending":
+                    raise PlanError(
+                        f"proposal {proposal_guard} is "
+                        f"{guarded.get('status', 'unknown')}"
+                    )
+            locked_head = self.head(repair=False)
+            if locked_head != current:
+                error = grogu_plandoc_patch.StaleRevision(current, locked_head)
+                # We already hold the plan lock; deriving a role-filtered
+                # rebase set would re-enter role binding and the same lock.
+                # An empty set is safe and tells the client to refresh.
+                error.ops_since = []
+                raise error
+            latest_manifest = self.plans.load(self.plan_id)
+            fresh_hidden_collisions = sorted(
+                (
+                    added
+                    & self._all_manifest_object_ids(latest_manifest)
+                    - visible_ids
+                ),
+                key=grogu_plandoc_canon.id_sort_key,
+            )
+            if fresh_hidden_collisions:
+                raise PlanError(
+                    "one or more requested object ids are already in use"
+                )
+            current_payloads = self._current_partition_payloads()
+            visible_partitions = grogu_plandoc.split_partitions(after)
+            touched = touched_partitions
+            before_metadata = self._manifest_object_metadata(latest_manifest)
+            after_metadata = copy.deepcopy(before_metadata)
+            before_relationships = self._manifest_relationship_metadata(
+                latest_manifest
+            )
+            after_relationships = copy.deepcopy(before_relationships)
+            visible_metadata = self._partition_object_metadata(
+                after, visible_partitions
+            )
+            visible_relationships = self._partition_relationship_metadata(
+                visible_partitions
+            )
+            for identifier in changed:
+                for objects in after_metadata.values():
+                    objects.pop(identifier, None)
+                for relative, objects in visible_metadata.items():
+                    if identifier in objects:
+                        after_metadata.setdefault(relative, {})[
+                            identifier
+                        ] = copy.deepcopy(objects[identifier])
+            changed_edges = {
+                identifier
+                for identifier in changed
+                if identifier in before.get("edges", {})
+                or identifier in after.get("edges", {})
+            }
+            for edge_id in changed_edges:
+                for relationships in after_relationships.values():
+                    relationships.pop(edge_id, None)
+                for relative, relationships in visible_relationships.items():
+                    if edge_id in relationships:
+                        after_relationships.setdefault(relative, {})[
+                            edge_id
+                        ] = copy.deepcopy(relationships[edge_id])
+            for partition in touched:
+                value = visible_partitions[partition]
+                relative = self._PARTITION_PATHS[partition]
+                current_payloads[relative] = (
+                    self._open_bytes(value)
+                    if partition == grogu_plandoc.OPEN_PARTITION
+                    else self._sealed_bytes(value)
+                )
+            before_state = self._storage_state(
+                self._current_partition_payloads(),
+                object_metadata=before_metadata,
+            )
+            after_state = self._storage_state(
+                current_payloads,
+                object_metadata=after_metadata,
+            )
+            envelope = grogu_plandoc_revision.make_revision(
+                before_state,
+                after_state,
+                seq=next_seq,
+                actor=actor(),
+                role=effective,
+                agent=os.environ.get("GROGU_AGENT", "") or "grogu",
+                intent=(intent or "apply plan document patch")[:1000],
+                origin=(origin or "cli")[:128],
+                ops=operations,
+            )
+            visibility = self._operation_visibility(
+                before, after, graph_operations
+            )
+            recovery = self._recovery_artifacts(
+                revision,
+                partitions=current_payloads,
+                stage_artifacts={
+                    stage: (
+                        stage_artifacts.get(stage)
+                        or grogu_plandoc_revision.safe_read(self.package / stage)
+                    )
+                    for stage in [
+                        self._stage_relative(item)
+                        for item in latest_manifest.get("stages", [])
+                    ]
+                },
+            )
+            artifacts = {
+                **stage_artifacts,
+                **recovery,
+                f"revision-meta/{revision}.json": (
+                    grogu_plandoc_canon.pretty_dumpb(visibility)
+                ),
+                **(extra_artifacts or {}),
+            }
+            grogu_plandoc_revision.write_generation(
+                self.package,
+                envelope,
+                partitions=current_payloads,
+                artifacts=artifacts,
+                base=current,
+                identity_checks=[
+                    lambda result=result: grogu_plandoc_compile.verify_identities(
+                        result["fragment"], result["ir"]
+                    )
+                    for result in checks.values()
+                ],
+            )
+            plandoc_manifest = latest_manifest.setdefault("plandoc", {})
+            merged_counters = self._merge_counters(
+                plandoc_manifest.get("counters", {}),
+                observed_counters,
+            )
+            merged_counters.update(counter_updates)
+            plandoc_manifest["counters"] = merged_counters
+            stage_written = latest_manifest.setdefault("stage_written", {})
+            for stage in affected_stages:
+                stage_written[stage] = any(
+                    node.get("stage") == stage
+                    for node in after.get("nodes", {}).values()
+                )
+            self._update_manifest_parts(
+                latest_manifest, current_payloads, {
+                    self._stage_relative(stage): grogu_plandoc_revision.safe_read(
+                        self._stage_path(stage)
+                    )
+                    for stage in latest_manifest.get("stages", [])
+                },
+                envelope,
+                object_metadata=after_metadata,
+                relationship_metadata=after_relationships,
+            )
+            latest_manifest["updated_at"] = now()
+            latest_manifest.setdefault("events", []).append(
+                {
+                    "at": now(),
+                    "actor": actor(),
+                    "event": "document_revision",
+                    "revision": revision,
+                    "origin": origin,
+                }
+            )
+            self.plans._write_json(
+                self.package / "manifest.json", latest_manifest
+            )
+        for stage, result in checks.items():
+            spec = self._projection_spec(REVIEWER, [stage])
+            grogu_plandoc_compile.write_cache(
+                self.package, result["ir"], spec, format="md"
+            )
+            grogu_plandoc_compile.write_cache(
+                self.package, result["ir"], spec, format="json"
+            )
+        return {
+            "plan": self.plan_id,
+            "revision": revision,
+            "digest": envelope["after_digest"],
+            "changed": changed,
+            "stages": affected_stages,
+            "dry_run": False,
+            "identities": {
+                stage: result["identities"] for stage, result in checks.items()
+            },
+        }
+
+    def replace_stage(
+        self,
+        stage: str,
+        body: str,
+        *,
+        role: str,
+        replace: bool = False,
+    ) -> dict:
+        """Import a legacy stage write into the graph, then recompile it."""
+        effective = self._claim(role)
+        if effective not in STAGE_WRITERS.get(stage, frozenset()):
+            raise PlanError(
+                f"role {effective!r} may not write the {stage} stage"
+            )
+        manifest = self.plans.load(self.plan_id)
+        if stage not in manifest.get("stages", []):
+            raise PlanError(f"plan {self.plan_id} has no {stage} stage")
+        if not body.strip():
+            raise PlanError("refusing to write an empty plan stage")
+        padding = padded_body(body)
+        if padding:
+            raise PlanError(f"refusing to write the {stage} stage: {padding}")
+        if stage == DESIGN:
+            missing = missing_design_sections(body)
+            if missing:
+                raise PlanError(
+                    "the design spec is missing required sections: "
+                    + ", ".join(missing)
+                )
+            unfilled = unfilled_design_sections(body)
+            if unfilled:
+                raise PlanError(
+                    "these design sections still hold the template's own "
+                    "instructions: "
+                    + ", ".join(unfilled)
+                )
+            hollow = hollow_design_sections(body)
+            if hollow:
+                raise PlanError(
+                    "these design sections say nothing a tester could check: "
+                    + ", ".join(hollow)
+                )
+            vague = vague_design_terms(body)
+            if vague:
+                raise PlanError(
+                    "the design spec leans on adjectives instead of decisions: "
+                    + ", ".join(sorted(vague))
+                )
+        state = manifest.get("stage_state", {}).get(stage)
+        previous = self.plans.read_stage(
+            self.plan_id, stage, role=effective, record=False
+        )
+        if state == COMPLETE and not replace:
+            raise PlanError(
+                f"the {stage} stage is complete and this rewrites it "
+                f"({len(previous)} bytes -> imported source {len(body)} bytes). "
+                "Pass --replace if you mean it; the compiled text you replace "
+                "is kept either way."
+            )
+        before = self.load_all(role=effective)
+        working = copy.deepcopy(before)
+        removed_nodes = {
+            node_id
+            for node_id, node in working["nodes"].items()
+            if node.get("stage") == stage and node.get("kind") != "thread"
+        }
+        working["edges"] = {
+            edge_id: edge
+            for edge_id, edge in working["edges"].items()
+            if edge.get("from") not in removed_nodes
+            and edge.get("to") not in removed_nodes
+        }
+        for node_id in removed_nodes:
+            working["nodes"].pop(node_id, None)
+        imported = grogu_plandoc_compile.import_markdown(
+            body,
+            plan_id=self.plan_id,
+            stage=stage,
+            revision=before["revision"],
+        )
+        manifest_copy = copy.deepcopy(manifest)
+        manifest_copy.setdefault("plandoc", {}).setdefault(
+            "counters", self._counter_state(working)
+        )
+        self._merge_imported(working, imported, manifest_copy)
+        self._sync_manifest_directives(
+            working, manifest_copy, stage=stage
+        )
+        self._reanchor_graph_threads(
+            working,
+            stage=stage,
+            removed_nodes=removed_nodes,
+        )
+        working = grogu_plandoc_schema.validate_document(working)
+        operations = grogu_plandoc_patch.diff(before, working)
+        if operations:
+            result = self.patch(
+                role=effective,
+                base=before["revision"],
+                operations=operations,
+                intent=f"import and compile {stage} stage",
+                origin="legacy-stage-adapter",
+            )
+        else:
+            result = {
+                "revision": before["revision"],
+                "changed": [],
+                "digest": grogu_plandoc.document_digest(before),
+            }
+        compiled = self.plans.read_stage(
+            self.plan_id, stage, role=effective, record=False
+        )
+        warnings = []
+        with self.plans.locked():
+            latest = self.plans.load(self.plan_id)
+            revision_number = 0
+            if previous and previous != compiled:
+                revision_number = self.plans._keep_revision(
+                    self.plan_id,
+                    stage,
+                    (
+                        seal(previous)
+                        if stage in SEALED_STAGES
+                        else previous
+                    ),
+                    latest,
+                    plain_bytes=len(previous),
+                )
+            latest.setdefault("stage_written", {})[stage] = True
+            latest["last_write"] = {
+                "stage": stage,
+                "by": effective,
+                "at": now(),
+                "was": len(previous),
+                "now": len(compiled),
+                "revision": revision_number,
+                "document_revision": result["revision"],
+                "source_bytes": len(body),
+            }
+            if state == COMPLETE and previous != compiled:
+                latest.setdefault("stage_state", {})[stage] = PENDING
+                if stage == IMPLEMENTATION:
+                    for name, value in list(
+                        latest.setdefault("workstream_state", {}).items()
+                    ):
+                        if value == COMPLETE:
+                            latest["workstream_state"][name] = PENDING
+            for amendment in latest.get("amendments", []):
+                if (
+                    amendment.get("status") == ACCEPTED
+                    and amendment.get("stage") == stage
+                    and not amendment.get("incorporated")
+                    and previous != compiled
+                ):
+                    amendment["incorporated"] = True
+                    amendment["incorporated_at"] = now()
+            latest["updated_at"] = now()
+            latest.setdefault("events", []).append(
+                {
+                    "at": now(),
+                    "actor": actor(),
+                    "event": "stage_written",
+                    "stage": stage,
+                    "bytes": len(compiled),
+                    "source_bytes": len(body),
+                    "revision": result["revision"],
+                }
+            )
+            self.plans._write_json(self.package / "manifest.json", latest)
+        returned = self.plans.load(self.plan_id)
+        returned["warnings"] = warnings
+        returned["document_write"] = result
+        return returned
+
+    @staticmethod
+    def _sync_manifest_directives(
+        document: dict,
+        manifest: dict,
+        *,
+        stage: str,
+    ) -> None:
+        origins = {
+            str(node.get("attrs", {}).get("origin", ""))
+            for node in document["nodes"].values()
+            if node.get("kind") == "directive"
+        }
+        candidates = []
+        for amendment in manifest.get("amendments", []):
+            if (
+                amendment.get("status") == ACCEPTED
+                and (amendment.get("stage") or IMPLEMENTATION) == stage
+            ):
+                candidates.append(
+                    (
+                        f"amendment:{amendment.get('id', '')}",
+                        f"Accepted amendment {amendment.get('id', '')}",
+                        str(amendment.get("claim", "")),
+                        ["everyone"],
+                    )
+                )
+        if stage == IMPLEMENTATION:
+            for note in manifest.get("steering", []):
+                if note.get("retracted") or note.get("withdrawn"):
+                    continue
+                target = str(note.get("role", "all"))
+                audience = ["everyone"] if target == "all" else [target]
+                candidates.append(
+                    (
+                        f"steering:{note.get('seq', 0)}",
+                        f"Steering #{note.get('seq', 0)}",
+                        str(note.get("text", "")),
+                        audience,
+                    )
+                )
+        counter_manifest = {
+            "plandoc": {
+                "counters": manifest.setdefault("plandoc", {}).setdefault(
+                    "counters", PlanDocumentStore._counter_state(document)
+                )
+            }
+        }
+        for origin, title, body, audience in candidates:
+            if not origin or origin in origins or not body.strip():
+                continue
+            directive_id = grogu_plandoc.allocate_id(
+                counter_manifest,
+                "directive",
+                existing_ids=document["nodes"],
+            )
+            document["nodes"][directive_id] = grogu_plandoc.make_node(
+                directive_id,
+                "directive",
+                title[:256],
+                stage=stage,
+                body=body,
+                attrs={
+                    "binding": "must",
+                    "audience": audience,
+                    "status": "active",
+                    "origin": origin,
+                },
+                order=500 + len(document["nodes"]),
+                revision=document["revision"],
+            )
+            origins.add(origin)
+
+    def add_stage(self, stage: str, *, role: str) -> dict:
+        effective = self._claim(role)
+        if effective != ARCHITECT:
+            raise PlanError("only the architect may add a plan stage")
+        if stage not in {DESIGN, EVALUATION}:
+            raise PlanError(f"{stage} is not an optional plan stage")
+        document = self.load_all(role=effective)
+        with self.plans.locked():
+            manifest = self.plans.load(self.plan_id)
+            if stage in manifest.get("stages", []):
+                raise PlanError(f"plan {self.plan_id} already has a {stage} stage")
+            manifest["stages"] = [
+                item
+                for item in STAGES
+                if item in manifest.get("stages", []) or item == stage
+            ]
+            manifest.setdefault("stage_state", {})[stage] = PENDING
+            manifest.setdefault("stage_written", {})[stage] = False
+            manifest.get("declined_stages", {}).pop(stage, None)
+            spec = self._projection_spec(REVIEWER, [stage])
+            result = grogu_plandoc_compile.compile_checked(document, spec)
+            payload = self._artifact_bytes(stage, result["markdown"])
+            grogu_plandoc_revision.atomic_write(self._stage_path(stage), payload)
+            head = self.head(repair=False)
+            grogu_plandoc_revision.atomic_write(
+                self._stage_path(stage, revision=head), payload
+            )
+            manifest["updated_at"] = now()
+            manifest.setdefault("events", []).append(
+                {"at": now(), "actor": actor(), "event": "stage_added", "stage": stage}
+            )
+            self.plans._write_json(self.package / "manifest.json", manifest)
+        grogu_plandoc_compile.write_cache(
+            self.package, result["ir"], spec, format="md"
+        )
+        grogu_plandoc_compile.write_cache(
+            self.package, result["ir"], spec, format="json"
+        )
+        return self.plans.load(self.plan_id)
+
+    def reset_stage(self, stage: str, *, role: str) -> dict:
+        effective = self._claim(role)
+        if effective != ARCHITECT:
+            raise PlanError("only the architect may reset a plan stage")
+        manifest = self.plans.load(self.plan_id)
+        if stage not in manifest.get("stages", []):
+            raise PlanError(f"plan {self.plan_id} has no {stage} stage")
+        document = self.load_all(role=effective)
+        node_ids = {
+            node_id
+            for node_id, node in document["nodes"].items()
+            if node.get("stage") == stage
+        }
+        operations = [
+            {"op": "remove", "path": f"/edges/{edge_id}"}
+            for edge_id, edge in document["edges"].items()
+            if edge.get("from") in node_ids or edge.get("to") in node_ids
+        ] + [
+            {"op": "remove", "path": f"/nodes/{node_id}"}
+            for node_id in sorted(node_ids, key=grogu_plandoc_canon.id_sort_key)
+        ]
+        if operations:
+            result = self.patch(
+                role=effective,
+                base=document["revision"],
+                operations=operations,
+                intent=f"reset {stage} stage",
+                origin="stage-reset",
+            )
+        else:
+            result = {"revision": document["revision"]}
+        with self.plans.locked():
+            latest = self.plans.load(self.plan_id)
+            latest.setdefault("stage_written", {})[stage] = False
+            latest.setdefault("stage_state", {})[stage] = PENDING
+            latest["updated_at"] = now()
+            latest.setdefault("events", []).append(
+                {
+                    "at": now(),
+                    "actor": actor(),
+                    "event": "stage_reset",
+                    "stage": stage,
+                    "revision": result["revision"],
+                }
+            )
+            self.plans._write_json(self.package / "manifest.json", latest)
+        return self.plans.load(self.plan_id)
+
+    @staticmethod
+    def _reanchor_graph_threads(
+        document: dict,
+        *,
+        stage: str,
+        removed_nodes: set[str],
+    ) -> None:
+        candidates = [
+            node
+            for node in document["nodes"].values()
+            if node.get("stage") == stage and node.get("kind") != "thread"
+        ]
+        for thread in document["nodes"].values():
+            if thread.get("kind") != "thread" or thread.get("stage") != stage:
+                continue
+            attrs = thread.get("attrs", {})
+            selector = attrs.get("selector", {})
+            referenced = set(grogu_plandoc_schema.selector_node_ids(selector))
+            if not referenced & removed_nodes:
+                continue
+            exact = ""
+            if selector.get("type") == "text":
+                exact = str(selector.get("quote", {}).get("exact", ""))
+            matches = []
+            if exact:
+                for candidate in candidates:
+                    start = candidate.get("body", "").find(exact)
+                    if start >= 0 and candidate["body"].find(
+                        exact, start + max(1, len(exact))
+                    ) < 0:
+                        matches.append((candidate, start))
+            if len(matches) == 1:
+                candidate, start = matches[0]
+                attrs["selector"] = {
+                    "type": "text",
+                    "node": candidate["id"],
+                    "quote": {
+                        "exact": exact,
+                        "prefix": candidate["body"][
+                            max(0, start - 32) : start
+                        ],
+                        "suffix": candidate["body"][
+                            start + len(exact) : start + len(exact) + 32
+                        ],
+                    },
+                    "position": {
+                        "start": start,
+                        "end": start + len(exact),
+                    },
+                    "body_digest": grogu_plandoc_anchor.digest(
+                        candidate["body"]
+                    ),
+                }
+                attrs["anchor_state"] = "shifted"
+            else:
+                attrs["anchor_state"] = "orphaned"
+
+    def revisions(self, *, role: str) -> list[dict]:
+        effective = self._claim(role)
+        values = []
+        for envelope in grogu_plandoc_revision.list_revisions(self.package):
+            item = copy.deepcopy(envelope)
+            visible_ops, complete = self._visible_ops(item, effective)
+            item["ops"] = visible_ops
+            if not complete:
+                item["intent"] = "revision includes changes outside this role's view"
+            values.append(item)
+        return values
+
+    def _visible_ops(self, envelope: dict, role: str) -> tuple[list[dict], bool]:
+        operations = envelope.get("ops", [])
+        metadata = self._read_revision_meta(str(envelope.get("revision", "")))
+        entries = metadata.get("ops", []) if isinstance(metadata, dict) else []
+        if len(entries) != len(operations):
+            # A package predating revision visibility metadata fails closed.
+            return [], not operations
+        allowed = set(ROLE_READABLE_STAGES.get(role, ())) | {""}
+        result = []
+        for operation, entry in zip(operations, entries):
+            stages = set(entry.get("stages", [])) if isinstance(entry, dict) else set()
+            if stages <= allowed:
+                result.append(copy.deepcopy(operation))
+        return result, len(result) == len(operations)
+
+    def ops_since(self, revision: str, *, role: str) -> list[dict]:
+        if not re.fullmatch(r"r[0-9]{4,}", revision or ""):
+            return []
+        start = int(revision[1:])
+        operations = []
+        for envelope in grogu_plandoc_revision.list_revisions(self.package):
+            if int(envelope["seq"]) > start:
+                visible, _complete = self._visible_ops(envelope, role)
+                operations.extend(visible)
+        return operations
+
+    def diff(self, *, role: str, before: str, after: str) -> dict:
+        effective = self._claim(role)
+        left = self.load(role=effective, revision=before, record=False)
+        right = self.load(role=effective, revision=after, record=False)
+        return {
+            "plan": self.plan_id,
+            "from": before,
+            "to": after,
+            "ops": grogu_plandoc_patch.diff(left, right),
+        }
+
+    def query(
+        self,
+        *,
+        role: str,
+        stage: str = "",
+        kind: str = "",
+        text: str = "",
+        identifier: str = "",
+    ) -> dict:
+        effective = self._claim(role)
+        stages = [stage] if stage else None
+        document = self.load(
+            role=effective, stages=stages, record=False
+        )
+        folded = text.casefold()
+        nodes = [
+            copy.deepcopy(node)
+            for node in sorted(
+                document["nodes"].values(), key=grogu_plandoc.node_sort_key
+            )
+            if (not kind or node["kind"] == kind)
+            and (not identifier or node["id"] == identifier)
+            and (
+                not folded
+                or folded
+                in f"{node['id']} {node['title']} {node['body']}".casefold()
+            )
+        ]
+        edges = [
+            copy.deepcopy(edge)
+            for edge in sorted(
+                document["edges"].values(), key=grogu_plandoc.edge_sort_key
+            )
+            if (not kind or edge["kind"] == kind)
+            and (not identifier or edge["id"] == identifier)
+            and (
+                not folded
+                or folded
+                in (
+                    f"{edge['id']} {edge['kind']} "
+                    f"{edge['from']} {edge['to']}"
+                ).casefold()
+            )
+        ]
+        return {
+            "plan": self.plan_id,
+            "revision": document["revision"],
+            "role": effective,
+            "nodes": nodes,
+            "edges": edges,
+        }
+
+    def export(
+        self,
+        *,
+        role: str,
+        stages=None,
+        include: str = "normative",
+        budget: Optional[int] = None,
+        since: str = "",
+        format: str = "md",
+        output: Optional[Path] = None,
+    ) -> dict:
+        result = self.projection(
+            role=role,
+            stages=stages,
+            include=include,
+            budget=budget,
+            since=since,
+            format=format,
+        )
+        if output is not None:
+            target = Path(output).expanduser().resolve()
+            package = self.package.resolve()
+            if target == package or package in target.parents:
+                raise PlanError(
+                    "refusing to export inside the .plan package; compiled "
+                    "parts are written only by the compiler"
+                )
+            payload = result["payload"]
+            data = (
+                payload.encode("utf8")
+                if isinstance(payload, str)
+                else grogu_plandoc_canon.pretty_dumpb(payload)
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            grogu_plandoc_revision.atomic_write(target, data)
+            result["output"] = str(target)
+        return result
+
+    # -- comments, directives, and proposals ----------------------------
+
+    @staticmethod
+    def _comment_html(body: str) -> str:
+        return grogu_markdown.render_document(body)["html"]
+
+    @staticmethod
+    def _thread_dto(node: dict) -> dict:
+        attrs = node.get("attrs", {})
+        comments = []
+        for comment in attrs.get("comments", []):
+            item = copy.deepcopy(comment)
+            item["body_html"] = PlanDocumentStore._comment_html(
+                str(item.get("body", ""))
+            )
+            item.setdefault("role", "")
+            comments.append(item)
+        selector = copy.deepcopy(attrs.get("selector", {}))
+        return {
+            "id": node["id"],
+            "legacy_id": attrs.get("legacy_id", ""),
+            "selector": selector,
+            "kind": attrs.get("thread_kind", "discussion"),
+            "status": attrs.get("status", "open"),
+            "anchor_state": attrs.get("anchor_state", "resolved"),
+            "anchor_last_exact": attrs.get("anchor_last_exact", ""),
+            "resolved_members": attrs.get("resolved_members"),
+            "total_members": attrs.get("total_members"),
+            "quote_context": attrs.get("quote_context", ""),
+            "round": attrs.get("round", 1),
+            "comments": comments,
+            "promoted_directive": attrs.get("promoted_directive", ""),
+            "revision_request": copy.deepcopy(
+                attrs.get("revision_request")
+            ),
+            "stage": node.get("stage", ""),
+            "created_at": attrs.get("created_at", ""),
+            "resolved_at": attrs.get("resolved_at", ""),
+            "resolved_by": attrs.get("resolved_by", ""),
+            "anchor_history": copy.deepcopy(attrs.get("anchor_history", [])),
+        }
+
+    def threads(
+        self,
+        *,
+        role: str,
+        stage: str = "",
+        status: str = "",
+    ) -> list[dict]:
+        effective = self._claim(role)
+        document = self.load(
+            role=effective,
+            stages=[stage] if stage else None,
+            record=False,
+        )
+        values = [
+            self._thread_dto(node)
+            for node in sorted(
+                document["nodes"].values(), key=grogu_plandoc.node_sort_key
+            )
+            if node.get("kind") == "thread"
+            and (not stage or node.get("stage") == stage)
+            and (not status or node.get("attrs", {}).get("status") == status)
+        ]
+        return values
+
+    def _thread_node(self, document: dict, thread_id: str) -> dict:
+        direct = document["nodes"].get(thread_id)
+        if direct and direct.get("kind") == "thread":
+            return direct
+        for node in document["nodes"].values():
+            if (
+                node.get("kind") == "thread"
+                and node.get("attrs", {}).get("legacy_id") == thread_id
+            ):
+                return node
+        raise PlanError(f"review has no thread {thread_id!r}")
+
+    def add_thread(
+        self,
+        *,
+        role: str,
+        selector: dict,
+        body: str,
+        kind: str = "discussion",
+        legacy_id: str = "",
+    ) -> dict:
+        effective = self._claim(role)
+        if kind not in {
+            "discussion",
+            "question",
+            "suggestion",
+            "blocking",
+            "directive",
+        }:
+            raise PlanError(f"unknown thread kind {kind!r}")
+        body = str(body)
+        if not body.strip():
+            raise PlanError("comment body may not be empty")
+        if len(body) > 8000:
+            raise PlanError("comment body exceeds 8000 characters")
+        document = self.load(role=effective, record=False)
+        normalized = grogu_plandoc_schema.validate_selector(selector)
+        resolution = grogu_plandoc.resolve_selector(document, normalized)
+        node_ids = resolution.get("nodes", [])
+        stage = ""
+        if node_ids:
+            stage = document["nodes"][node_ids[0]].get("stage", "")
+        manifest = self.plans.load(self.plan_id)
+        counter_manifest = {
+            "plandoc": {
+                "counters": copy.deepcopy(
+                    manifest.get("plandoc", {}).get(
+                        "counters", self._counter_state(document)
+                    )
+                )
+            }
+        }
+        thread_id = grogu_plandoc.allocate_id(
+            counter_manifest,
+            "thread",
+            existing_ids=document["nodes"],
+        )
+        stamp = self._graph_timestamp()
+        attrs = {
+            "selector": normalized,
+            "comments": [
+                {
+                    "id": f"{thread_id}-c1",
+                    "at": stamp,
+                    "author": actor(),
+                    "role": effective,
+                    "body": body,
+                    "revision": document["revision"],
+                }
+            ],
+            "status": "open",
+            "anchor_state": resolution.get("state", "resolved"),
+            "thread_kind": kind,
+            "round": self._open_review_round(manifest, thread_id),
+            "legacy_id": legacy_id,
+            "created_at": stamp,
+            "anchor_history": [],
+        }
+        node = grogu_plandoc.make_node(
+            thread_id,
+            "thread",
+            f"{kind.title()} thread",
+            stage=stage,
+            attrs=attrs,
+            order=2_000_000 + len(document["nodes"]),
+            revision=document["revision"],
+        )
+        result = self.patch(
+            role=effective,
+            base=document["revision"],
+            operations=[
+                {"op": "add", "path": f"/nodes/{thread_id}", "value": node}
+            ],
+            intent=f"add {kind} thread",
+            origin="review-adapter",
+        )
+        self._save_review_rounds(manifest)
+        return self._thread_dto(
+            self._thread_node(
+                self.load(role=effective, record=False), thread_id
+            )
+        ) | {"revision": result["revision"]}
+
+    @staticmethod
+    def _open_review_round(manifest: dict, thread_id: str) -> int:
+        rounds = manifest.setdefault("review_rounds", [])
+        if not rounds or rounds[-1].get("state") != "open":
+            rounds.append(
+                {
+                    "number": len(rounds) + 1,
+                    "state": "open",
+                    "opened_at": now(),
+                    "requested_at": "",
+                    "answered_at": "",
+                    "steering_seq": 0,
+                    "thread_ids": [],
+                    "note": "",
+                }
+            )
+        if thread_id not in rounds[-1]["thread_ids"]:
+            rounds[-1]["thread_ids"].append(thread_id)
+        return int(rounds[-1]["number"])
+
+    def _save_review_rounds(self, source: dict) -> None:
+        with self.plans.locked():
+            manifest = self.plans.load(self.plan_id)
+            manifest["review_rounds"] = copy.deepcopy(
+                source.get("review_rounds", [])
+            )
+            self.plans._write_json(self.package / "manifest.json", manifest)
+
+    def reply_thread(
+        self,
+        thread_id: str,
+        body: str,
+        *,
+        role: str,
+    ) -> dict:
+        effective = self._claim(role)
+        body = str(body)
+        if not body.strip():
+            raise PlanError("comment body may not be empty")
+        document = self.load(role=effective, record=False)
+        thread = self._thread_node(document, thread_id)
+        comments = copy.deepcopy(thread["attrs"]["comments"])
+        comments.append(
+            {
+                "id": f"{thread['id']}-c{len(comments) + 1}",
+                "at": self._graph_timestamp(),
+                "author": actor(),
+                "role": effective,
+                "body": body,
+                "revision": document["revision"],
+            }
+        )
+        self.patch(
+            role=effective,
+            base=document["revision"],
+            operations=[
+                {
+                    "op": "replace",
+                    "path": f"/nodes/{thread['id']}/attrs/comments",
+                    "value": comments,
+                }
+            ],
+            intent=f"reply to {thread['id']}",
+            origin="review-adapter",
+        )
+        return self._thread_dto(
+            self._thread_node(
+                self.load(role=effective, record=False), thread["id"]
+            )
+        )
+
+    def set_thread_status(
+        self,
+        thread_id: str,
+        status: str,
+        *,
+        role: str,
+        note: str = "",
+    ) -> dict:
+        effective = self._claim(role)
+        if status not in {"open", "resolved"}:
+            raise PlanError(f"invalid thread status {status!r}")
+        document = self.load(role=effective, record=False)
+        thread = self._thread_node(document, thread_id)
+        operations = [
+            {
+                "op": "replace",
+                "path": f"/nodes/{thread['id']}/attrs/status",
+                "value": status,
+            }
+        ]
+        if note.strip():
+            comments = copy.deepcopy(thread["attrs"]["comments"])
+            comments.append(
+                {
+                    "id": f"{thread['id']}-c{len(comments) + 1}",
+                    "at": self._graph_timestamp(),
+                    "author": actor(),
+                    "role": effective,
+                    "body": note.strip(),
+                    "revision": document["revision"],
+                }
+            )
+            operations.append(
+                {
+                    "op": "replace",
+                    "path": f"/nodes/{thread['id']}/attrs/comments",
+                    "value": comments,
+                }
+            )
+        if status == "resolved":
+            operations.extend(
+                [
+                    {
+                        "op": "add",
+                        "path": f"/nodes/{thread['id']}/attrs/resolved_at",
+                        "value": now(),
+                    },
+                    {
+                        "op": "add",
+                        "path": f"/nodes/{thread['id']}/attrs/resolved_by",
+                        "value": actor(),
+                    },
+                ]
+            )
+        else:
+            operations.extend(
+                [
+                    {
+                        "op": "add",
+                        "path": f"/nodes/{thread['id']}/attrs/resolved_at",
+                        "value": "",
+                    },
+                    {
+                        "op": "add",
+                        "path": f"/nodes/{thread['id']}/attrs/resolved_by",
+                        "value": "",
+                    },
+                ]
+            )
+        self.patch(
+            role=effective,
+            base=document["revision"],
+            operations=operations,
+            intent=f"{status} {thread['id']}",
+            origin="review-adapter",
+        )
+        if status == "open":
+            manifest = self.plans.load(self.plan_id)
+            self._open_review_round(manifest, thread["id"])
+            self._save_review_rounds(manifest)
+        return self._thread_dto(
+            self._thread_node(
+                self.load(role=effective, record=False), thread["id"]
+            )
+        )
+
+    def promote_thread(
+        self,
+        thread_id: str,
+        *,
+        role: str,
+        title: str,
+        body: str = "",
+        audience=None,
+        binding: str = "must",
+    ) -> dict:
+        effective = self._claim(role)
+        if effective != ARCHITECT:
+            raise PlanError("only the architect may promote a directive")
+        document = self.load(role=effective, record=False)
+        thread = self._thread_node(document, thread_id)
+        manifest = self.plans.load(self.plan_id)
+        counter_manifest = {
+            "plandoc": {
+                "counters": copy.deepcopy(
+                    manifest.get("plandoc", {}).get(
+                        "counters", self._counter_state(document)
+                    )
+                )
+            }
+        }
+        directive_id = grogu_plandoc.allocate_id(
+            counter_manifest, "directive", existing_ids=document["nodes"]
+        )
+        edge_id = grogu_plandoc.allocate_id(
+            counter_manifest,
+            "edge",
+            existing_ids=document["edges"],
+        )
+        directive = grogu_plandoc.make_node(
+            directive_id,
+            "directive",
+            title,
+            stage=thread.get("stage", ""),
+            body=body,
+            attrs={
+                "binding": binding,
+                "audience": list(audience or ["everyone"]),
+                "status": "active",
+                "origin": f"thread:{thread['id']}",
+            },
+            order=max(
+                [
+                    node.get("order", 0)
+                    for node in document["nodes"].values()
+                    if node.get("kind") == "directive"
+                ]
+                or [0]
+            )
+            + 1000,
+            revision=document["revision"],
+        )
+        edge = grogu_plandoc.make_edge(
+            edge_id,
+            "derives_from",
+            thread["id"],
+            directive_id,
+            revision=document["revision"],
+        )
+        operations = [
+            {"op": "add", "path": f"/nodes/{directive_id}", "value": directive},
+            {"op": "add", "path": f"/edges/{edge_id}", "value": edge},
+            {
+                "op": "replace",
+                "path": f"/nodes/{thread['id']}/attrs/status",
+                "value": "resolved",
+            },
+            {
+                "op": "add",
+                "path": f"/nodes/{thread['id']}/attrs/promoted_directive",
+                "value": directive_id,
+            },
+        ]
+        result = self.patch(
+            role=effective,
+            base=document["revision"],
+            operations=operations,
+            intent=f"promote {thread['id']} to {directive_id}",
+            origin="directive-promotion",
+        )
+        return {
+            "directive": directive_id,
+            "edge": edge_id,
+            "thread": thread["id"],
+            "revision": result["revision"],
+        }
+
+    def _proposal_path(self, proposal_id: str) -> Path:
+        if re.fullmatch(r"pr-[1-9][0-9]*", proposal_id or "") is None:
+            raise PlanError(f"invalid proposal id {proposal_id!r}")
+        return self.package / "proposals" / f"{proposal_id}.json"
+
+    def proposals(self, *, role: str) -> list[dict]:
+        effective = self._claim(role)
+        directory = self.package / "proposals"
+        if not directory.is_dir():
+            return []
+        values = []
+        for path in sorted(directory.glob("pr-*.json")):
+            try:
+                value = self._read_json_file(path)
+            except PlanError:
+                continue
+            if value.get("id") and self._proposal_readable(
+                value, effective
+            ):
+                values.append(self._public_proposal(value))
+        return values
+
+    @staticmethod
+    def _public_proposal(proposal: dict) -> dict:
+        return {
+            key: copy.deepcopy(value)
+            for key, value in proposal.items()
+            if key != "visibility"
+        }
+
+    @staticmethod
+    def _proposal_readable(proposal: dict, role: str) -> bool:
+        operations = proposal.get("ops", [])
+        visibility = proposal.get("visibility", {})
+        entries = (
+            visibility.get("ops", [])
+            if isinstance(visibility, dict)
+            else []
+        )
+        if len(entries) != len(operations):
+            return False
+        allowed = set(ROLE_READABLE_STAGES.get(role, ())) | {""}
+        return all(
+            isinstance(entry, dict)
+            and set(entry.get("stages", [])) <= allowed
+            for entry in entries
+        )
+
+    def propose(
+        self,
+        *,
+        role: str,
+        operations,
+        why: str,
+        base: str = "",
+        from_thread: str = "",
+    ) -> dict:
+        effective = self._claim(role)
+        document = self.load(role=effective, record=False)
+        base = base or document["revision"]
+        # Full dry-run validation, including authorization and compiler
+        # equivalence, occurs before a proposal file is accepted.
+        self.patch(
+            role=effective,
+            base=base,
+            operations=operations,
+            intent=why or "proposal preview",
+            origin="proposal-preview",
+            dry_run=True,
+        )
+        added, removed = self._reserved_ids(operations)
+        proposed = grogu_plandoc_patch.apply_patch(
+            document,
+            operations,
+            base=base,
+            current_revision=base,
+            readable_stages=ROLE_READABLE_STAGES[effective],
+            authorized_new_ids=added,
+            authorized_remove_ids=removed,
+        )
+        visibility = self._operation_visibility(
+            document, proposed, operations
+        )
+        with self.plans.locked():
+            directory = self.package / "proposals"
+            numbers = [
+                int(match.group(1))
+                for path in directory.glob("pr-*.json")
+                if (match := re.fullmatch(r"pr-([1-9][0-9]*)\.json", path.name))
+            ] if directory.is_dir() else []
+            proposal_id = f"pr-{max(numbers, default=0) + 1}"
+            proposal = {
+                "schema_version": 1,
+                "id": proposal_id,
+                "at": now(),
+                "from_thread": from_thread,
+                "base": base,
+                "why": str(why),
+                "ops": copy.deepcopy(list(operations or [])),
+                "visibility": visibility,
+                "status": "pending",
+                "decided_at": "",
+                "decided_by": "",
+                "why_not": "",
+            }
+            grogu_plandoc_revision.atomic_write(
+                self._proposal_path(proposal_id),
+                grogu_plandoc_canon.pretty_dumpb(proposal),
+            )
+        return self._public_proposal(proposal)
+
+    def _proposal(self, proposal_id: str, *, role: str) -> dict:
+        effective = self._claim(role)
+        try:
+            proposal = self._read_json_file(
+                self._proposal_path(proposal_id)
+            )
+        except PlanError as error:
+            raise PlanError(f"proposal {proposal_id!r} was not found") from error
+        if not self._proposal_readable(proposal, effective):
+            raise PlanError(f"proposal {proposal_id!r} was not found")
+        return proposal
+
+    def proposal_preview(self, proposal_id: str, *, role: str) -> dict:
+        effective = self._claim(role)
+        proposal = self._proposal(proposal_id, role=effective)
+        base_document = self.load(
+            role=effective,
+            revision=proposal["base"],
+            record=False,
+        )
+        added, removed = self._reserved_ids(proposal.get("ops", []))
+        after = grogu_plandoc_patch.apply_patch(
+            base_document,
+            proposal.get("ops", []),
+            base=proposal["base"],
+            current_revision=proposal["base"],
+            readable_stages=ROLE_READABLE_STAGES[effective],
+            authorized_new_ids=added,
+            authorized_remove_ids=removed,
+        )
+        after = self._stamp_revision(
+            base_document, after, base_document["revision"]
+        )
+        impact = self._impact_dto(
+            base_document,
+            after,
+            proposal.get("ops", []),
+        )
+        node_diff = []
+        for operation in proposal.get("ops", []):
+            match = re.match(
+                r"^/(nodes|edges)/([^/]+)", str(operation.get("path", ""))
+            )
+            if not match:
+                continue
+            bucket, identifier = match.groups()
+            before_value = base_document.get(bucket, {}).get(identifier)
+            after_value = after.get(bucket, {}).get(identifier)
+            node_diff.append(
+                {
+                    "id": identifier,
+                    "op": (
+                        "add"
+                        if operation.get("op") == "add"
+                        else (
+                            "remove"
+                            if operation.get("op") == "remove"
+                            else (
+                                "link"
+                                if bucket == "edges"
+                                and before_value is None
+                                else "set"
+                            )
+                        )
+                    ),
+                    "kind": (
+                        (after_value or before_value or {}).get("kind", "")
+                    ),
+                    "title": (
+                        (after_value or before_value or {}).get(
+                            "title", identifier
+                        )
+                    ),
+                    "before": copy.deepcopy(before_value),
+                    "after": copy.deepcopy(after_value),
+                }
+            )
+        compiled = []
+        manifest = self.plans.load(self.plan_id)
+        for stage in manifest.get("stages", []):
+            if stage not in ROLE_READABLE_STAGES[effective]:
+                continue
+            spec = self._projection_spec(effective, [stage])
+            left = grogu_plandoc_compile.compile_checked(
+                base_document, spec
+            )["markdown"]
+            right = grogu_plandoc_compile.compile_checked(after, spec)[
+                "markdown"
+            ]
+            if left != right:
+                compiled.append(
+                    {"role": effective, "stage": stage, "before": left, "after": right}
+                )
+        return {
+            "node_diff": node_diff,
+            "compiled_diff": compiled,
+            "impact": impact,
+            "stale": proposal["base"] != self.head(repair=True),
+            "head": self.head(repair=True),
+        }
+
+    def _impact_dto(self, before: dict, after: dict, operations) -> dict:
+        changed = self._changed_ids(operations)
+        removed = {
+            identifier
+            for operation in operations
+            if operation.get("op") == "remove"
+            for identifier in self._changed_ids([operation])
+        }
+        direct_ids: set[str] = set()
+        transitive_by_id: dict[str, dict] = {}
+        destructive_ids: set[str] = set()
+        cycles: set[tuple[str, ...]] = set()
+        for identifier in changed:
+            source = before if (
+                identifier in before.get("nodes", {})
+                or identifier in before.get("edges", {})
+            ) else after
+            if identifier in source.get("nodes", {}):
+                selector = {"type": "node", "id": identifier}
+            elif identifier in source.get("edges", {}):
+                selector = {"type": "edge", "id": identifier}
+            else:
+                continue
+            raw = grogu_plandoc.impact(source, selector)
+            direct_ids.update(raw.get("direct", []))
+            for entry in raw.get("transitive", []):
+                current = transitive_by_id.get(entry["id"])
+                if current is None or int(entry.get("distance", 0)) < int(
+                    current.get("distance", 0)
+                ):
+                    transitive_by_id[entry["id"]] = entry
+            cycles.update(tuple(cycle) for cycle in raw.get("cycles", []))
+            if identifier in removed:
+                destructive_ids.update(raw.get("direct", []))
+                destructive_ids.update(
+                    entry["id"] for entry in raw.get("transitive", [])
+                )
+
+        def item(identifier: str, *, reason: str = "") -> dict:
+            value = after["nodes"].get(identifier) or before["nodes"].get(
+                identifier
+            ) or after["edges"].get(identifier) or before["edges"].get(identifier)
+            value = value or {}
+            return {
+                "id": identifier,
+                "kind": value.get("kind", "task"),
+                "title": value.get("title", identifier),
+                "reason": reason,
+                "destructive": identifier in destructive_ids,
+            }
+
+        return {
+            "direct": [
+                item(identifier)
+                for identifier in sorted(
+                    direct_ids, key=grogu_plandoc_canon.id_sort_key
+                )
+            ],
+            "transitive": [
+                item(
+                    entry["id"],
+                    reason=" → ".join(entry.get("path", [])),
+                )
+                for entry in sorted(
+                    transitive_by_id.values(),
+                    key=lambda value: (
+                        int(value.get("distance", 0)),
+                        grogu_plandoc_canon.id_sort_key(value["id"]),
+                    ),
+                )
+            ],
+            "cycles": [list(cycle) for cycle in sorted(cycles)],
+            "compiled_delta": grogu_plandoc.compiled_delta(before, after),
+        }
+
+    def impact(
+        self,
+        *,
+        role: str,
+        selector: dict,
+        depth: Optional[int] = None,
+    ) -> dict:
+        effective = self._claim(role)
+        document = self.load(role=effective, record=False)
+        raw = grogu_plandoc.impact(document, selector, depth=depth)
+
+        def item(identifier: str, reason: str = "") -> dict:
+            value = document["nodes"].get(identifier, {})
+            return {
+                "id": identifier,
+                "kind": value.get("kind", "task"),
+                "title": value.get("title", identifier),
+                "reason": reason,
+                "destructive": False,
+            }
+
+        return {
+            "direct": [item(identifier) for identifier in raw["direct"]],
+            "transitive": [
+                item(entry["id"], " → ".join(entry["path"]))
+                for entry in raw["transitive"]
+            ],
+            "cycles": raw["cycles"],
+            "compiled_delta": raw["compiled_delta"],
+        }
+
+    def accept_proposal(self, proposal_id: str, *, role: str) -> dict:
+        effective = self._claim(role)
+        proposal = self._proposal(proposal_id, role=effective)
+        if proposal.get("status") != "pending":
+            raise PlanError(
+                f"proposal {proposal_id} is {proposal.get('status', 'unknown')}"
+            )
+        head = self.head(repair=True)
+        if proposal.get("base") != head:
+            raise grogu_plandoc_patch.StaleRevision(
+                str(proposal.get("base", "")), head
+            )
+        predicted = grogu_plandoc_revision.revision_id(int(head[1:]) + 1)
+        decided = {
+            **proposal,
+            "status": "accepted",
+            "decided_at": now(),
+            "decided_by": actor(),
+            "revision": predicted,
+        }
+        result = self.patch(
+            role=effective,
+            base=head,
+            operations=proposal.get("ops", []),
+            intent=f"accept {proposal_id}",
+            origin=f"proposal:{proposal_id}",
+            extra_artifacts={
+                f"proposals/{proposal_id}.json": grogu_plandoc_canon.pretty_dumpb(
+                    decided
+                )
+            },
+            proposal_guard=proposal_id,
+        )
+        return {
+            "revision": result["revision"],
+            "proposal": self._public_proposal(decided),
+        }
+
+    def reject_proposal(
+        self,
+        proposal_id: str,
+        *,
+        role: str,
+        why_not: str,
+    ) -> dict:
+        self._claim(role)
+        if not str(why_not).strip():
+            raise PlanError("rejecting a proposal requires a reason")
+        proposal = self._proposal(proposal_id, role=role)
+        if proposal.get("status") != "pending":
+            raise PlanError(
+                f"proposal {proposal_id} is {proposal.get('status', 'unknown')}"
+            )
+        proposal.update(
+            {
+                "status": "rejected",
+                "decided_at": now(),
+                "decided_by": actor(),
+                "why_not": str(why_not).strip(),
+            }
+        )
+        with self.plans.locked():
+            current = self._read_json_file(self._proposal_path(proposal_id))
+            if current.get("status") != "pending":
+                raise PlanError(
+                    f"proposal {proposal_id} is "
+                    f"{current.get('status', 'unknown')}"
+                )
+            grogu_plandoc_revision.atomic_write(
+                self._proposal_path(proposal_id),
+                grogu_plandoc_canon.pretty_dumpb(proposal),
+            )
+        return self._public_proposal(proposal)
+
+    # -- explicit agent registration and the privacy-normalized board ----
+
+    def _registration_dir(self) -> Path:
+        return self.plans.state_dir / "controlroom" / "registrations"
+
+    def register_session(self, value: dict) -> dict:
+        registration_value = dict(value)
+        registration_value.setdefault("repository", str(self.plans.root))
+        registration_value.setdefault("plan", self.plan_id)
+        registration_value.setdefault("registered_at", now())
+        registration = grogu_controlroom.load_registration(registration_value)
+        if not registration.run_id:
+            raise PlanError("a control-room registration requires run_id")
+        if registration.plan != self.plan_id:
+            raise PlanError(
+                f"registration belongs to {registration.plan!r}, not "
+                f"{self.plan_id!r}"
+            )
+        if Path(registration.repository).expanduser().resolve() != self.plans.root:
+            raise PlanError("registration repository does not match this plan store")
+        if registration.events_path and not grogu_agentevents.is_session_events_path(
+            Path(registration.events_path)
+        ):
+            raise PlanError(
+                "events_path must be an explicit "
+                "session-state/<session>/events.jsonl path"
+            )
+        current = self.registrations()
+        paths = {
+            item.get("events_path", "")
+            for item in current
+            if item.get("events_path")
+        }
+        if (
+            registration.events_path
+            and registration.events_path not in paths
+            and len(paths) >= grogu_agentevents.MAX_REGISTERED_SOURCES
+        ):
+            raise PlanError("at most 32 registered session event sources are allowed")
+        directory = self._registration_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        name = hashlib.sha256(registration.run_id.encode("utf8")).hexdigest()
+        self.plans._write_json(directory / f"{name}.json", registration.to_dict())
+        return registration.to_dict()
+
+    def registrations(self) -> list[dict]:
+        directory = self._registration_dir()
+        if not directory.is_dir():
+            return []
+        values = []
+        for path in sorted(directory.glob("*.json")):
+            value = self.plans._read_json(path)
+            try:
+                registration = grogu_controlroom.load_registration(value)
+            except ValueError:
+                continue
+            try:
+                repository = Path(registration.repository).expanduser().resolve()
+            except OSError:
+                continue
+            if repository != self.plans.root or registration.plan != self.plan_id:
+                continue
+            values.append(registration.to_dict())
+        return values
+
+    def control_room(self, *, role: str):
+        effective = self._role(role)
+        home = Path(os.environ.get("GROGU_HOME", Path.home() / ".grogu"))
+        room = grogu_controlroom.ControlRoom(
+            effective_role=effective,
+            watch_home=home,
+            traces_db=home / "traces.db",
+        )
+        for value in self.registrations():
+            room.register(grogu_controlroom.load_registration(value))
+        return room
+
+    @staticmethod
+    def _epoch_millis(value) -> int:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(float(value) * (1000 if float(value) < 10_000_000_000 else 1))
+        if not isinstance(value, str) or not value:
+            return 0
+        try:
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return 0
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return int(parsed.timestamp() * 1000)
+
+    @staticmethod
+    def _badge(row: dict) -> str:
+        if int(row.get("steering", {}).get("unread", 0) or 0) > 0:
+            return "waiting"
+        lifecycle = row.get("lifecycle")
+        if lifecycle == "finished":
+            return "finished"
+        if lifecycle == "failed" or row.get("failures"):
+            return "error"
+        if row.get("connection") == "disconnected":
+            return "disconnected"
+        if row.get("activity") == "possibly_stuck":
+            return "stuck"
+        if row.get("activity") == "active":
+            return "live"
+        return "idle"
+
+    @staticmethod
+    def _limit_detail(category: str) -> str:
+        return {
+            "model_reasoning": "Model reasoning is never recorded.",
+            "command_arguments": "Command arguments are never shown.",
+            "tool_arguments": "Tool arguments are dropped before parsing returns.",
+            "tool_results": "Tool results are dropped before parsing returns.",
+            "file_edits": "File edits are not observable from passive sources.",
+            "tool_activity": "Tool activity is unavailable without registration.",
+            "sealed_stage_content": "Sealed-stage content is never returned.",
+            "trace_payload": "Trace payloads are never selected or returned.",
+        }.get(category, "Unavailable by design.")
+
+    def _normalized_agent(
+        self,
+        row: dict,
+        *,
+        plan_titles: dict,
+        room,
+        registrations: dict,
+        effective_role: str,
+    ) -> dict:
+        registration = registrations.get(row.get("agent_key", ""))
+        last_tool = None
+        if registration is not None:
+            drill = room.drill_in(registration, max_events=25)
+            for event in reversed(drill.get("activity", [])):
+                if event.get("kind") != "tool_completed":
+                    continue
+                last_tool = {
+                    "tool_name": event.get("name", ""),
+                    "duration_ms": int(event.get("duration_ms", 0) or 0),
+                    "outcome": (
+                        "ok"
+                        if event.get("success") is True
+                        else (
+                            "err"
+                            if event.get("success") is False
+                            else "timeout"
+                        )
+                    ),
+                }
+                break
+        current_action = row.get("current_action")
+        if current_action:
+            current_action = {
+                "tool_name": current_action.get("tool_name", ""),
+                "phase": current_action.get("phase", "unknown"),
+                "at": self._epoch_millis(current_action.get("at")),
+                "summary": None,
+            }
+        steering = dict(row.get("steering", {}))
+        feedback = self.feedback_records(role=effective_role)
+        matching_feedback = [
+            item
+            for item in feedback
+            if item.get("scope", {}).get("kind") == "agent"
+            and item.get("scope", {}).get("agent_key") == row.get("agent_key")
+        ]
+        steering["unread"] = sum(
+            item.get("state") not in {"acknowledged", "withdrawn", "undeliverable"}
+            for item in matching_feedback
+        )
+        plan_id = str(row.get("plan", ""))
+        try:
+            revision = (
+                PlanDocumentStore.for_plan(self.plans, plan_id).head()
+                if plan_id
+                else ""
+            )
+        except PlanError:
+            revision = ""
+        failures = [
+            {
+                "code": str(item.get("code", "")),
+                "at": self._epoch_millis(item.get("at")),
+            }
+            for item in row.get("failures", [])
+        ]
+        return {
+            "agent_key": str(row.get("agent_key", "")),
+            "agent": str(row.get("agent", "")),
+            "run_id": str(row.get("run_id", "")),
+            "role": str(row.get("role", "")),
+            "roles": list(row.get("roles", [])),
+            "workstream": str(row.get("workstream", "")),
+            "plan": plan_id,
+            "plan_title": plan_titles.get(plan_id, ""),
+            "revision": {
+                "last_read": str(row.get("revision", {}).get("last_read", "")),
+                "current": revision,
+                "relation": (
+                    "current"
+                    if revision
+                    and row.get("revision", {}).get("last_read") == revision
+                    else (
+                        "behind"
+                        if revision and row.get("revision", {}).get("last_read")
+                        else "unknown"
+                    )
+                ),
+            },
+            "lifecycle": row.get("lifecycle", "unknown"),
+            "activity": row.get("activity", "unknown"),
+            "connection": row.get("connection", "unknown"),
+            "badge": self._badge({**row, "steering": steering}),
+            "started_at": (
+                self._epoch_millis(row.get("started_at"))
+                if row.get("started_at")
+                else None
+            ),
+            "last_observed_at": self._epoch_millis(
+                row.get("last_observed_at")
+            ),
+            "elapsed_ms": int(row.get("elapsed_ms") or 0),
+            "elapsed_basis": row.get("elapsed_basis", "unknown"),
+            "current_action": current_action,
+            "last_tool": last_tool,
+            "tools": {
+                "started": int(row.get("tools", {}).get("started", 0)),
+                "completed": int(row.get("tools", {}).get("completed", 0)),
+                "failed": int(row.get("tools", {}).get("failed", 0)),
+                "inflight": int(row.get("tools", {}).get("inflight", 0)),
+                "complete": bool(row.get("tools", {}).get("complete", False)),
+            },
+            "grogu_commands": {
+                "calls": int(row.get("grogu_commands", {}).get("calls", 0)),
+                "failures": int(
+                    row.get("grogu_commands", {}).get("failures", 0)
+                ),
+                "last_command": str(
+                    row.get("grogu_commands", {}).get("last_command", "")
+                ),
+            },
+            "failures": failures,
+            "blockers": [str(item) for item in row.get("blockers", [])],
+            "steering": {
+                "unread": int(steering.get("unread", 0)),
+                "delivered": int(steering.get("delivered", 0)),
+                "acknowledged": int(steering.get("acknowledged", 0)),
+            },
+            "coverage": {
+                "lifecycle": row.get("coverage", {}).get(
+                    "lifecycle", "unavailable"
+                ),
+                "tools": row.get("coverage", {}).get(
+                    "tools", "unavailable"
+                ),
+                "outcomes": row.get("coverage", {}).get(
+                    "outcomes", "unavailable"
+                ),
+            },
+            "basis": "observed",
+            "stuck_threshold_s": 300,
+            "last_error": "",
+            "error_token": failures[-1]["code"] if failures else "",
+        }
+
+    def control_snapshot(
+        self,
+        *,
+        role: str,
+        room=None,
+        plan: str = "",
+        filter_role: str = "",
+        workstream: str = "",
+        state: str = "",
+        window_minutes: int = 120,
+    ) -> dict:
+        self._role(role)
+        room = room or self.control_room(role=role)
+        summaries = {
+            item["id"]: self.plans.summary(item["id"])
+            for item in self.plans.list_plans()
+        }
+        raw = room.snapshot(
+            plan_summaries=summaries,
+            window_minutes=window_minutes,
+        )
+        registration_values = [
+            grogu_controlroom.load_registration(item)
+            for item in self.registrations()
+        ]
+        registrations = {
+            item.agent_key: item for item in registration_values
+        }
+        titles = {
+            plan_id: str(summary.get("title", ""))
+            for plan_id, summary in summaries.items()
+        }
+        agents = [
+            self._normalized_agent(
+                row,
+                plan_titles=titles,
+                room=room,
+                registrations=registrations,
+                effective_role=role,
+            )
+            for row in raw.get("agents", [])
+            if row.get("agent_key") in registrations
+        ]
+        if plan:
+            agents = [item for item in agents if item["plan"] == plan]
+        if filter_role:
+            agents = [item for item in agents if item["role"] == filter_role]
+        if workstream:
+            agents = [
+                item for item in agents if item["workstream"] == workstream
+            ]
+        if state:
+            wanted = state.casefold()
+            agents = [
+                item
+                for item in agents
+                if wanted
+                in {
+                    str(item["badge"]).casefold(),
+                    str(item["activity"]).casefold(),
+                    str(item["lifecycle"]).casefold(),
+                    str(item["connection"]).casefold(),
+                }
+            ]
+        plans = {}
+        for item in agents:
+            entry = plans.setdefault(
+                item["plan"],
+                {
+                    "title": titles.get(item["plan"], item["plan"]),
+                    "agents": 0,
+                },
+            )
+            entry["agents"] += 1
+        waiting = [
+            {
+                "agent_key": item["agent_key"],
+                "agent": item["agent"],
+                "reason": (
+                    f"{item['steering']['unread']} unread steering"
+                    if item["steering"]["unread"]
+                    else "; ".join(item["blockers"])
+                ),
+            }
+            for item in agents
+            if item["steering"]["unread"] or item["blockers"]
+        ]
+        return {
+            "fresh_as_of": self._epoch_millis(raw.get("fresh_as_of")),
+            "limits": [
+                {
+                    "category": str(category),
+                    "detail": self._limit_detail(str(category)),
+                }
+                for category in raw.get("limits", [])
+            ],
+            "waiting_on_you": waiting,
+            "agents": agents,
+            "plans": plans,
+        }
+
+    def control_drill(self, agent_key: str, *, role: str, room=None) -> dict:
+        self._role(role)
+        room = room or self.control_room(role=role)
+        registrations = {
+            item.agent_key: item
+            for item in (
+                grogu_controlroom.load_registration(value)
+                for value in self.registrations()
+            )
+        }
+        registration = registrations.get(agent_key)
+        if registration is None:
+            raise PlanError(f"agent {agent_key!r} is not registered")
+        snapshot = self.control_snapshot(role=role, room=room)
+        agent = next(
+            (
+                item
+                for item in snapshot["agents"]
+                if item["agent_key"] == agent_key
+            ),
+            None,
+        )
+        if agent is None:
+            raise PlanError(f"agent {agent_key!r} is unavailable")
+        raw = room.drill_in(registration)
+        activity = []
+        for index, event in enumerate(raw.get("activity", []), 1):
+            kind = event.get("kind", "")
+            if kind.startswith("tool_"):
+                event_type = "tool"
+                summary = (
+                    f"{event.get('name', 'tool')} "
+                    f"{'completed' if kind == 'tool_completed' else 'started'}"
+                )
+            elif kind == "subagent_started":
+                event_type = "workstream_started"
+                summary = "Agent run started"
+            elif kind == "subagent_completed":
+                event_type = "workstream_merged"
+                summary = "Agent run completed"
+            elif kind == "permission_requested":
+                event_type = "gate_blocked"
+                summary = "Permission requested"
+            elif kind == "permission_completed":
+                event_type = "gate_passed"
+                summary = "Permission completed"
+            else:
+                event_type = "disconnected"
+                summary = "Coverage gap"
+            item = {
+                "id": f"{registration.run_id}:{index}",
+                "type": event_type,
+                "at": self._epoch_millis(event.get("at")),
+                "summary": summary,
+                "basis": "observed",
+            }
+            if kind.startswith("tool_"):
+                item["tool"] = {
+                    "tool_name": str(event.get("name", "")),
+                    "duration_ms": int(event.get("duration_ms", 0) or 0),
+                    "outcome": (
+                        "ok"
+                        if event.get("success") is True
+                        else (
+                            "err"
+                            if event.get("success") is False
+                            else "timeout"
+                        )
+                    ),
+                }
+            activity.append(item)
+        return {
+            "agent": agent,
+            "activity": activity,
+            "evidence": [
+                {
+                    "id": f"{registration.run_id}:evidence:{index}",
+                    "label": "Observed plan object",
+                    "plan": value.get("plan_id", registration.plan),
+                    "node": value.get("object_id") or None,
+                    "revision": value.get("revision") or None,
+                    "available": value.get("object_id") is not None,
+                }
+                for index, value in enumerate(raw.get("evidence", []), 1)
+            ],
+            "limits": [
+                {
+                    "category": str(category),
+                    "detail": self._limit_detail(str(category)),
+                }
+                for category in raw.get("limits", [])
+            ],
+            "blockers": [str(item) for item in raw.get("blockers", [])],
+        }
+
+    # -- durable feedback receipts through PlanStore.steer --------------
+
+    @staticmethod
+    def _feedback_gates(role: str) -> list[str]:
+        return {
+            ARCHITECT: [GATE_IMPLEMENT],
+            DESIGNER: [GATE_TEST],
+            ENGINEER: [GATE_IMPLEMENT],
+            TESTER: [GATE_TEST, GATE_EVALUATE],
+            REVIEWER: [GATE_IMPLEMENT],
+            "all": list(GATES),
+        }.get(role, list(GATES))
+
+    def route_feedback(
+        self,
+        *,
+        role: str,
+        scope: dict,
+        text: str,
+        binding: bool,
+        room=None,
+    ) -> dict:
+        effective = self._role(role)
+        sender_agent = self.plans._identified_agent()[0]
+        text = str(text).strip()
+        if not text:
+            raise PlanError("refusing to route empty feedback")
+        kind = str(scope.get("kind", ""))
+        target_role = "all"
+        target_agent = ""
+        delivered_to = str(scope.get("label", ""))
+        registration = None
+        if kind == "agent":
+            agent_key = str(scope.get("agent_key", ""))
+            registrations = {
+                item.agent_key: item
+                for item in (
+                    grogu_controlroom.load_registration(value)
+                    for value in self.registrations()
+                )
+            }
+            registration = registrations.get(agent_key)
+            if registration is None:
+                raise PlanError(f"agent {agent_key!r} is not registered")
+            target_role = registration.role or "all"
+            target_agent = registration.agent
+            delivered_to = agent_key
+        elif kind == "role":
+            target_role = str(scope.get("role", ""))
+        elif kind == "plan":
+            if str(scope.get("plan", "")) not in {"", self.plan_id}:
+                raise PlanError("feedback plan scope does not match this plan")
+            target_role = "all"
+        elif kind == "role_plan":
+            if str(scope.get("plan", "")) not in {"", self.plan_id}:
+                raise PlanError("feedback plan scope does not match this plan")
+            target_role = str(scope.get("role", ""))
+        else:
+            raise PlanError(f"unknown feedback scope {kind!r}")
+        if target_role != "all" and target_role not in ROLES:
+            raise PlanError(f"unknown feedback role {target_role!r}")
+        gates = self._feedback_gates(target_role) if binding else []
+        if registration is not None:
+            room = room or self.control_room(role=role)
+            receipt = room.route_feedback(
+                registration,
+                text=text,
+                binding=False,
+                plan_store=self.plans,
+                gates_map={target_role: gates},
+            )
+            seq = int(receipt["seq"])
+        else:
+            note = self.plans.steer(
+                text,
+                plan_id=self.plan_id,
+                role=target_role,
+                requires_replan=False,
+            )
+            seq = int(note["seq"])
+        feedback_id = f"f-{seq:03d}"
+        sent_at = self._epoch_millis(now())
+        with self.plans.locked():
+            manifest = self.plans.load(self.plan_id)
+            note = next(
+                (
+                    item
+                    for item in manifest.get("steering", [])
+                    if int(item.get("seq", 0)) == seq
+                ),
+                None,
+            )
+            if note is None:
+                raise PlanError("feedback steering record disappeared")
+            note.update(
+                {
+                    "feedback_id": feedback_id,
+                    "feedback_scope": copy.deepcopy(scope),
+                    "binding_feedback": bool(binding),
+                    "target_agent": target_agent,
+                    "feedback_sender_role": effective,
+                    "feedback_sender_agent": sender_agent,
+                    "gates": gates,
+                    "feedback_history": [
+                        {"state": "sent", "at": sent_at},
+                        {"state": "routed", "at": sent_at},
+                        {"state": "delivered", "at": sent_at},
+                    ],
+                }
+            )
+            self.plans._write_json(self.plans.manifest_path(self.plan_id), manifest)
+        record = self.feedback_record(feedback_id, role=effective)
+        return {
+            "seq": feedback_id,
+            "delivered_to": delivered_to,
+            "gates_closed": gates,
+            "record": record,
+        }
+
+    def feedback_records(self, *, role: str) -> list[dict]:
+        effective = self._role(role)
+        caller_agent = self.plans._identified_agent()[0]
+        manifest = self.plans.load(self.plan_id)
+        values = []
+        for note in manifest.get("steering", []):
+            if not note.get("feedback_id"):
+                continue
+            target_visible = (
+                effective in {"all", ARCHITECT}
+                or (
+                    note.get("role") in {"all", effective}
+                    and (
+                        not note.get("target_agent")
+                        or note.get("target_agent") == caller_agent
+                    )
+                )
+            )
+            sender_visible = (
+                note.get("feedback_sender_role") == effective
+                and (
+                    not note.get("feedback_sender_agent")
+                    or note.get("feedback_sender_agent") == caller_agent
+                )
+            )
+            if not (target_visible or sender_visible):
+                continue
+            acknowledged = self.plans._feedback_acknowledged(manifest, note)
+            if note.get("withdrawn"):
+                state = "withdrawn"
+            elif acknowledged:
+                state = "acknowledged"
+            else:
+                state = "delivered"
+            history = copy.deepcopy(note.get("feedback_history", []))
+            if state == "acknowledged" and not any(
+                item.get("state") == "acknowledged" for item in history
+            ):
+                history.append(
+                    {
+                        "state": "acknowledged",
+                        "at": self._epoch_millis(now()),
+                    }
+                )
+            if state == "withdrawn" and not any(
+                item.get("state") == "withdrawn" for item in history
+            ):
+                history.append(
+                    {
+                        "state": "withdrawn",
+                        "at": self._epoch_millis(
+                            note.get("withdrawn_at", now())
+                        ),
+                    }
+                )
+            gates = list(note.get("gates", []))
+            values.append(
+                {
+                    "id": note["feedback_id"],
+                    "scope": copy.deepcopy(note.get("feedback_scope", {})),
+                    "binding": bool(note.get("binding_feedback")),
+                    "text": str(note.get("text", "")),
+                    "state": state,
+                    "gate": (
+                        {
+                            "stage": (
+                                IMPLEMENTATION
+                                if gates and gates[0] == GATE_IMPLEMENT
+                                else (
+                                    TESTING
+                                    if gates and gates[0] == GATE_TEST
+                                    else EVALUATION
+                                )
+                            ),
+                            "state": (
+                                "open"
+                                if state in {"acknowledged", "withdrawn"}
+                                else "blocked"
+                            ),
+                        }
+                        if gates
+                        else None
+                    ),
+                    "history": history,
+                    "at": (
+                        int(history[0].get("at", 0))
+                        if history
+                        else self._epoch_millis(note.get("at"))
+                    ),
+                }
+            )
+        return sorted(values, key=lambda item: item["at"], reverse=True)
+
+    def feedback_record(self, feedback_id: str, *, role: str) -> dict:
+        record = next(
+            (
+                item
+                for item in self.feedback_records(role=role)
+                if item["id"] == feedback_id
+            ),
+            None,
+        )
+        if record is None:
+            raise PlanError(f"feedback {feedback_id!r} was not found")
+        return record
+
+    def withdraw_feedback(self, feedback_id: str, *, role: str) -> dict:
+        effective = self._role(role)
+        caller_agent = self.plans._identified_agent()[0]
+        with self.plans.locked():
+            manifest = self.plans.load(self.plan_id)
+            note = next(
+                (
+                    item
+                    for item in manifest.get("steering", [])
+                    if item.get("feedback_id") == feedback_id
+                ),
+                None,
+            )
+            if note is None:
+                raise PlanError(f"feedback {feedback_id!r} was not found")
+            sender_role = str(note.get("feedback_sender_role", ""))
+            sender_agent = str(note.get("feedback_sender_agent", ""))
+            if not (
+                sender_role == effective
+                and (not sender_agent or sender_agent == caller_agent)
+            ):
+                raise PlanError(
+                    "only the feedback sender may withdraw it"
+                )
+            if self.plans._feedback_acknowledged(manifest, note):
+                raise PlanError("acknowledged feedback cannot be withdrawn")
+            if not note.get("binding_feedback"):
+                raise PlanError("only unacknowledged binding feedback can be withdrawn")
+            note["withdrawn"] = True
+            note["withdrawn_at"] = now()
+            self.plans._write_json(self.plans.manifest_path(self.plan_id), manifest)
+        return {"ok": True, "feedback": feedback_id}
+
+    @classmethod
+    def revert(
+        cls,
+        plans: PlanStore,
+        reference: str,
+        *,
+        role: str = "",
+        dry_run: bool = False,
+    ) -> dict:
+        service = cls.for_plan(plans, reference)
+        effective = service._claim(role)
+        if effective not in {ARCHITECT, REVIEWER}:
+            raise PlanError("reverting a package requires architect or reviewer")
+        head = service.head(repair=False)
+        if head != "r0001":
+            raise PlanError(
+                f"cannot revert {service.plan_id}: {head} includes revisions "
+                "after migration"
+            )
+        backup = service.package / "legacy" / "pre-migration"
+        if not backup.is_dir():
+            raise PlanError(f"{service.plan_id} has no pre-migration copy")
+        legacy = plans.legacy_plan_dir(service.plan_id)
+        result = {
+            "plan": service.plan_id,
+            "from": str(service.package),
+            "to": str(legacy),
+            "discarded_revisions": [item["revision"] for item in service.revisions(role=effective)],
+            "dry_run": bool(dry_run),
+        }
+        if dry_run:
+            return result
+        staging = plans.plans_dir / f".{service.plan_id}.legacy.reverting-{os.getpid()}"
+        if staging.exists():
+            shutil.rmtree(staging)
+        shutil.copytree(backup, staging, symlinks=True)
+        with plans.locked():
+            if legacy.exists():
+                raise PlanError(f"legacy path already exists: {legacy}")
+            os.replace(staging, legacy)
+            try:
+                shutil.rmtree(service.package)
+            except OSError as error:
+                raise PlanError(
+                    f"restored {legacy}, but could not remove {service.package}; "
+                    "both layouts now exist and must be repaired"
+                ) from error
+        return result

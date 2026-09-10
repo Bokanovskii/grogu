@@ -102,7 +102,7 @@ message; the supervisor cancels the process through Copilot `/tasks`.
 grogu plan stage <id> implementation complete
 ```
 
-If the plan has a design stage, you build against it, but you do not get to
+If the plan has a UX stage (`design` internally), you build against it, but you do not get to
 decide whether you matched it. Before the tester runs, spawn the designer to
 look at the interface *running* — not at your diff:
 

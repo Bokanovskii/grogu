@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "kind": "grogu.plan_document",
+  "plan_id": "p-golden-loop",
+  "title": "Diagram self-loop",
+  "revision": "r0001",
+  "nodes": {
+    "dia-1": {
+      "id": "dia-1",
+      "kind": "diagram",
+      "stage": "implementation",
+      "title": "Loop",
+      "body": "flowchart LR\n  A --> A\n",
+      "attrs": {
+        "source": "flowchart LR\n  A --> A\n"
+      },
+      "order": 1000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001"
+    },
+    "note-1": {
+      "id": "note-1",
+      "kind": "note",
+      "stage": "implementation",
+      "title": "A",
+      "body": "",
+      "attrs": {
+        "mermaid_id": "A",
+        "source": "mermaid"
+      },
+      "order": 2000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001"
+    }
+  },
+  "edges": {
+    "edge-1": {
+      "id": "edge-1",
+      "kind": "contains",
+      "from": "dia-1",
+      "to": "note-1",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    "edge-2": {
+      "id": "edge-2",
+      "kind": "diagram_edge",
+      "from": "note-1",
+      "to": "note-1",
+      "attrs": {
+        "edge_index": 0,
+        "label": "",
+        "operator": "-->",
+        "pair_ordinal": 0
+      },
+      "created_rev": "r0001"
+    }
+  },
+  "canvas": {
+    "snap": 8
+  }
+}

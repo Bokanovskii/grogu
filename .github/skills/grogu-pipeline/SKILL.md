@@ -4,7 +4,9 @@ description: Route substantial work through the architect, designer, engineer an
 ---
 
 Substantial work goes through four roles that hand each other files, not
-conversation. Plans live on disk; agents are given a plan id and a role.
+conversation. New planning cycles use typed `.plan` packages; agents receive
+bounded compiled Markdown for a plan id and role rather than parsing package
+JSON or receiving copied plan prose.
 
 ## Decide whether to plan at all
 
@@ -20,11 +22,15 @@ explicit "just do it" from the user always wins.
 ## Architect
 
 ```sh
-grogu plan new "<title>" --task <task-id> [--design] [--eval] [--review-required]
+grogu plan doc create "<title>" --task <task-id> [--design] [--eval] [--review-required]
 grogu plan brief --role architect --plan <id>
 grogu plan write <id> implementation --role architect --file -
 grogu plan write <id> testing        --role architect --file -
 ```
+
+`grogu plan new` remains a compatibility command for legacy plans. Do not use
+it for a new planning cycle. Existing legacy plans may be upgraded with
+`grogu plan doc migrate <id>`; never keep both layouts writable.
 
 Always at least two plans: implementation and testing. Add `--eval` when the
 change needs an end-to-end judgement of quality rather than a pass/fail on
@@ -34,6 +40,18 @@ not waive that.
 
 Add `--design` when the change has a user-visible surface; `grogu plan triage`
 flags this as `design: true`.
+
+When the user requested a plan or needs to review one, open the secured
+workspace after the architect and designer have written the reviewable
+artifacts:
+
+```sh
+grogu plan doc open <id> --mode document
+```
+
+The user reviews text, diagrams, dependencies and proposed revisions there.
+Agents continue to use role-bounded `plan brief`, `plan show`, and
+`plan doc context`; they do not consume the raw `.plan` package.
 
 The shape of a plan is not fixed at creation. An architect spawned onto an
 existing plan changes it with `grogu plan shape <id> --add eval|design`,
@@ -70,7 +88,7 @@ grogu design template "<change>"
 grogu plan write <id> design --role designer --file -
 ```
 
-Only the designer writes the design stage, and the engineer *may* read it — a
+Only the designer writes the UX stage (`design` internally), and the engineer *may* read it — a
 test is a proxy for correctness so showing it corrupts the signal, while a
 design spec is the requirement, so withholding it just guarantees the wrong
 interface. The store rejects a spec that skips a required section or leans on

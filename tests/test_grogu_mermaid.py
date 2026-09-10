@@ -77,6 +77,7 @@ class GroguMermaidTests(unittest.TestCase):
         # Labels
         self.assertEqual(edges[0]["label"], "")
         self.assertEqual(edges[0]["kind"], "arrow")
+        self.assertEqual(edges[0]["operator"], "-->")
 
         self.assertEqual(edges[1]["label"], "")
         self.assertEqual(edges[1]["kind"], "line")
@@ -101,9 +102,11 @@ class GroguMermaidTests(unittest.TestCase):
 
         self.assertEqual(edges[8]["label"], "yes")
         self.assertEqual(edges[8]["kind"], "arrow")
+        self.assertEqual(edges[8]["operator"], "-->")
 
         self.assertEqual(edges[9]["label"], "text")
         self.assertEqual(edges[9]["kind"], "arrow")
+        self.assertEqual(edges[9]["operator"], "-->")
 
     # 12. Chains
     def test_12_chains(self) -> None:

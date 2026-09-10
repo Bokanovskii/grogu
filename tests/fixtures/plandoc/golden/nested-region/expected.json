@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "kind": "grogu.plan_projection",
+  "title": "Nested regions",
+  "nodes": [
+    {
+      "id": "task-1",
+      "kind": "task",
+      "stage": "implementation",
+      "title": "Nested task",
+      "body": "",
+      "attrs": {},
+      "order": 5000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "reg-1",
+      "kind": "region",
+      "stage": "implementation",
+      "title": "Region 1",
+      "body": "",
+      "attrs": {},
+      "order": 1000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full",
+      "geometry": {
+        "h": 520,
+        "w": 700,
+        "x": 20,
+        "y": 20,
+        "z": 1
+      }
+    },
+    {
+      "id": "reg-2",
+      "kind": "region",
+      "stage": "implementation",
+      "title": "Region 2",
+      "body": "",
+      "attrs": {},
+      "order": 2000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full",
+      "geometry": {
+        "h": 440,
+        "w": 600,
+        "x": 40,
+        "y": 40,
+        "z": 2
+      }
+    },
+    {
+      "id": "reg-3",
+      "kind": "region",
+      "stage": "implementation",
+      "title": "Region 3",
+      "body": "",
+      "attrs": {},
+      "order": 3000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full",
+      "geometry": {
+        "h": 360,
+        "w": 500,
+        "x": 60,
+        "y": 60,
+        "z": 3
+      }
+    },
+    {
+      "id": "reg-4",
+      "kind": "region",
+      "stage": "implementation",
+      "title": "Region 4",
+      "body": "",
+      "attrs": {},
+      "order": 4000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full",
+      "geometry": {
+        "h": 280,
+        "w": 400,
+        "x": 80,
+        "y": 80,
+        "z": 4
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-1",
+      "kind": "contains",
+      "from": "reg-1",
+      "to": "reg-2",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-2",
+      "kind": "contains",
+      "from": "reg-2",
+      "to": "reg-3",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-3",
+      "kind": "contains",
+      "from": "reg-3",
+      "to": "reg-4",
+      "attrs": {},
+      "created_rev": "r0001"
+    },
+    {
+      "id": "edge-4",
+      "kind": "contains",
+      "from": "reg-4",
+      "to": "task-1",
+      "attrs": {},
+      "created_rev": "r0001"
+    }
+  ],
+  "elided": [],
+  "provenance": {
+    "plan_id": "p-golden-regions",
+    "revision": "r0001",
+    "role": "reviewer",
+    "stages": [
+      "implementation"
+    ],
+    "include": "all",
+    "compiler": 1,
+    "graph_digest": "sha256:a206f09973b20bdb7e12e8db12f6f0effd8d1ead013400dcb9bcf5acaa3c7bb1",
+    "projection_id": "sha256:cf9a3e58d745117fb5d23f8f83c4486be96cc89908eef0e6e92e62358de43dfc",
+    "source_at": "",
+    "source_actor": "",
+    "source_role": "",
+    "source_agent": "",
+    "sealed_relationships": 0,
+    "budget_chars": null,
+    "budget_exceeded": false,
+    "since": "",
+    "depth": null,
+    "source_provenance": {},
+    "canvas": {
+      "snap": 8
+    }
+  },
+  "projection_digest": "sha256:e8c02b006477cedfa8dcd9d64620c0aad178e4f0793f72251054c4d01ed4dc8e"
+}

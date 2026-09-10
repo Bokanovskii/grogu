@@ -1,0 +1,275 @@
+{
+  "schema_version": 1,
+  "kind": "grogu.plan_projection",
+  "title": "Fixture plan",
+  "nodes": [
+    {
+      "id": "goal-1",
+      "kind": "goal",
+      "stage": "implementation",
+      "title": "Ship a typed plan graph",
+      "body": "The graph is the source of truth.",
+      "attrs": {},
+      "order": 1000,
+      "created_rev": "r0001",
+      "updated_rev": "r0001",
+      "body_state": "full"
+    },
+    {
+      "id": "inv-1",
+      "kind": "invariant",
+      "stage": "implementation",
+      "title": "No sealed leakage",
+      "body": "Unreadable partitions are never decoded.",
+      "attrs": {},
+      "order": 3000,
+      "created_rev": "r0002",
+      "updated_rev": "r0002",
+      "body_state": "full"
+    },
+    {
+      "id": "task-1",
+      "kind": "task",
+      "stage": "implementation",
+      "title": "Build the graph core",
+      "body": "",
+      "attrs": {
+        "status": "active"
+      },
+      "order": 4000,
+      "created_rev": "r0003",
+      "updated_rev": "r0005",
+      "body_state": "elided",
+      "geometry": {
+        "h": 160,
+        "w": 320,
+        "x": 40,
+        "y": 80,
+        "z": 1
+      }
+    },
+    {
+      "id": "task-2",
+      "kind": "task",
+      "stage": "implementation",
+      "title": "Compile projections",
+      "body": "",
+      "attrs": {
+        "status": "active"
+      },
+      "order": 5000,
+      "created_rev": "r0004",
+      "updated_rev": "r0007",
+      "body_state": "elided",
+      "geometry": {
+        "h": 160,
+        "w": 320,
+        "x": 440,
+        "y": 80,
+        "z": 2
+      }
+    },
+    {
+      "id": "dia-1",
+      "kind": "diagram",
+      "stage": "implementation",
+      "title": "Compiler flow",
+      "body": "flowchart LR\n  Graph --> Project\n  Project --> Render\n",
+      "attrs": {
+        "parsed": {
+          "edges": [],
+          "lines": 3,
+          "nodes": [],
+          "partial": false,
+          "subgraphs": [],
+          "supported": true,
+          "type": "flowchart",
+          "unparsed": 0
+        },
+        "source": "flowchart LR\n  Graph --> Project\n  Project --> Render\n"
+      },
+      "order": 9000,
+      "created_rev": "r0005",
+      "updated_rev": "r0005",
+      "body_state": "full",
+      "geometry": {
+        "h": 260,
+        "w": 720,
+        "x": 40,
+        "y": 320,
+        "z": 1
+      }
+    },
+    {
+      "id": "crit-1",
+      "kind": "criterion",
+      "stage": "implementation",
+      "title": "Compiler round-trips",
+      "body": "parse(render(IR)) == IR",
+      "attrs": {},
+      "order": 6000,
+      "created_rev": "r0004",
+      "updated_rev": "r0004",
+      "body_state": "full"
+    },
+    {
+      "id": "risk-1",
+      "kind": "risk",
+      "stage": "implementation",
+      "title": "Importer loses prose",
+      "body": "Unknown sections must become note nodes.",
+      "attrs": {
+        "mitigation": "preserve source spans"
+      },
+      "order": 7000,
+      "created_rev": "r0004",
+      "updated_rev": "r0004",
+      "body_state": "full"
+    },
+    {
+      "id": "reg-1",
+      "kind": "region",
+      "stage": "implementation",
+      "title": "Compiler",
+      "body": "",
+      "attrs": {},
+      "order": 10000,
+      "created_rev": "r0005",
+      "updated_rev": "r0005",
+      "body_state": "full",
+      "geometry": {
+        "h": 340,
+        "w": 800,
+        "x": 0,
+        "y": 280,
+        "z": 0
+      }
+    },
+    {
+      "id": "thr-1",
+      "kind": "thread",
+      "stage": "implementation",
+      "title": "Clarify the task body",
+      "body": "Should this mention the cache key?",
+      "attrs": {
+        "anchor_state": "resolved",
+        "comments": [
+          {
+            "at": "2026-09-05T20:00:00Z",
+            "author": "reviewer",
+            "body": "Should this mention the cache key?",
+            "id": "c1",
+            "revision": "r0006",
+            "role": "reviewer"
+          }
+        ],
+        "selector": {
+          "id": "task-2",
+          "type": "node"
+        },
+        "status": "open"
+      },
+      "order": 11000,
+      "created_rev": "r0006",
+      "updated_rev": "r0006",
+      "body_state": "full"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-2",
+      "kind": "validates",
+      "from": "crit-1",
+      "to": "task-1",
+      "attrs": {},
+      "created_rev": "r0004"
+    },
+    {
+      "id": "edge-3",
+      "kind": "contains",
+      "from": "reg-1",
+      "to": "dia-1",
+      "attrs": {},
+      "created_rev": "r0005"
+    },
+    {
+      "id": "edge-1",
+      "kind": "depends_on",
+      "from": "task-2",
+      "to": "task-1",
+      "attrs": {},
+      "created_rev": "r0004",
+      "ext": {
+        "dev.grogu.review": {
+          "weight": 3
+        }
+      }
+    },
+    {
+      "id": "edge-4",
+      "kind": "anchors",
+      "from": "thr-1",
+      "to": "task-2",
+      "attrs": {},
+      "created_rev": "r0006"
+    }
+  ],
+  "elided": [
+    {
+      "id": "note-1",
+      "kind": "note",
+      "detail": "body"
+    },
+    {
+      "id": "note-1",
+      "kind": "note",
+      "detail": "node"
+    },
+    {
+      "id": "task-1",
+      "kind": "task",
+      "detail": "distant task body"
+    },
+    {
+      "id": "task-2",
+      "kind": "task",
+      "detail": "distant task body"
+    }
+  ],
+  "provenance": {
+    "plan_id": "p-20260905-fixture",
+    "revision": "r0007",
+    "role": "reviewer",
+    "stages": [
+      "implementation"
+    ],
+    "include": "all",
+    "compiler": 1,
+    "graph_digest": "sha256:7a707cd4c2cb9b2380251bcec87d84ce1db4457f74dd6d1d68158b70f9b742b4",
+    "projection_id": "sha256:62024d743281842863f20d8d3d9ffaaeaa6a41fdbbdc070b7225dd0ecd4076a9",
+    "source_at": "2026-09-05T20:05:00Z",
+    "source_actor": "architect",
+    "source_role": "architect",
+    "source_agent": "plan-v2-architect",
+    "sealed_relationships": 0,
+    "budget_chars": 2400,
+    "budget_exceeded": true,
+    "since": "",
+    "depth": null,
+    "source_provenance": {
+      "actor": "architect",
+      "agent": "plan-v2-architect",
+      "at": "2026-09-05T20:05:00Z",
+      "role": "architect"
+    },
+    "canvas": {
+      "snap": 8,
+      "viewport": {
+        "x": 0,
+        "y": 0,
+        "zoom_milli": 1000
+      }
+    }
+  },
+  "projection_digest": "sha256:8198062760f72371dad7e4c52ba732fa5a38b73a32dfa995659fdd30d857b9c9"
+}

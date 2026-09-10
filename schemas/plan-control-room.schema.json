@@ -1,0 +1,477 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grogu.dev/schemas/plan-control-room.schema.json",
+  "title": "Plan control-room DTOs",
+  "description": "The frozen contract between grogu_controlroom (the reader) and everything that presents it: the workspace mode, the JSON CLI, and the /api/control routes. This schema is what the workspace and integration workstreams build against. Every field here is enumerated on purpose; no free-form prose leaves the reader, and no forbidden category (raw prompts, assistant bodies, reasoningText, reasoningOpaque, task descriptions, raw tool arguments/results, permission intention text, secrets, sealed content) appears anywhere in this vocabulary. Adding a field is an amendment, not a change.",
+  "type": "object",
+  "$defs": {
+    "isoTimestamp": {
+      "type": "string",
+      "description": "RFC 3339 UTC. Empty string when the value is not observable."
+    },
+    "identifier": {
+      "type": "string",
+      "description": "An opaque identifier the reader may show verbatim.",
+      "pattern": "^[a-zA-Z0-9._:@/-]{0,80}$"
+    },
+    "safeName": {
+      "type": "string",
+      "description": "A safe identifier for tool names, command names, and event types. Rejected shapes never leave the parser.",
+      "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+    },
+    "connection": {
+      "enum": ["live", "stale", "disconnected", "unknown"],
+      "description": "Health of the observer, not of the agent. `live` = a sample within 10s; `stale` = 10-30s since last sample; `disconnected` = ≥30s of failed collection; `unknown` = coverage is unavailable."
+    },
+    "lifecycle": {
+      "enum": ["registered", "running", "finished", "failed", "cancelled", "unknown"],
+      "description": "The state of the agent's run. Only explicit evidence moves this to a terminal state (`finished`, `failed`, `cancelled`); a terminal state stays terminal even after the collector later disconnects. Silence, a vanished CLI process, or a completed tool never proves an agent finished."
+    },
+    "activity": {
+      "enum": ["active", "quiet", "blocked", "possibly_stuck", "unknown"],
+      "description": "A labelled heuristic about the agent's near-past. `active` = a grogu command or a tool event in the last 300s. `quiet` = 300-3600s of silence from a healthy observer. `blocked` = a real blocker exists. `possibly_stuck` = one of the tested conditions holds. `unknown` = coverage unavailable. Never an automatic action."
+    },
+    "coverageState": {
+      "enum": ["complete", "partial", "unavailable"],
+      "description": "How well a per-axis dimension is covered. `unavailable` when no data source is registered; `partial` when one source is missing; `complete` when both sources agree."
+    },
+    "basis": {
+      "enum": ["observed", "authored"],
+      "description": "Every element is exactly one. `observed` was derived from the activity feed, the trace scalars or plan state. `authored` was written by a model or a human; it must never drive lifecycle, failure counts, stuck detection or gates."
+    },
+    "elapsedBasis": {
+      "enum": ["lifecycle_start", "first_observed", "unknown"],
+      "description": "How elapsed_ms was measured. `lifecycle_start` = an observed subagent.started. `first_observed` = a labelled lower bound only. `unknown` = value cannot be trusted."
+    },
+    "registration": {
+      "type": "object",
+      "description": "The registration record. Correlation is by explicit registration only — never by cwd prefix, name similarity, or proximity in time. A session that has no registration is invisible to source 2; nothing scans session-state.",
+      "required": [
+        "schema_version",
+        "run_id",
+        "repository",
+        "plan",
+        "agent",
+        "role",
+        "workstream",
+        "session_id",
+        "agent_id",
+        "registered_at"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "run_id": {"$ref": "#/$defs/identifier"},
+        "repository": {"type": "string"},
+        "plan": {"$ref": "#/$defs/identifier"},
+        "agent": {"$ref": "#/$defs/identifier"},
+        "role": {"type": "string"},
+        "workstream": {"$ref": "#/$defs/identifier"},
+        "session_id": {"$ref": "#/$defs/identifier"},
+        "agent_id": {"$ref": "#/$defs/identifier"},
+        "registered_at": {"$ref": "#/$defs/isoTimestamp"},
+        "events_path": {
+          "type": "string",
+          "description": "Absolute path to the registered events.jsonl. Reader will refuse a path that is not inside a session-state directory."
+        }
+      },
+      "additionalProperties": false
+    },
+    "currentAction": {
+      "type": ["object", "null"],
+      "description": "The action the agent is inside right now, or null when nothing is in flight. Only the tool NAME (safe identifier) and phase leave the parser; arguments and results never do.",
+      "required": ["tool_name", "phase", "at"],
+      "properties": {
+        "tool_name": {"$ref": "#/$defs/safeName"},
+        "tool_call_id": {"$ref": "#/$defs/identifier"},
+        "phase": {"enum": ["started", "completed", "unknown"]},
+        "at": {"$ref": "#/$defs/isoTimestamp"},
+        "success": {"type": ["boolean", "null"]},
+        "error_code": {
+          "description": "An allowlisted machine token for an error class, never a message.",
+          "type": ["string", "null"],
+          "pattern": "^[a-zA-Z0-9_.-]{0,32}$"
+        },
+        "duration_ms": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "toolCounters": {
+      "type": "object",
+      "description": "Bounded counters. Never a body, never an argument, never a result.",
+      "required": ["started", "completed", "failed", "inflight", "complete"],
+      "properties": {
+        "started": {"type": "integer", "minimum": 0},
+        "completed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "inflight": {"type": "integer", "minimum": 0},
+        "complete": {
+          "type": "boolean",
+          "description": "true when a subagent.completed with matching bookkeeping has been observed; false otherwise. Silence never sets this true."
+        }
+      },
+      "additionalProperties": false
+    },
+    "gruguCommandCounters": {
+      "type": "object",
+      "required": ["calls", "failures"],
+      "properties": {
+        "calls": {"type": "integer", "minimum": 0},
+        "failures": {"type": "integer", "minimum": 0},
+        "last_command": {"$ref": "#/$defs/safeName"}
+      },
+      "additionalProperties": false
+    },
+    "blocker": {
+      "type": "object",
+      "description": "A real reason work has stopped. Never a synthesised heuristic; those live under `activity: possibly_stuck` with evidence.",
+      "required": ["kind", "at"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "permission_pending",
+            "gate_closed",
+            "defect_open",
+            "amendment_open",
+            "requires_replan"
+          ]
+        },
+        "at": {"$ref": "#/$defs/isoTimestamp"},
+        "reference": {
+          "type": "string",
+          "description": "An id such as a defect id, amendment id, or steering seq. Never free text."
+        }
+      },
+      "additionalProperties": false
+    },
+    "failureRecord": {
+      "type": "object",
+      "description": "A counted failure. Never carries a message, arguments, or a result.",
+      "required": ["at", "code"],
+      "properties": {
+        "at": {"$ref": "#/$defs/isoTimestamp"},
+        "code": {
+          "type": "string",
+          "description": "An allowlisted machine token.",
+          "pattern": "^[a-zA-Z0-9_.-]{1,32}$"
+        },
+        "tool_name": {"$ref": "#/$defs/safeName"}
+      },
+      "additionalProperties": false
+    },
+    "steeringSummary": {
+      "type": "object",
+      "description": "Delivery accounting only. Never the note text.",
+      "required": ["unread", "delivered", "acknowledged"],
+      "properties": {
+        "unread": {"type": "integer", "minimum": 0},
+        "delivered": {"type": "integer", "minimum": 0},
+        "acknowledged": {"type": "integer", "minimum": 0},
+        "requires_replan": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "description": "How well each axis of this row is covered. `unavailable` for a category means the interface must say so, not silently guess.",
+      "required": ["lifecycle", "activity", "tools", "outcomes", "commands"],
+      "properties": {
+        "lifecycle": {"$ref": "#/$defs/coverageState"},
+        "activity": {"$ref": "#/$defs/coverageState"},
+        "tools": {"$ref": "#/$defs/coverageState"},
+        "outcomes": {"$ref": "#/$defs/coverageState"},
+        "commands": {"$ref": "#/$defs/coverageState"}
+      },
+      "additionalProperties": false
+    },
+    "revisionRelation": {
+      "type": "object",
+      "description": "The plan's current revision is not the revision the agent read.",
+      "required": ["current", "relation"],
+      "properties": {
+        "last_read": {"$ref": "#/$defs/identifier"},
+        "current": {"$ref": "#/$defs/identifier"},
+        "relation": {"enum": ["equal", "behind", "unknown"]}
+      },
+      "additionalProperties": false
+    },
+    "objectRef": {
+      "type": "object",
+      "description": "An authorised reference into the plan document graph, resolved at the recorded revision. A missing/sealed/moved target is stated explicitly; the interface never navigates to something similar.",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "node",
+            "edge",
+            "stage",
+            "amendment",
+            "defect",
+            "review",
+            "artifact"
+          ]
+        },
+        "id": {"$ref": "#/$defs/identifier"},
+        "revision": {"$ref": "#/$defs/identifier"},
+        "state": {"enum": ["resolved", "sealed", "moved", "missing"]},
+        "role_may_read": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "auditEvent": {
+      "type": "object",
+      "description": "A bounded event on this agent's timeline. Every field here is enumerated; free text never appears.",
+      "required": ["at", "kind"],
+      "properties": {
+        "at": {"$ref": "#/$defs/isoTimestamp"},
+        "kind": {
+          "enum": [
+            "grogu_command",
+            "tool_started",
+            "tool_completed",
+            "permission_requested",
+            "permission_completed",
+            "subagent_started",
+            "subagent_completed",
+            "coverage_gap",
+            "steering_delivered",
+            "steering_acknowledged",
+            "feedback_delivered"
+          ]
+        },
+        "name": {"$ref": "#/$defs/safeName"},
+        "success": {"type": ["boolean", "null"]},
+        "error_code": {
+          "type": ["string", "null"],
+          "pattern": "^[a-zA-Z0-9_.-]{0,32}$"
+        },
+        "duration_ms": {"type": ["integer", "null"], "minimum": 0},
+        "reference": {
+          "description": "A registered id such as a toolCallId, requestId, or steering seq. Never a body.",
+          "type": ["string", "null"],
+          "pattern": "^[a-zA-Z0-9._:@/-]{0,80}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "coverageGap": {
+      "type": "object",
+      "description": "An explicit interruption in coverage. Never an exception; a gap says the reader knows it does not know.",
+      "required": ["at", "reason"],
+      "properties": {
+        "at": {"$ref": "#/$defs/isoTimestamp"},
+        "reason": {
+          "enum": [
+            "torn_line",
+            "malformed_line",
+            "oversized_event",
+            "oversized_source",
+            "rotated_or_truncated",
+            "cursor_lost",
+            "unknown_event_version",
+            "unregistered_session",
+            "source_read_error"
+          ]
+        },
+        "at_line": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "agentRow": {
+      "type": "object",
+      "description": "One row per registered agent (or one uncorrelated row per unmapped session, marked as such). Every field is enumerated. Correlation is by the registration record, not by cwd/name/time inference.",
+      "required": [
+        "agent_key",
+        "agent",
+        "role",
+        "workstream",
+        "plan",
+        "lifecycle",
+        "connection",
+        "activity",
+        "revision",
+        "tools",
+        "grogu_commands",
+        "failures",
+        "blockers",
+        "steering",
+        "coverage",
+        "limits",
+        "objects",
+        "basis"
+      ],
+      "properties": {
+        "agent_key": {"$ref": "#/$defs/identifier"},
+        "agent": {"$ref": "#/$defs/identifier"},
+        "run_id": {"$ref": "#/$defs/identifier"},
+        "role": {"type": "string"},
+        "roles": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "workstream": {"$ref": "#/$defs/identifier"},
+        "plan": {"$ref": "#/$defs/identifier"},
+        "repository": {"type": "string"},
+        "revision": {"$ref": "#/$defs/revisionRelation"},
+        "lifecycle": {"$ref": "#/$defs/lifecycle"},
+        "activity": {"$ref": "#/$defs/activity"},
+        "connection": {"$ref": "#/$defs/connection"},
+        "started_at": {"$ref": "#/$defs/isoTimestamp"},
+        "last_observed_at": {"$ref": "#/$defs/isoTimestamp"},
+        "elapsed_ms": {"type": ["integer", "null"], "minimum": 0},
+        "elapsed_basis": {"$ref": "#/$defs/elapsedBasis"},
+        "current_action": {"$ref": "#/$defs/currentAction"},
+        "tools": {"$ref": "#/$defs/toolCounters"},
+        "grogu_commands": {"$ref": "#/$defs/gruguCommandCounters"},
+        "failures": {"type": "array", "items": {"$ref": "#/$defs/failureRecord"}},
+        "blockers": {"type": "array", "items": {"$ref": "#/$defs/blocker"}},
+        "steering": {"$ref": "#/$defs/steeringSummary"},
+        "possibly_stuck_evidence": {
+          "type": "array",
+          "description": "Empty unless activity is possibly_stuck. Each entry names the tested condition that triggered the label.",
+          "items": {
+            "enum": [
+              "tool_deadline_exceeded",
+              "no_outcome_after_activity",
+              "repeated_failures"
+            ]
+          }
+        },
+        "coverage": {"$ref": "#/$defs/coverage"},
+        "limits": {
+          "type": "array",
+          "description": "What the reader cannot see for this agent. Always includes model reasoning, command arguments, tool arguments, tool results and file edits; adds `tool_activity` when source 2 is unregistered.",
+          "items": {
+            "enum": [
+              "model_reasoning",
+              "command_arguments",
+              "tool_arguments",
+              "tool_results",
+              "file_edits",
+              "tool_activity",
+              "sealed_stage_content",
+              "trace_payload"
+            ]
+          }
+        },
+        "objects": {
+          "type": "array",
+          "description": "Enumerated, authorised references into the plan graph the drill-in may open. A sealed target is shown as `state: sealed`; the reader never opens it.",
+          "items": {"$ref": "#/$defs/objectRef"}
+        },
+        "basis": {"$ref": "#/$defs/basis"}
+      },
+      "additionalProperties": false
+    },
+    "boardSnapshot": {
+      "type": "object",
+      "description": "One shot of the board. `fresh_as_of` is the timestamp of the newest record considered, so the interface can show the age of the data beside the age of an agent.",
+      "required": [
+        "schema_version",
+        "fresh_as_of",
+        "generation",
+        "limits",
+        "coverage",
+        "agents",
+        "uncorrelated",
+        "waiting_on_you"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "fresh_as_of": {"$ref": "#/$defs/isoTimestamp"},
+        "generation": {
+          "type": "integer",
+          "description": "Monotonic per reader instance. Advances every sample; a snapshot with a smaller generation than one already seen is stale."
+        },
+        "limits": {
+          "type": "array",
+          "description": "Board-wide limits: model reasoning, command arguments, tool arguments/results, file edits. Always present. Adds `tool_activity` when no source 2 registration exists.",
+          "items": {"type": "string"}
+        },
+        "coverage": {
+          "type": "object",
+          "required": ["source1", "source2", "traces"],
+          "properties": {
+            "source1": {"$ref": "#/$defs/coverageState"},
+            "source2": {"$ref": "#/$defs/coverageState"},
+            "traces": {"$ref": "#/$defs/coverageState"}
+          },
+          "additionalProperties": false
+        },
+        "agents": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/agentRow"}
+        },
+        "uncorrelated": {
+          "type": "array",
+          "description": "Sessions or event streams with no registration. Each is shown as such with no imported role and no imported description.",
+          "items": {"$ref": "#/$defs/agentRow"}
+        },
+        "waiting_on_you": {
+          "type": "array",
+          "description": "Asks the user is the one to answer. Composed by the reader from observed facts; never a model summary.",
+          "items": {"type": "string"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "drillIn": {
+      "type": "object",
+      "description": "The drill-in has three panels: activity (an audit log), evidence (authorised object refs), and limits (a fixed statement of what is not observable).",
+      "required": ["schema_version", "agent_key", "activity", "evidence", "limits", "blockers"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "agent_key": {"$ref": "#/$defs/identifier"},
+        "activity": {"type": "array", "items": {"$ref": "#/$defs/auditEvent"}},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/objectRef"}},
+        "gaps": {"type": "array", "items": {"$ref": "#/$defs/coverageGap"}},
+        "limits": {"type": "array", "items": {"type": "string"}},
+        "blockers": {"type": "array", "items": {"$ref": "#/$defs/blocker"}}
+      },
+      "additionalProperties": false
+    },
+    "feedbackReceipt": {
+      "type": "object",
+      "description": "Return value of routing feedback through PlanStore.steer. The receipt is durable: it records what was delivered, to which agent, and which gates will close.",
+      "required": [
+        "schema_version",
+        "seq",
+        "at",
+        "role",
+        "agent",
+        "plan",
+        "binding",
+        "gates_closed",
+        "delivered_to",
+        "acknowledged_by"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "seq": {"type": "integer", "minimum": 1},
+        "at": {"$ref": "#/$defs/isoTimestamp"},
+        "role": {"type": "string"},
+        "agent": {"$ref": "#/$defs/identifier"},
+        "plan": {"$ref": "#/$defs/identifier"},
+        "binding": {"type": "boolean"},
+        "gates_closed": {
+          "type": "array",
+          "items": {
+            "enum": ["design", "implement", "test", "evaluate"]
+          }
+        },
+        "delivered_to": {"type": "array", "items": {"type": "string"}},
+        "acknowledged_by": {"type": "array", "items": {"type": "string"}},
+        "relay_command": {
+          "type": ["string", "null"],
+          "description": "When a running agent is holding a handle, the reader prints this command rather than pasting text. It NEVER contains the note text."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {"$ref": "#/$defs/boardSnapshot"},
+    {"$ref": "#/$defs/drillIn"},
+    {"$ref": "#/$defs/feedbackReceipt"},
+    {"$ref": "#/$defs/registration"}
+  ]
+}

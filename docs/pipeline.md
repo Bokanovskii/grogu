@@ -107,10 +107,13 @@ that adopts something external and cites no source prints a warning. A warning
 rather than a refusal, because the detection is heuristic and a false positive
 that blocks a plan is worse than one that is merely read and dismissed.
 
-## The design stage
+## The UX stage
+
+The user-facing name is **UX**. Its stable internal stage key remains `design`
+so existing plans, commands, seals, and migrations continue to work.
 
 Work with a user-visible surface gets a fourth role. `grogu plan triage` flags
-it, `grogu plan new --design` or `grogu plan shape --add design` adds the stage,
+it, `grogu plan doc create --design` or `grogu plan shape --add design` adds the stage,
 and the designer writes it. Nothing else may: the architect that adds the stage
 is refused if it tries to write the spec.
 
@@ -143,10 +146,10 @@ verify` runs it, records the result against the commit it ran at, and the test
 gate refuses while an attached verifier has never been run, has failed, or last
 passed at a commit the tree has moved past.
 
-An unwritten design stage blocks the *implement* gate, not only the test gate:
+An unwritten UX stage blocks the *implement* gate, not only the test gate:
 there is no point building against a spec that does not exist yet.
 
-The design stage runs *before* the user's review, and is exempt from the review
+The UX stage runs *before* the user's review, and is exempt from the review
 hold. That looks backwards until you try it the other way: `plan approve`
 refuses while any stage body is missing, so a held plan whose designer could not
 finish would deadlock, and a plan reviewed without its spec is a plan reviewed
@@ -278,7 +281,7 @@ fail. Evaluation asks whether the result is actually good — end-to-end, usuall
 scenario-based, often non-deterministic, sometimes needing a rubric and repeated
 runs.
 
-Most changes need only the first. Add the second (`grogu plan new --eval`) when
+Most changes need only the first. Add the second (`grogu plan doc create --eval`) when
 a green test suite would not actually tell you the change was worth making.
 
 ## Gates, not instructions

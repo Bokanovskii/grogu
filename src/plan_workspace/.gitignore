@@ -1,0 +1,19 @@
+# Node toolchain — build inputs, not build outputs.
+node_modules/
+
+# Playwright browser downloads, reports, and test artifacts.
+/test-results/
+/playwright-report/
+/playwright/.cache/
+.playwright-mcp/
+
+# Vite caches
+.vite/
+node_modules/.vite/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# The built application in dist/ IS tracked deliberately: the Python server
+# serves it and Grogu must run without a Node toolchain (invariant I7/I9).
+# Nothing under dist/ is ignored.
