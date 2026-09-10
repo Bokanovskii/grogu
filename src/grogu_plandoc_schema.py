@@ -863,6 +863,42 @@ EVIDENCE_BASES = ("observed", "inferred", "mixed")
 EVENT_BASES = ("observed", "model_summary", "inferred")
 ACTION_PHASES = ("started", "completed", "failed", "unknown")
 OBJECT_RELATIONS = ("affected", "evidence", "context")
+CONTROL_SOURCE_STATUSES = (
+    "available",
+    "empty",
+    "unavailable",
+    "stale",
+    "disconnected",
+    "permission_limited",
+)
+CONTROL_SAFE_REASONS = (
+    "not_registered",
+    "no_run_events",
+    "unsupported_source",
+    "read_error",
+    "permission_denied",
+    "malformed_source",
+    "source_changed",
+    "source_limit",
+    "plan_unavailable",
+    "not_observed",
+    "none",
+)
+CONTROL_SOURCES = (
+    "registrations",
+    "commands",
+    "session_events",
+    "runtime",
+    "plan_state",
+)
+CONTROL_EVENT_TYPES = (
+    "command",
+    "tool",
+    "run_started",
+    "run_finished",
+    "permission_requested",
+    "permission_completed",
+)
 
 
 def _strict_object(
@@ -906,6 +942,118 @@ def _plain_text(
         maximum=maximum,
         pattern=_PLAIN_TEXT,
     )
+
+
+def _control_source_coverage(value: Any, path: str) -> dict:
+    item = _strict_object(
+        value,
+        path,
+        ("source", "status", "observed_through", "reason"),
+    )
+    return {
+        "source": _enum(item["source"], CONTROL_SOURCES, f"{path}.source"),
+        "status": _enum(
+            item["status"], CONTROL_SOURCE_STATUSES, f"{path}.status"
+        ),
+        "observed_through": (
+            None
+            if item["observed_through"] is None
+            else _integer(
+                item["observed_through"],
+                f"{path}.observed_through",
+                minimum=0,
+                maximum=MAX_SAFE_INTEGER,
+            )
+        ),
+        "reason": _enum(
+            item["reason"], CONTROL_SAFE_REASONS, f"{path}.reason"
+        ),
+    }
+
+
+def _control_operational_event(value: Any, path: str) -> dict:
+    item = _strict_object(
+        value,
+        path,
+        (
+            "id",
+            "agent_key",
+            "plan",
+            "type",
+            "at",
+            "name",
+            "phase",
+            "success",
+            "duration_ms",
+            "error_code",
+            "basis",
+        ),
+    )
+    return {
+        "id": _bounded_id(item["id"], f"{path}.id"),
+        "agent_key": _bounded_id(item["agent_key"], f"{path}.agent_key"),
+        "plan": _string(item["plan"], f"{path}.plan", pattern=_PLAN_ID),
+        "type": _enum(item["type"], CONTROL_EVENT_TYPES, f"{path}.type"),
+        "at": _integer(
+            item["at"], f"{path}.at", minimum=0, maximum=MAX_SAFE_INTEGER
+        ),
+        "name": (
+            None
+            if item["name"] is None
+            else _safe_code(item["name"], f"{path}.name")
+        ),
+        "phase": (
+            None
+            if item["phase"] is None
+            else _enum(
+                item["phase"], ("started", "completed"), f"{path}.phase"
+            )
+        ),
+        "success": (
+            None
+            if item["success"] is None
+            else _boolean(item["success"], f"{path}.success")
+        ),
+        "duration_ms": (
+            None
+            if item["duration_ms"] is None
+            else _integer(
+                item["duration_ms"],
+                f"{path}.duration_ms",
+                minimum=0,
+                maximum=MAX_SAFE_INTEGER,
+            )
+        ),
+        "error_code": (
+            None
+            if item["error_code"] is None
+            else _safe_code(item["error_code"], f"{path}.error_code")
+        ),
+        "basis": _enum(item["basis"], ("observed",), f"{path}.basis"),
+    }
+
+
+def _control_consequence(value: Any, path: str) -> dict:
+    item = _strict_object(
+        value,
+        path,
+        ("binding", "gates", "requires_replan", "release"),
+    )
+    return {
+        "binding": _boolean(item["binding"], f"{path}.binding"),
+        "gates": [
+            _enum(gate, ("implement", "test", "evaluate"), f"{path}.gates[{index}]")
+            for index, gate in enumerate(_array(item["gates"], f"{path}.gates"))
+        ],
+        "requires_replan": _boolean(
+            item["requires_replan"], f"{path}.requires_replan"
+        ),
+        "release": _enum(
+            item["release"],
+            ("acknowledgement_or_withdrawal", "replan", "none"),
+            f"{path}.release",
+        ),
+    }
 
 
 def validate_object_ref(value: Any, *, path: str = "$") -> dict:
@@ -1090,7 +1238,19 @@ def _agent_row(value: Any, path: str) -> dict:
         "links",
         "summary",
     )
-    row = _strict_object(value, path, required)
+    optional = (
+        "lifecycle_source",
+        "lifecycle_observed_at",
+        "lifecycle_reason",
+        "owned_stages",
+        "stage_ownership",
+        "source_coverage",
+        "recent_events",
+        "events_status",
+        "event_source_registered",
+        "blocker_details",
+    )
+    row = _strict_object(value, path, required, optional)
     revision = _strict_object(
         row["revision"], f"{path}.revision", ("last_read", "current", "relation")
     )
@@ -1278,6 +1438,97 @@ def _agent_row(value: Any, path: str) -> dict:
             evidence["coverage"], COVERAGE_STATES, f"{path}.evidence.coverage"
         ),
     }
+    if "lifecycle_source" in row:
+        result["lifecycle_source"] = _enum(
+            row["lifecycle_source"],
+            ("session_events", "runtime", "unavailable"),
+            f"{path}.lifecycle_source",
+        )
+    if "lifecycle_observed_at" in row:
+        result["lifecycle_observed_at"] = (
+            None
+            if row["lifecycle_observed_at"] is None
+            else _integer(
+                row["lifecycle_observed_at"],
+                f"{path}.lifecycle_observed_at",
+                minimum=0,
+                maximum=MAX_SAFE_INTEGER,
+            )
+        )
+    if "lifecycle_reason" in row:
+        result["lifecycle_reason"] = _enum(
+            row["lifecycle_reason"],
+            CONTROL_SAFE_REASONS,
+            f"{path}.lifecycle_reason",
+        )
+    if "owned_stages" in row:
+        result["owned_stages"] = [
+            _enum(stage, STAGES, f"{path}.owned_stages[{index}]")
+            for index, stage in enumerate(
+                _array(row["owned_stages"], f"{path}.owned_stages")
+            )
+        ]
+    if "stage_ownership" in row:
+        result["stage_ownership"] = _enum(
+            row["stage_ownership"],
+            ("recorded", "unavailable"),
+            f"{path}.stage_ownership",
+        )
+    if "source_coverage" in row:
+        result["source_coverage"] = [
+            _control_source_coverage(item, f"{path}.source_coverage[{index}]")
+            for index, item in enumerate(
+                _array(row["source_coverage"], f"{path}.source_coverage")
+            )
+        ]
+    if "recent_events" in row:
+        events = _array(row["recent_events"], f"{path}.recent_events")
+        if len(events) > 3:
+            _error(f"{path}.recent_events", "must contain at most 3 events")
+        result["recent_events"] = [
+            _control_operational_event(item, f"{path}.recent_events[{index}]")
+            for index, item in enumerate(events)
+        ]
+    if "events_status" in row:
+        result["events_status"] = _enum(
+            row["events_status"],
+            CONTROL_SOURCE_STATUSES,
+            f"{path}.events_status",
+        )
+    if "event_source_registered" in row:
+        result["event_source_registered"] = _boolean(
+            row["event_source_registered"],
+            f"{path}.event_source_registered",
+        )
+    if "blocker_details" in row:
+        result["blocker_details"] = []
+        for index, raw in enumerate(
+            _array(row["blocker_details"], f"{path}.blocker_details")
+        ):
+            item_path = f"{path}.blocker_details[{index}]"
+            item = _strict_object(
+                raw, item_path, ("kind", "waiting_on_user")
+            )
+            result["blocker_details"].append(
+                {
+                    "kind": _enum(
+                        item["kind"],
+                        (
+                            "permission_pending",
+                            "gate_closed",
+                            "defect_open",
+                            "amendment_open",
+                            "requires_replan",
+                            "binding_feedback",
+                        ),
+                        f"{item_path}.kind",
+                    ),
+                    "waiting_on_user": _boolean(
+                        item["waiting_on_user"],
+                        f"{item_path}.waiting_on_user",
+                    ),
+                }
+            )
     return result
 
 
@@ -1298,12 +1549,13 @@ def validate_dashboard_snapshot(value: Any, *, path: str = "$") -> dict:
             "agents",
             "next_cursor",
         ),
+        ("source_coverage", "recent_events", "events_status"),
     )
     _schema_version(snapshot["schema_version"], f"{path}.schema_version")
     agents = _array(snapshot["agents"], f"{path}.agents")
     if len(agents) > 200:
         _error(f"{path}.agents", "must contain at most 200 agents")
-    return {
+    result = {
         "schema_version": 1,
         "snapshot_id": _bounded_id(snapshot["snapshot_id"], f"{path}.snapshot_id"),
         "plan_id": _string(snapshot["plan_id"], f"{path}.plan_id", pattern=_PLAN_ID),
@@ -1339,6 +1591,28 @@ def validate_dashboard_snapshot(value: Any, *, path: str = "$") -> dict:
             )
         ),
     }
+    if "source_coverage" in snapshot:
+        result["source_coverage"] = [
+            _control_source_coverage(item, f"{path}.source_coverage[{index}]")
+            for index, item in enumerate(
+                _array(snapshot["source_coverage"], f"{path}.source_coverage")
+            )
+        ]
+    if "recent_events" in snapshot:
+        events = _array(snapshot["recent_events"], f"{path}.recent_events")
+        if len(events) > 50:
+            _error(f"{path}.recent_events", "must contain at most 50 events")
+        result["recent_events"] = [
+            _control_operational_event(item, f"{path}.recent_events[{index}]")
+            for index, item in enumerate(events)
+        ]
+    if "events_status" in snapshot:
+        result["events_status"] = _enum(
+            snapshot["events_status"],
+            CONTROL_SOURCE_STATUSES,
+            f"{path}.events_status",
+        )
+    return result
 
 
 def validate_event_page(value: Any, *, path: str = "$") -> dict:
@@ -1511,6 +1785,7 @@ def validate_feedback_receipt(value: Any, *, path: str = "$") -> dict:
             "retryable",
             "reason_code",
         ),
+        ("receipt_key", "delivery_state", "consequence"),
     )
     targets = [
         _bounded_id(item, f"{path}.authorized_targets[{index}]")
@@ -1559,7 +1834,7 @@ def validate_feedback_receipt(value: Any, *, path: str = "$") -> dict:
                 ),
             }
         )
-    return {
+    result = {
         "feedback_id": _bounded_id(receipt["feedback_id"], f"{path}.feedback_id"),
         "plan_id": _string(receipt["plan_id"], f"{path}.plan_id", pattern=_PLAN_ID),
         "note_seq": _integer(
@@ -1589,6 +1864,28 @@ def validate_feedback_receipt(value: Any, *, path: str = "$") -> dict:
             else _safe_code(receipt["reason_code"], f"{path}.reason_code")
         ),
     }
+    if "receipt_key" in receipt:
+        result["receipt_key"] = _bounded_id(
+            receipt["receipt_key"], f"{path}.receipt_key"
+        )
+    if "delivery_state" in receipt:
+        result["delivery_state"] = _enum(
+            receipt["delivery_state"],
+            (
+                "sent",
+                "routed",
+                "delivered",
+                "acknowledged",
+                "undeliverable",
+                "withdrawn",
+            ),
+            f"{path}.delivery_state",
+        )
+    if "consequence" in receipt:
+        result["consequence"] = _control_consequence(
+            receipt["consequence"], f"{path}.consequence"
+        )
+    return result
 
 
 def validate_dashboard_payload(value: Any, kind: str) -> dict:

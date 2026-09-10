@@ -186,6 +186,73 @@
             {"type": "null"},
             {"$ref": "#/$defs/safeCode"}
           ]
+        },
+        "receipt_key": {"$ref": "#/$defs/opaqueId"},
+        "delivery_state": {
+          "enum": ["sent", "routed", "delivered", "acknowledged", "undeliverable", "withdrawn"]
+        },
+        "consequence": {"$ref": "#/$defs/FeedbackConsequence"}
+      }
+    },
+    "SourceCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "status", "observed_through", "reason"],
+      "properties": {
+        "source": {
+          "enum": ["registrations", "commands", "session_events", "runtime", "plan_state"]
+        },
+        "status": {
+          "enum": ["available", "empty", "unavailable", "stale", "disconnected", "permission_limited"]
+        },
+        "observed_through": {"$ref": "#/$defs/nullableSafeInteger"},
+        "reason": {
+          "enum": ["not_registered", "no_run_events", "unsupported_source", "read_error", "permission_denied", "malformed_source", "source_changed", "source_limit", "plan_unavailable", "not_observed", "none"]
+        }
+      }
+    },
+    "OperationalEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "agent_key", "plan", "type", "at", "name", "phase", "success", "duration_ms", "error_code", "basis"],
+      "properties": {
+        "id": {"$ref": "#/$defs/opaqueId"},
+        "agent_key": {"$ref": "#/$defs/opaqueId"},
+        "plan": {
+          "type": "string",
+          "pattern": "^p-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "type": {
+          "enum": ["command", "tool", "run_started", "run_finished", "permission_requested", "permission_completed"]
+        },
+        "at": {"$ref": "#/$defs/safeInteger"},
+        "name": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/safeCode"}]
+        },
+        "phase": {
+          "oneOf": [{"type": "null"}, {"enum": ["started", "completed"]}]
+        },
+        "success": {"type": ["boolean", "null"]},
+        "duration_ms": {"$ref": "#/$defs/nullableSafeInteger"},
+        "error_code": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/safeCode"}]
+        },
+        "basis": {"const": "observed"}
+      }
+    },
+    "FeedbackConsequence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binding", "gates", "requires_replan", "release"],
+      "properties": {
+        "binding": {"type": "boolean"},
+        "gates": {
+          "type": "array",
+          "items": {"enum": ["implement", "test", "evaluate"]}
+        },
+        "requires_replan": {"type": "boolean"},
+        "release": {
+          "enum": ["acknowledgement_or_withdrawal", "replan", "none"]
         }
       }
     },
@@ -283,6 +350,11 @@
           }
         },
         "lifecycle": {"enum": ["registered", "running", "finished", "failed", "cancelled", "unknown"]},
+        "lifecycle_source": {"enum": ["session_events", "runtime", "unavailable"]},
+        "lifecycle_observed_at": {"$ref": "#/$defs/nullableSafeInteger"},
+        "lifecycle_reason": {
+          "enum": ["not_registered", "no_run_events", "unsupported_source", "read_error", "permission_denied", "malformed_source", "source_changed", "source_limit", "plan_unavailable", "not_observed", "none"]
+        },
         "activity": {"enum": ["active", "quiet", "possibly_stuck", "blocked", "unknown"]},
         "connection": {"enum": ["live", "stale", "disconnected", "unknown"]},
         "started_at": {"$ref": "#/$defs/nullableTimestamp"},
@@ -363,6 +435,34 @@
             {"type": "null"},
             {"$ref": "#/$defs/ModelSummary"}
           ]
+        },
+        "owned_stages": {
+          "type": "array",
+          "items": {"enum": ["design", "implementation", "testing", "evaluation"]}
+        },
+        "stage_ownership": {"enum": ["recorded", "unavailable"]},
+        "source_coverage": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/SourceCoverage"}
+        },
+        "recent_events": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {"$ref": "#/$defs/OperationalEvent"}
+        },
+        "events_status": {"enum": ["available", "empty", "unavailable", "stale", "disconnected", "permission_limited"]},
+        "event_source_registered": {"type": "boolean"},
+        "blocker_details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "waiting_on_user"],
+            "properties": {
+              "kind": {"enum": ["permission_pending", "gate_closed", "defect_open", "amendment_open", "requires_replan", "binding_feedback"]},
+              "waiting_on_user": {"type": "boolean"}
+            }
+          }
         }
       }
     },
@@ -408,7 +508,17 @@
               "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
             }
           ]
-        }
+        },
+        "source_coverage": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/SourceCoverage"}
+        },
+        "recent_events": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {"$ref": "#/$defs/OperationalEvent"}
+        },
+        "events_status": {"enum": ["available", "empty", "unavailable", "stale", "disconnected", "permission_limited"]}
       }
     },
     "Event": {

@@ -1030,13 +1030,64 @@ class SecuredPlanServerTests(unittest.TestCase):
         self.assertEqual(
             revision_request["id"], payload["request"]["seq"]
         )
-        self.assertEqual(revision_request["state"], "delivered")
+        self.assertEqual(revision_request["state"], "routed")
         manifest = self.store.load(self.plan_id)
         note = manifest["steering"][-1]
         self.assertEqual(note["role"], "architect")
         self.assertTrue(note["binding_feedback"])
         self.assertIn(thread["id"], note["text"])
         self.assertEqual(self.documents.proposals(role="engineer"), [])
+
+    def test_control_snapshot_exposes_only_explicit_spawn_lineage(self):
+        common = {
+            "repository": str(self.store.root),
+            "plan": self.plan_id,
+            "role": "architect",
+            "workstream": "planning",
+            "agent_id": "",
+            "registered_at": "2026-09-10T20:00:00Z",
+            "events_path": "",
+            "root_session_id": "root-session-private",
+        }
+        self.documents.register_session(
+            {
+                **common,
+                "run_id": "run-parent",
+                "agent": "parent",
+                "session_id": "session-parent-private",
+            }
+        )
+        self.documents.register_session(
+            {
+                **common,
+                "run_id": "run-child",
+                "agent": "child",
+                "session_id": "session-child-private",
+                "parent_run_id": "run-parent",
+            }
+        )
+        self.exchange()
+        status, _headers, body = self.request(
+            "GET", "/api/control?scope=repository_program"
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        topology = payload["topology"]
+        self.assertEqual(topology["coverage"], "complete")
+        self.assertEqual(len(topology["nodes"]), 2)
+        self.assertEqual(len(topology["edges"]), 1)
+        parent = next(
+            item for item in payload["agents"] if item["agent"] == "parent"
+        )
+        child = next(
+            item for item in payload["agents"] if item["agent"] == "child"
+        )
+        self.assertEqual(child["parent_agent_key"], parent["agent_key"])
+        self.assertEqual(child["lineage_status"], "recorded")
+        self.assertRegex(child["session_key"], r"^session-[0-9a-f]{16}$")
+        serialized = json.dumps(payload)
+        self.assertNotIn("session-child-private", serialized)
+        self.assertNotIn("root-session-private", serialized)
 
     def test_control_route_never_returns_adversarial_event_content(self):
         self.info["server"].context._shutdown = True

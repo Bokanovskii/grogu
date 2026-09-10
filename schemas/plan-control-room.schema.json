@@ -9,6 +9,10 @@
       "type": "string",
       "description": "RFC 3339 UTC. Empty string when the value is not observable."
     },
+    "epochMillis": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
     "identifier": {
       "type": "string",
       "description": "An opaque identifier the reader may show verbatim.",
@@ -34,6 +38,100 @@
     "coverageState": {
       "enum": ["complete", "partial", "unavailable"],
       "description": "How well a per-axis dimension is covered. `unavailable` when no data source is registered; `partial` when one source is missing; `complete` when both sources agree."
+    },
+    "sourceStatus": {
+      "enum": [
+        "available",
+        "empty",
+        "unavailable",
+        "stale",
+        "disconnected",
+        "permission_limited"
+      ]
+    },
+    "safeReason": {
+      "enum": [
+        "not_registered",
+        "no_run_events",
+        "unsupported_source",
+        "read_error",
+        "permission_denied",
+        "malformed_source",
+        "source_changed",
+        "source_limit",
+        "plan_unavailable",
+        "not_observed",
+        "none"
+      ]
+    },
+    "sourceCoverage": {
+      "type": "object",
+      "required": ["source", "status", "observed_through", "reason"],
+      "properties": {
+        "source": {
+          "enum": [
+            "registrations",
+            "commands",
+            "session_events",
+            "runtime",
+            "plan_state"
+          ]
+        },
+        "status": {"$ref": "#/$defs/sourceStatus"},
+        "observed_through": {"$ref": "#/$defs/epochMillis"},
+        "reason": {"$ref": "#/$defs/safeReason"}
+      },
+      "additionalProperties": false
+    },
+    "operationalEvent": {
+      "type": "object",
+      "required": [
+        "id",
+        "agent_key",
+        "plan",
+        "type",
+        "at",
+        "name",
+        "phase",
+        "success",
+        "duration_ms",
+        "error_code",
+        "basis"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "agent_key": {"$ref": "#/$defs/identifier"},
+        "plan": {"$ref": "#/$defs/identifier"},
+        "type": {
+          "enum": [
+            "command",
+            "tool",
+            "run_started",
+            "run_finished",
+            "permission_requested",
+            "permission_completed"
+          ]
+        },
+        "at": {"type": "integer", "minimum": 0},
+        "name": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/safeName"}
+          ]
+        },
+        "phase": {
+          "type": ["string", "null"],
+          "enum": ["started", "completed", null]
+        },
+        "success": {"type": ["boolean", "null"]},
+        "duration_ms": {"type": ["integer", "null"], "minimum": 0},
+        "error_code": {
+          "type": ["string", "null"],
+          "pattern": "^[a-zA-Z0-9_.-]{0,32}$"
+        },
+        "basis": {"const": "observed"}
+      },
+      "additionalProperties": false
     },
     "basis": {
       "enum": ["observed", "authored"],
@@ -72,7 +170,9 @@
         "events_path": {
           "type": "string",
           "description": "Absolute path to the registered events.jsonl. Reader will refuse a path that is not inside a session-state directory."
-        }
+        },
+        "parent_run_id": {"type": "string", "maxLength": 256},
+        "root_session_id": {"type": "string", "maxLength": 256}
       },
       "additionalProperties": false
     },
@@ -286,6 +386,9 @@
         "workstream",
         "plan",
         "lifecycle",
+        "lifecycle_source",
+        "lifecycle_observed_at",
+        "lifecycle_reason",
         "connection",
         "activity",
         "revision",
@@ -295,6 +398,11 @@
         "blockers",
         "steering",
         "coverage",
+        "source_coverage",
+        "last_action",
+        "recent_events",
+        "events_status",
+        "event_source_registered",
         "limits",
         "objects",
         "basis"
@@ -313,6 +421,11 @@
         "repository": {"type": "string"},
         "revision": {"$ref": "#/$defs/revisionRelation"},
         "lifecycle": {"$ref": "#/$defs/lifecycle"},
+        "lifecycle_source": {
+          "enum": ["session_events", "runtime", "unavailable"]
+        },
+        "lifecycle_observed_at": {"$ref": "#/$defs/epochMillis"},
+        "lifecycle_reason": {"$ref": "#/$defs/safeReason"},
         "activity": {"$ref": "#/$defs/activity"},
         "connection": {"$ref": "#/$defs/connection"},
         "started_at": {"$ref": "#/$defs/isoTimestamp"},
@@ -337,6 +450,23 @@
           }
         },
         "coverage": {"$ref": "#/$defs/coverage"},
+        "source_coverage": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/sourceCoverage"}
+        },
+        "last_action": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/operationalEvent"}
+          ]
+        },
+        "recent_events": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {"$ref": "#/$defs/operationalEvent"}
+        },
+        "events_status": {"$ref": "#/$defs/sourceStatus"},
+        "event_source_registered": {"type": "boolean"},
         "limits": {
           "type": "array",
           "description": "What the reader cannot see for this agent. Always includes model reasoning, command arguments, tool arguments, tool results and file edits; adds `tool_activity` when source 2 is unregistered.",
@@ -368,16 +498,23 @@
       "required": [
         "schema_version",
         "fresh_as_of",
+        "sampled_at",
+        "observed_through",
         "generation",
         "limits",
         "coverage",
         "agents",
         "uncorrelated",
-        "waiting_on_you"
+        "waiting_on_you",
+        "source_coverage",
+        "recent_events",
+        "events_status"
       ],
       "properties": {
         "schema_version": {"const": 1},
         "fresh_as_of": {"$ref": "#/$defs/isoTimestamp"},
+        "sampled_at": {"$ref": "#/$defs/isoTimestamp"},
+        "observed_through": {"$ref": "#/$defs/isoTimestamp"},
         "generation": {
           "type": "integer",
           "description": "Monotonic per reader instance. Advances every sample; a snapshot with a smaller generation than one already seen is stale."
@@ -410,14 +547,33 @@
           "type": "array",
           "description": "Asks the user is the one to answer. Composed by the reader from observed facts; never a model summary.",
           "items": {"type": "string"}
-        }
+        },
+        "source_coverage": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/sourceCoverage"}
+        },
+        "recent_events": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {"$ref": "#/$defs/operationalEvent"}
+        },
+        "events_status": {"$ref": "#/$defs/sourceStatus"}
       },
       "additionalProperties": false
     },
     "drillIn": {
       "type": "object",
       "description": "The drill-in has three panels: activity (an audit log), evidence (authorised object refs), and limits (a fixed statement of what is not observable).",
-      "required": ["schema_version", "agent_key", "activity", "evidence", "limits", "blockers"],
+      "required": [
+        "schema_version",
+        "agent_key",
+        "activity",
+        "evidence",
+        "limits",
+        "blockers",
+        "recent_events",
+        "events_status"
+      ],
       "properties": {
         "schema_version": {"const": 1},
         "agent_key": {"$ref": "#/$defs/identifier"},
@@ -425,7 +581,29 @@
         "evidence": {"type": "array", "items": {"$ref": "#/$defs/objectRef"}},
         "gaps": {"type": "array", "items": {"$ref": "#/$defs/coverageGap"}},
         "limits": {"type": "array", "items": {"type": "string"}},
-        "blockers": {"type": "array", "items": {"$ref": "#/$defs/blocker"}}
+        "blockers": {"type": "array", "items": {"$ref": "#/$defs/blocker"}},
+        "recent_events": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {"$ref": "#/$defs/operationalEvent"}
+        },
+        "events_status": {"$ref": "#/$defs/sourceStatus"}
+      },
+      "additionalProperties": false
+    },
+    "feedbackConsequence": {
+      "type": "object",
+      "required": ["binding", "gates", "requires_replan", "release"],
+      "properties": {
+        "binding": {"type": "boolean"},
+        "gates": {
+          "type": "array",
+          "items": {"enum": ["implement", "test", "evaluate"]}
+        },
+        "requires_replan": {"type": "boolean"},
+        "release": {
+          "enum": ["acknowledgement_or_withdrawal", "replan", "none"]
+        }
       },
       "additionalProperties": false
     },
@@ -439,10 +617,13 @@
         "role",
         "agent",
         "plan",
+        "receipt_key",
         "binding",
         "gates_closed",
         "delivered_to",
-        "acknowledged_by"
+        "acknowledged_by",
+        "delivery_state",
+        "consequence"
       ],
       "properties": {
         "schema_version": {"const": 1},
@@ -451,6 +632,7 @@
         "role": {"type": "string"},
         "agent": {"$ref": "#/$defs/identifier"},
         "plan": {"$ref": "#/$defs/identifier"},
+        "receipt_key": {"$ref": "#/$defs/identifier"},
         "binding": {"type": "boolean"},
         "gates_closed": {
           "type": "array",
@@ -460,6 +642,17 @@
         },
         "delivered_to": {"type": "array", "items": {"type": "string"}},
         "acknowledged_by": {"type": "array", "items": {"type": "string"}},
+        "delivery_state": {
+          "enum": [
+            "sent",
+            "routed",
+            "delivered",
+            "acknowledged",
+            "undeliverable",
+            "withdrawn"
+          ]
+        },
+        "consequence": {"$ref": "#/$defs/feedbackConsequence"},
         "relay_command": {
           "type": ["string", "null"],
           "description": "When a running agent is holding a handle, the reader prints this command rather than pasting text. It NEVER contains the note text."
