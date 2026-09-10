@@ -204,15 +204,23 @@ class TaskStore:
         if not task:
             return {}
         normalized = dict(task)
+        legacy_actor = _coerce_int(normalized.get("schema_version"), 1) < SCHEMA_VERSION
+
+        def _migrate_actor(value: object) -> str:
+            text = str(value or "")
+            if legacy_actor and "@" in text:
+                return text.split("@", 1)[0]
+            return text
+
         normalized["schema_version"] = max(
             _coerce_int(normalized.get("schema_version"), 1), SCHEMA_VERSION
         )
-        created_owner = (
+        created_owner = _migrate_actor(
             normalized.get("created_by_owner")
             or normalized.get("created_by")
             or actor()
         )
-        normalized["created_by"] = normalized.get("created_by") or created_owner
+        normalized["created_by"] = _migrate_actor(normalized.get("created_by") or created_owner)
         normalized["created_by_owner"] = created_owner
         normalized["created_by_agent"] = normalized.get("created_by_agent") or ""
         normalized["created_by_session_id"] = normalized.get("created_by_session_id") or ""
@@ -221,10 +229,11 @@ class TaskStore:
         )
         normalized.pop("created_by_host", None)
         normalized["assignee_owner"] = (
-            normalized.get("assignee_owner")
+            _migrate_actor(normalized.get("assignee_owner"))
             if normalized.get("assignee_owner") is not None
-            else normalized.get("assignee") or ""
+            else _migrate_actor(normalized.get("assignee") or "")
         )
+        normalized["assignee"] = _migrate_actor(normalized.get("assignee") or normalized["assignee_owner"])
         normalized["assignee_agent"] = normalized.get("assignee_agent") or ""
         normalized["assignee_session_id"] = normalized.get("assignee_session_id") or ""
         normalized["assignee_session_pid"] = _coerce_int(
@@ -238,7 +247,9 @@ class TaskStore:
             if not isinstance(entry, dict):
                 continue
             migrated = dict(entry)
-            migrated["by"] = migrated.get("by") or migrated.get("actor") or normalized["created_by"]
+            migrated["by"] = _migrate_actor(
+                migrated.get("by") or migrated.get("actor") or normalized["created_by"]
+            )
             migrated["agent"] = migrated.get("agent") or ""
             migrated["session_id"] = migrated.get("session_id") or ""
             migrated["session_pid"] = _coerce_int(migrated.get("session_pid"), 0)
@@ -310,6 +321,7 @@ class TaskStore:
             self._clear_assignment_fields(child)
             self._log(child, "cleanup", f"parent {parent_id}")
             self._write_task(child)
+            self._cleanup_subordinates(child["id"])
             cleaned.append(child["id"])
         return cleaned
 
@@ -492,6 +504,10 @@ class TaskStore:
             task_id = self._new_id()
             if parent_task_id and not self.task_path(parent_task_id).exists():
                 raise TaskError(f"parent task {parent_task_id} was not found")
+            if parent_task_id:
+                parent = self.load(parent_task_id)
+                if parent["status"] in CLOSED_STATUSES:
+                    raise TaskError(f"parent task {parent_task_id} is {parent['status']}")
             identity = lease_holder()
             timestamp = now()
             task = {
@@ -668,7 +684,8 @@ class TaskStore:
                         task["status"] = OPEN
                         self._clear_assignment_fields(task)
                     self._log(task, "lease-expired", str(lease.get("owner", "")))
-                    self._cancel_if_closed_parent(task)
+                    if self._cancel_if_closed_parent(task):
+                        self._cleanup_subordinates(task_id)
                     self._write_task(task)
         return released
 

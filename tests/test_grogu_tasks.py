@@ -50,15 +50,15 @@ class GroguTaskStoreTests(unittest.TestCase):
                     "priority": "normal",
                     "labels": ["legacy"],
                     "issue": None,
-                    "assignee": "charlie",
+                    "assignee": "charlie@charlies-mbp.lan",  # grogu-allow-secret legacy host-bearing actor
                     "created_at": "2026-01-01T00:00:00+00:00",
-                    "created_by": "charlie",
+                    "created_by": "charlie@charlies-mbp.lan",  # grogu-allow-secret legacy host-bearing actor
                     "updated_at": "2026-01-01T00:00:00+00:00",
                     "revision": 1,
                     "log": [
                         {
                             "at": "2026-01-01T00:00:00+00:00",
-                            "by": "charlie",
+                            "by": "charlie@charlies-mbp.lan",  # grogu-allow-secret legacy host-bearing actor
                             "event": "created",
                             "host": "legacy-host",
                         }
@@ -207,6 +207,28 @@ class GroguTaskStoreTests(unittest.TestCase):
             len([entry for entry in released["log"] if entry["event"] == "cleanup"]),
             1,
         )
+
+    def test_cancelling_a_parent_recursively_cleans_grandchildren(self):
+        with identity_env(agent="parent-agent", session_id="parent-session"):
+            parent = self.store.create("Parent task")
+            child = self.store.create("Child task", parent_task_id=parent["id"])
+            grandchild = self.store.create("Grandchild task", parent_task_id=child["id"])
+
+        self.store.release(parent["id"], status=grogu_tasks.DONE, note="closed")
+
+        self.assertEqual(self.store.view(child["id"])["status"], grogu_tasks.CANCELLED)
+        self.assertEqual(
+            self.store.view(grandchild["id"])["status"], grogu_tasks.CANCELLED
+        )
+
+    def test_creating_under_closed_parent_is_rejected(self):
+        with identity_env(agent="parent-agent", session_id="parent-session"):
+            parent = self.store.create("Parent task")
+        self.store.release(parent["id"], status=grogu_tasks.DONE, note="closed")
+
+        with self.assertRaises(grogu_tasks.TaskError):
+            with identity_env(agent="parent-agent", session_id="parent-session"):
+                self.store.create("Late child", parent_task_id=parent["id"])
 
 
 if __name__ == "__main__":
