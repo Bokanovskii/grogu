@@ -199,7 +199,11 @@ export function useCanvasOps() {
       void actions.writeGesture(ops, `z-order ${dir}`, "workspace", `z-order ${dir}`);
     },
 
-    createAnnotation(shape: "rectangle" | "ellipse" | "arrow" | "freehand", rect: Rect, points?: number[][]): string | null {
+    async createAnnotation(
+      shape: "rectangle" | "ellipse" | "arrow" | "freehand",
+      rect: Rect,
+      points?: number[][],
+    ): Promise<string | null> {
       const alloc = new Allocator(state.counters);
       const regionId = alloc.node("region");
       const attrs: Record<string, unknown> = { shape, anchor_state: "resolved" };
@@ -223,8 +227,13 @@ export function useCanvasOps() {
           }),
         },
       ];
-      void actions.writeGesture(ops, `add ${shape}`, "workspace", `add ${shape}`);
-      return regionId;
+      const persisted = await actions.writeGesture(
+        ops,
+        `add ${shape}`,
+        "workspace",
+        `add ${shape}`,
+      );
+      return persisted ? regionId : null;
     },
 
     newNodeFromEdge(fromId: string, kind: NodeKind, at: { x: number; y: number }) {

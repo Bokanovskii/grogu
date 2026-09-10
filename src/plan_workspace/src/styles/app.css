@@ -420,7 +420,11 @@ code, pre, kbd { font-family: var(--font-mono); }
 .new-thread-composer, .composer-kinds { display: flex; flex-direction: column; gap: var(--space-2); }
 .composer-kinds { flex-direction: row; flex-wrap: wrap; }
 .composer-quote, .thread-quote, .ask-quote { border-left: 2px solid var(--neutral-300); padding-left: var(--space-2); color: var(--neutral-700); font-size: var(--text-sm); }
-.composer-actions, .thread-actions { display: flex; gap: var(--space-2); justify-content: flex-end; }
+.composer-actions { display: flex; gap: var(--space-2); justify-content: flex-end; }
+.thread-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); justify-content: flex-start; max-width: 100%; }
+.thread-actions .btn { min-width: 0; padding-inline: var(--space-2); }
+.thread-actions .thread-revise { flex: 1 1 150px; text-align: left; }
+.thread-actions .thread-more { margin-left: auto; }
 
 /* Right panel + comment rail */
 .right-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }

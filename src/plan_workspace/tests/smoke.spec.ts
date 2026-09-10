@@ -104,6 +104,33 @@ test.describe("boot and shell", () => {
     await expect(page.locator("#cv-title-goal-1")).toHaveCount(0);
   });
 
+  test("drawn regions persist after reload", async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press("Meta+2");
+    const regions = page.locator(".react-flow__node-region");
+    const before = await regions.count();
+    await page
+      .locator(".tool-palette")
+      .getByRole("button", { name: "Rectangle", exact: true })
+      .click();
+    const pane = page.locator(".react-flow__pane");
+    const box = await pane.boundingBox();
+    expect(box).not.toBeNull();
+    await page.mouse.move(box!.x + 420, box!.y + 280);
+    await page.mouse.down();
+    await page.mouse.move(box!.x + 620, box!.y + 400);
+    await page.mouse.up();
+    await expect(page.locator(".status-save")).toContainText("Saved · r");
+    await expect(regions).toHaveCount(before + 1);
+    await expect(page.getByText(/^Comment on reg-/)).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    await page.reload();
+    await expect(page.locator(".shell")).toBeVisible();
+    await page.keyboard.press("Meta+2");
+    await expect(page.locator(".react-flow__node-region")).toHaveCount(before + 1);
+  });
+
   test("switching to Canvas with a document node selected does not crash", async ({ page }) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -134,6 +161,23 @@ test.describe("boot and shell", () => {
     await expect(page.locator(".compiled-modal .modal-title")).toContainText("Digest: sha256:", {
       timeout: 15_000,
     });
+  });
+
+  test("comment actions stay inside the rail and Reply reflects composer state", async ({ page }) => {
+    await openApp(page);
+    const card = page.locator(".thread-card").first();
+    const reply = card.getByRole("button", { name: "Reply" });
+    await expect(reply).toBeDisabled();
+    await card.getByRole("textbox", { name: "Reply to thread" }).fill("A response");
+    await expect(reply).toBeEnabled();
+    const cardBox = await card.boundingBox();
+    expect(cardBox).not.toBeNull();
+    for (const button of await card.locator(".thread-actions button").all()) {
+      const box = await button.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(cardBox!.x);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(cardBox!.x + cardBox!.width);
+    }
   });
 });
 

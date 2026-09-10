@@ -142,7 +142,12 @@ export function ThreadCard({
 
         <footer className="thread-actions" onClick={(e) => e.stopPropagation()}>
           {thread.status !== "resolved" && !orphaned ? (
-            <button type="button" className="btn btn-text" onClick={() => void post()}>
+            <button
+              type="button"
+              className="btn btn-text"
+              disabled={!reply.trim()}
+              onClick={() => void post()}
+            >
               Reply
             </button>
           ) : null}
@@ -157,7 +162,7 @@ export function ThreadCard({
           )}
           <button
             type="button"
-            className="btn btn-text"
+            className="btn btn-text thread-revise"
             onClick={() => actions.openOverlay({ kind: "askGrogu", threadId: thread.id })}
           >
             Ask Grogu to revise
@@ -166,6 +171,7 @@ export function ThreadCard({
             label="⋯"
             chevron={false}
             align="end"
+            className="thread-more"
             items={[
               ...(isArchitect && thread.kind !== "directive"
                 ? [

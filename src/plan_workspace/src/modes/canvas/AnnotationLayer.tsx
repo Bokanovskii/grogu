@@ -39,7 +39,7 @@ export function AnnotationLayer({ tool, onDone }: { tool: CanvasTool; onDone: ()
     setDrawing((d) => (d ? { ...d, x1: p.x, y1: p.y } : d));
     if (tool === "freehand") setFreehand((pts) => [...pts, [e.clientX, e.clientY]]);
   };
-  const onPointerUp = (e: React.PointerEvent) => {
+  const onPointerUp = async (e: React.PointerEvent) => {
     if (!drawing) {
       onDone();
       return;
@@ -57,15 +57,18 @@ export function AnnotationLayer({ tool, onDone }: { tool: CanvasTool; onDone: ()
     void e;
     let id: string | null = null;
     if (tool === "frame") {
-      id = ops.createAnnotation("rectangle", flowRect); // a frame is drawn as a rectangle region
+      id = await ops.createAnnotation("rectangle", flowRect); // a frame is drawn as a rectangle region
     } else if (tool === "freehand") {
       const flowPts = freehand.map((p) => {
         const fp = screenToFlowPosition({ x: p[0]!, y: p[1]! });
         return [fp.x, fp.y];
       });
-      id = ops.createAnnotation("freehand", flowRect, flowPts);
+      id = await ops.createAnnotation("freehand", flowRect, flowPts);
     } else {
-      id = ops.createAnnotation(tool as "rectangle" | "ellipse" | "arrow", flowRect);
+      id = await ops.createAnnotation(
+        tool as "rectangle" | "ellipse" | "arrow",
+        flowRect,
+      );
     }
     setDrawing(null);
     setFreehand([]);
