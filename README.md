@@ -280,7 +280,7 @@ conversation. Plans are artifacts on disk; agents get a plan id and a role.
 
 ```sh
 grogu plan triage "add rate limiting to the API"   # plan, or answer directly?
-grogu plan new "Rate limiting" --review-required   # implementation + testing plans
+grogu plan doc create "Rate limiting" --review-required # typed implementation + testing plan
 grogu plan write <id> implementation --role architect --file -
 grogu plan gate <id> --stage implement             # exit 3 = do not start
 grogu plan show <id> --stage implementation --role engineer
@@ -312,7 +312,7 @@ both. See [docs/plan-documents.md](docs/plan-documents.md).
 Work with a user-visible surface adds a design stage:
 
 ```sh
-grogu plan new "Settings page" --design
+grogu plan doc create "Settings page" --design
 grogu design recall --scope web                    # the user's own taste
 grogu design template "Settings page"              # the required structure
 grogu plan design-review <id> --verdict pass --evidence shot.png

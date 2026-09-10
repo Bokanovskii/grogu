@@ -110,7 +110,7 @@ that blocks a plan is worse than one that is merely read and dismissed.
 ## The design stage
 
 Work with a user-visible surface gets a fourth role. `grogu plan triage` flags
-it, `grogu plan new --design` or `grogu plan shape --add design` adds the stage,
+it, `grogu plan doc create --design` or `grogu plan shape --add design` adds the stage,
 and the designer writes it. Nothing else may: the architect that adds the stage
 is refused if it tries to write the spec.
 
@@ -278,7 +278,7 @@ fail. Evaluation asks whether the result is actually good — end-to-end, usuall
 scenario-based, often non-deterministic, sometimes needing a rubric and repeated
 runs.
 
-Most changes need only the first. Add the second (`grogu plan new --eval`) when
+Most changes need only the first. Add the second (`grogu plan doc create --eval`) when
 a green test suite would not actually tell you the change was worth making.
 
 ## Gates, not instructions
