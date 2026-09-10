@@ -28,7 +28,7 @@ from typing import Iterable, Iterator, Optional
 
 import grogu_platform
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 STORE_DIRNAME = ".grogu"
 DEFAULT_LEASE_SECONDS = 1800
 
@@ -66,8 +66,18 @@ def actor() -> str:
     """
     explicit = os.environ.get("GROGU_ACTOR")
     if explicit:
-        return explicit
+        return explicit.split("@", 1)[0]
     return os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
+
+
+def _public_actor(value: object) -> str:
+    text = str(value or "")
+    return text.split("@", 1)[0] if "@" in text else text
+
+
+def agent() -> str:
+    """Stable Grogu agent name for provenance, when one is available."""
+    return os.environ.get("GROGU_AGENT", "").strip()
 
 
 def session_id() -> str:
@@ -90,10 +100,18 @@ def session_pid() -> int:
 def lease_holder() -> dict:
     return {
         "owner": actor(),
+        "agent": agent(),
         "host": socket.gethostname(),
         "session_pid": session_pid(),
         "session_id": session_id(),
     }
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def repository_root(start: Optional[Path] = None) -> Path:
@@ -187,6 +205,193 @@ class TaskStore:
             return {}
         return value if isinstance(value, dict) else {}
 
+    def _normalize_task(self, task: dict) -> dict:
+        if not task:
+            return {}
+        normalized = dict(task)
+        legacy_actor = _coerce_int(normalized.get("schema_version"), 1) < SCHEMA_VERSION
+
+        def _migrate_actor(value: object) -> str:
+            text = str(value or "")
+            if legacy_actor and "@" in text:
+                return text.split("@", 1)[0]
+            return text
+
+        normalized["schema_version"] = max(
+            _coerce_int(normalized.get("schema_version"), 1), SCHEMA_VERSION
+        )
+        created_owner = _migrate_actor(
+            normalized.get("created_by_owner")
+            or normalized.get("created_by")
+            or actor()
+        )
+        normalized["created_by"] = _migrate_actor(normalized.get("created_by") or created_owner)
+        normalized["created_by_owner"] = created_owner
+        normalized["created_by_agent"] = normalized.get("created_by_agent") or ""
+        normalized["created_by_session_id"] = normalized.get("created_by_session_id") or ""
+        normalized["created_by_session_pid"] = _coerce_int(
+            normalized.get("created_by_session_pid"), 0
+        )
+        normalized.pop("created_by_host", None)
+        normalized["assignee_owner"] = (
+            _migrate_actor(normalized.get("assignee_owner"))
+            if normalized.get("assignee_owner") is not None
+            else _migrate_actor(normalized.get("assignee") or "")
+        )
+        normalized["assignee"] = _migrate_actor(normalized.get("assignee") or normalized["assignee_owner"])
+        normalized["assignee_agent"] = normalized.get("assignee_agent") or ""
+        normalized["assignee_session_id"] = normalized.get("assignee_session_id") or ""
+        normalized["assignee_session_pid"] = _coerce_int(
+            normalized.get("assignee_session_pid"), 0
+        )
+        normalized.pop("assignee_host", None)
+        if "parent_task_id" not in normalized:
+            normalized["parent_task_id"] = normalized.get("parent_id") or normalized.get("parent")
+        log = []
+        for entry in normalized.get("log", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            migrated = dict(entry)
+            migrated["by"] = _migrate_actor(
+                migrated.get("by") or migrated.get("actor") or normalized["created_by"]
+            )
+            migrated["agent"] = migrated.get("agent") or ""
+            migrated["session_id"] = migrated.get("session_id") or ""
+            migrated["session_pid"] = _coerce_int(migrated.get("session_pid"), 0)
+            text = migrated.get("text")
+            if isinstance(text, str) and legacy_actor:
+                if migrated.get("event") == "claim" and text.startswith("taken over from "):
+                    migrated["text"] = f"taken over from {_public_actor(text.removeprefix('taken over from '))}"
+                elif migrated.get("event") == "lease-expired":
+                    migrated["text"] = _public_actor(text)
+            migrated.pop("host", None)
+            log.append(migrated)
+        normalized["log"] = log
+        return normalized
+
+    def _identity_fields(self, task: dict, prefix: str) -> dict:
+        return {
+            "owner": task.get(prefix) or "",
+            "agent": task.get(f"{prefix}_agent") or "",
+            "session_id": task.get(f"{prefix}_session_id") or "",
+            "session_pid": _coerce_int(task.get(f"{prefix}_session_pid"), 0),
+        }
+
+    def _lease_identity(self, lease: dict) -> dict:
+        if not lease:
+            return {}
+        return {
+            "owner": lease.get("owner") or "",
+            "agent": lease.get("agent") or "",
+            "session_id": lease.get("session_id") or "",
+            "session_pid": _coerce_int(lease.get("session_pid"), 0),
+            "host": lease.get("host") or "",
+        }
+
+    def _set_identity_fields(self, task: dict, prefix: str, identity: dict) -> None:
+        owner = identity.get("owner") or ""
+        if prefix == "created_by":
+            task[prefix] = owner or actor()
+        else:
+            task[prefix] = owner or None
+        task[f"{prefix}_owner"] = owner
+        task[f"{prefix}_agent"] = identity.get("agent") or ""
+        task[f"{prefix}_session_id"] = identity.get("session_id") or ""
+        task[f"{prefix}_session_pid"] = _coerce_int(identity.get("session_pid"), 0)
+
+    def _clear_assignment_fields(self, task: dict) -> None:
+        task["assignee"] = None
+        task["assignee_owner"] = ""
+        task["assignee_agent"] = ""
+        task["assignee_session_id"] = ""
+        task["assignee_session_pid"] = 0
+
+    def _write_task(self, task: dict) -> None:
+        self._write_json(self.task_path(task["id"]), self._normalize_task(task))
+
+    def _is_grogu_owned(self, task: dict) -> bool:
+        return bool(task.get("created_by_agent"))
+
+    def _cleanup_subordinates(self, parent_id: str) -> list:
+        cleaned = []
+        for child in self.list_tasks():
+            if child["id"] == parent_id:
+                continue
+            if child.get("parent_task_id") != parent_id:
+                continue
+            if child["status"] in CLOSED_STATUSES:
+                self._cleanup_subordinates(child["id"])
+                continue
+            if not self._is_grogu_owned(child):
+                continue
+            lease = self.lease(child["id"])
+            if lease and self.lease_is_live(lease):
+                continue
+            child = self.load(child["id"])
+            if child["status"] in CLOSED_STATUSES:
+                continue
+            self.lease_path(child["id"]).unlink(missing_ok=True)
+            child["status"] = CANCELLED
+            self._clear_assignment_fields(child)
+            self._log(child, "cleanup", f"parent {parent_id}")
+            self._write_task(child)
+            self._cleanup_subordinates(child["id"])
+            cleaned.append(child["id"])
+        return cleaned
+
+    def _cancel_if_closed_parent(self, task: dict) -> bool:
+        parent_id = task.get("parent_task_id")
+        if not parent_id or not self._is_grogu_owned(task):
+            return False
+        parent_path = self.task_path(parent_id)
+        if not parent_path.exists():
+            return False
+        parent = self.load(parent_id)
+        if parent.get("status") not in CLOSED_STATUSES or task.get("status") in CLOSED_STATUSES:
+            return False
+        task["status"] = CANCELLED
+        self._clear_assignment_fields(task)
+        self._log(task, "cleanup", f"parent {parent_id}")
+        return True
+
+    def grouped_tasks(self) -> dict:
+        groups = {}
+        tasks = self.list_tasks()
+        for task in tasks:
+            key = (
+                task.get("assignee_owner") or task.get("assignee") or "",
+                task.get("assignee_agent") or "",
+                task.get("assignee_session_id") or "",
+                _coerce_int(task.get("assignee_session_pid"), 0),
+            )
+            group = groups.setdefault(
+                key,
+                {
+                    "assignee": self._identity_fields(task, "assignee"),
+                    "by_status": {status: 0 for status in STATUSES},
+                    "tasks": [],
+                },
+            )
+            group["by_status"][task.get("status", OPEN)] = (
+                group["by_status"].get(task.get("status", OPEN), 0) + 1
+            )
+            group["tasks"].append(
+                {
+                    "id": task["id"],
+                    "status": task.get("status", OPEN),
+                    "title": task.get("title", ""),
+                    "updated_at": task.get("updated_at"),
+                }
+            )
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "total": len(tasks),
+            "groups": [
+                groups[key]
+                for key in sorted(groups, key=lambda item: (item[1], item[2], item[3], item[0]))
+            ],
+        }
+
     def task_path(self, task_id: str) -> Path:
         return self.tasks_dir / f"{task_id}.json"
 
@@ -227,7 +432,7 @@ class TaskStore:
     # -- reads -------------------------------------------------------------
 
     def load(self, task_id: str) -> dict:
-        task = self._read_json(self.task_path(task_id))
+        task = self._normalize_task(self._read_json(self.task_path(task_id)))
         if not task:
             raise TaskError(f"task {task_id} was not found")
         return task
@@ -235,7 +440,10 @@ class TaskStore:
     def list_tasks(self) -> list:
         if not self.tasks_dir.is_dir():
             return []
-        tasks = [self._read_json(path) for path in sorted(self.tasks_dir.glob("*.json"))]
+        tasks = [
+            self._normalize_task(self._read_json(path))
+            for path in sorted(self.tasks_dir.glob("*.json"))
+        ]
         return [task for task in tasks if task.get("id")]
 
     def lease(self, task_id: str) -> dict:
@@ -260,21 +468,39 @@ class TaskStore:
 
     def lease_is_mine(self, lease: dict) -> bool:
         holder = lease_holder()
-        return bool(lease) and all(
-            lease.get(key) == holder[key] for key in ("owner", "host", "session_pid")
-        )
+        if not lease:
+            return False
+        for key in ("owner", "host", "session_pid"):
+            if lease.get(key) != holder[key]:
+                return False
+        for key in ("agent", "session_id"):
+            if lease.get(key) and holder.get(key) and lease.get(key) != holder.get(key):
+                return False
+        return True
 
     def view(self, task_id: str) -> dict:
         task = dict(self.load(task_id))
         lease = self.lease(task_id)
         task["lease"] = lease or None
         task["lease_live"] = self.lease_is_live(lease)
+        task["ownership"] = {
+            "created_by": self._identity_fields(task, "created_by"),
+            "assignee": self._identity_fields(task, "assignee"),
+            "lease": self._lease_identity(lease) if lease else None,
+        }
         return task
 
     # -- writes ------------------------------------------------------------
 
     def _log(self, task: dict, event: str, text: str = "") -> None:
         entry = {"at": now(), "by": actor(), "event": event}
+        entry["agent"] = agent()
+        entry["session_id"] = session_id()
+        entry["session_pid"] = session_pid()
+        if event == "claim" and text.startswith("taken over from "):
+            text = f"taken over from {_public_actor(text.removeprefix('taken over from '))}"
+        elif event == "lease-expired":
+            text = _public_actor(text)
         if text:
             entry["text"] = text
         task.setdefault("log", []).append(entry)
@@ -288,11 +514,19 @@ class TaskStore:
         labels: Optional[Iterable[str]] = None,
         priority: str = "normal",
         issue: Optional[int] = None,
+        parent_task_id: Optional[str] = None,
     ) -> dict:
         if not title.strip():
             raise TaskError("a task needs a title")
         with self.locked():
             task_id = self._new_id()
+            if parent_task_id and not self.task_path(parent_task_id).exists():
+                raise TaskError(f"parent task {parent_task_id} was not found")
+            if parent_task_id:
+                parent = self.load(parent_task_id)
+                if parent["status"] in CLOSED_STATUSES:
+                    raise TaskError(f"parent task {parent_task_id} is {parent['status']}")
+            identity = lease_holder()
             timestamp = now()
             task = {
                 "schema_version": SCHEMA_VERSION,
@@ -306,12 +540,17 @@ class TaskStore:
                 "assignee": None,
                 "created_at": timestamp,
                 "created_by": actor(),
+                "created_by_owner": identity["owner"],
+                "created_by_agent": identity["agent"],
+                "created_by_session_id": identity["session_id"],
+                "created_by_session_pid": identity["session_pid"],
+                "parent_task_id": parent_task_id,
                 "updated_at": timestamp,
                 "revision": 0,
                 "log": [],
             }
             self._log(task, "created", title.strip())
-            self._write_json(self.task_path(task_id), task)
+            self._write_task(task)
             return task
 
     def update(
@@ -349,9 +588,13 @@ class TaskStore:
                 self._log(task, "status", status)
                 if status in CLOSED_STATUSES:
                     self.lease_path(task_id).unlink(missing_ok=True)
+                    self._cleanup_subordinates(task_id)
             if note:
                 self._log(task, "note", note)
-            self._write_json(self.task_path(task_id), task)
+            if self._cancel_if_closed_parent(task):
+                self.lease_path(task_id).unlink(missing_ok=True)
+                self._cleanup_subordinates(task_id)
+            self._write_task(task)
             return task
 
     def claim(
@@ -364,6 +607,10 @@ class TaskStore:
             task = self.load(task_id)
             if task["status"] in CLOSED_STATUSES:
                 raise TaskError(f"task {task_id} is {task['status']}")
+            if self._cancel_if_closed_parent(task):
+                self.lease_path(task_id).unlink(missing_ok=True)
+                self._write_task(task)
+                raise TaskError(f"task {task_id} has a closed parent")
             existing = self.lease(task_id)
             mine = self.lease_is_mine(existing)
             if existing and self.lease_is_live(existing) and not mine and not force:
@@ -387,13 +634,13 @@ class TaskStore:
             )
             self._write_json(self.lease_path(task_id), lease)
             if existing and not mine:
-                self._log(task, "claim", f"taken over from {existing.get('owner')}")
+                self._log(task, "claim", f"taken over from {_public_actor(existing.get('owner'))}")
             else:
                 self._log(task, "claim")
-            task["assignee"] = actor()
+            self._set_identity_fields(task, "assignee", lease)
             if task["status"] == OPEN:
                 task["status"] = ACTIVE
-            self._write_json(self.task_path(task_id), task)
+            self._write_task(task)
             task["lease"] = lease
             return task
 
@@ -433,9 +680,14 @@ class TaskStore:
             elif task["status"] == ACTIVE:
                 task["status"] = OPEN
             if task["status"] == OPEN:
-                task["assignee"] = None
+                self._clear_assignment_fields(task)
             self._log(task, "release", note or task["status"])
-            self._write_json(self.task_path(task_id), task)
+            if self._cancel_if_closed_parent(task):
+                self.lease_path(task_id).unlink(missing_ok=True)
+            if task["status"] in CLOSED_STATUSES:
+                self.lease_path(task_id).unlink(missing_ok=True)
+                self._cleanup_subordinates(task_id)
+            self._write_task(task)
             return task
 
     def collect_expired(self) -> list:
@@ -455,9 +707,11 @@ class TaskStore:
                     task = self.load(task_id)
                     if task["status"] == ACTIVE:
                         task["status"] = OPEN
-                        task["assignee"] = None
-                    self._log(task, "lease-expired", str(lease.get("owner", "")))
-                    self._write_json(self.task_path(task_id), task)
+                        self._clear_assignment_fields(task)
+                    self._log(task, "lease-expired", _public_actor(lease.get("owner", "")))
+                    if self._cancel_if_closed_parent(task):
+                        self._cleanup_subordinates(task_id)
+                    self._write_task(task)
         return released
 
     # -- handoff inbox -----------------------------------------------------
