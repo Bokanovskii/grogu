@@ -7129,6 +7129,12 @@ class PlanDocumentStore:
                 plandoc_manifest.get("counters", {}),
                 self._counter_state(after),
             )
+            stage_written = latest_manifest.setdefault("stage_written", {})
+            for stage in affected_stages:
+                stage_written[stage] = any(
+                    node.get("stage") == stage
+                    for node in after.get("nodes", {}).values()
+                )
             self._update_manifest_parts(
                 latest_manifest, current_payloads, {
                     self._stage_relative(stage): grogu_plandoc_revision.safe_read(

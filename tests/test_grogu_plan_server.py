@@ -51,6 +51,36 @@ class PlanPackageIntegrationTests(unittest.TestCase):
         self.assertIn(str(legacy), message)
         self.assertIn(str(self.store.document_plan_dir(plan_id)), message)
 
+    def test_direct_graph_edits_update_stage_written_state(self):
+        plan_id, documents = self.package()
+        document = documents.load(role="reviewer")
+        criterion = grogu_plandoc.make_node(
+            "crit-1",
+            "criterion",
+            "Authentication compatibility",
+            stage="testing",
+            revision=document["revision"],
+        )
+        documents.patch(
+            role="reviewer",
+            base=document["revision"],
+            operations=[
+                {"op": "add", "path": "/nodes/crit-1", "value": criterion}
+            ],
+        )
+        self.assertTrue(
+            self.store.load(plan_id)["stage_written"]["testing"]
+        )
+
+        documents.patch(
+            role="reviewer",
+            base=documents.head(),
+            operations=[{"op": "remove", "path": "/nodes/crit-1"}],
+        )
+        self.assertFalse(
+            self.store.load(plan_id)["stage_written"]["testing"]
+        )
+
     def test_local_only_upgrade_is_additive(self):
         marker = self.root / ".grogu" / "plans" / ".gitignore"
         marker.parent.mkdir(parents=True)
