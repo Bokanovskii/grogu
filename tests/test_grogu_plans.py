@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -861,6 +862,88 @@ class PlanStoreTests(unittest.TestCase):
             self.store.add_workstream(
                 plan_id, name="api", paths=["src/api/**"], review="vibes"
             )
+
+    def test_legacy_review_manifest_migrates_to_required_reviews(self):
+        plan_id = self.plan()
+        self.store.add_workstream(
+            plan_id, name="api", paths=["src/api/**"],
+            review=grogu_plans.REVIEW_SECURITY,
+        )
+        path = self.store.manifest_path(plan_id)
+        manifest = json.loads(path.read_text())
+        stream = manifest["workstreams"][0]
+        stream["review"] = stream.pop("required_reviews")[0]
+        path.write_text(json.dumps(manifest))
+
+        migrated = self.store.load(plan_id)["workstreams"][0]
+        self.assertEqual(
+            migrated["required_reviews"], [grogu_plans.REVIEW_SECURITY]
+        )
+        self.assertEqual(migrated["review"], grogu_plans.REVIEW_SECURITY)
+
+    def test_every_required_review_kind_blocks_until_recorded(self):
+        plan_id = self.plan()
+        stream = self.store.add_workstream(
+            plan_id,
+            name="auth",
+            paths=["src/auth/**"],
+            required_reviews=[
+                grogu_plans.REVIEW_SECURITY,
+                grogu_plans.REVIEW_CODE,
+            ],
+        )
+        self.assertEqual(
+            stream["required_reviews"],
+            [grogu_plans.REVIEW_CODE, grogu_plans.REVIEW_SECURITY],
+        )
+        self.store.set_stage_state(
+            plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+        )
+        self.store.record_review(
+            plan_id, "auth", verdict=grogu_plans.PASS,
+            kind=grogu_plans.REVIEW_CODE, findings="checked failure paths",
+        )
+        blockers = self.store.gate(plan_id, grogu_plans.GATE_TEST)["blockers"]
+        self.assertTrue(any("auth (security-review)" in item for item in blockers))
+        self.store.record_review(
+            plan_id, "auth", verdict=grogu_plans.PASS,
+            kind=grogu_plans.REVIEW_SECURITY, findings="checked trust boundaries",
+        )
+        self.assertTrue(self.store.gate(plan_id, grogu_plans.GATE_TEST)["allowed"])
+
+    def test_duplicate_required_review_kinds_are_rejected(self):
+        plan_id = self.plan()
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.add_workstream(
+                plan_id,
+                name="auth",
+                paths=["src/auth/**"],
+                required_reviews=[
+                    grogu_plans.REVIEW_SECURITY,
+                    grogu_plans.REVIEW_SECURITY,
+                ],
+            )
+        self.assertIn("duplicate", str(caught.exception))
+
+    def test_replacing_workstream_preserves_requirements_and_all_reviews(self):
+        plan_id = self.plan()
+        self.store.add_workstream(
+            plan_id, name="api", paths=["src/api/**"],
+            required_reviews=[grogu_plans.REVIEW_CODE, grogu_plans.REVIEW_SECURITY],
+        )
+        for kind in (grogu_plans.REVIEW_CODE, grogu_plans.REVIEW_SECURITY):
+            self.store.record_review(
+                plan_id, "api", verdict=grogu_plans.PASS, kind=kind,
+                findings=f"completed {kind}",
+            )
+        replaced = self.store.add_workstream(
+            plan_id, name="api", paths=["src/service/**"], replace=True
+        )
+        self.assertEqual(
+            replaced["required_reviews"],
+            [grogu_plans.REVIEW_CODE, grogu_plans.REVIEW_SECURITY],
+        )
+        self.assertEqual(len(replaced["reviews"]), 2)
 
     def test_harness_friction_pools_across_repositories(self):
         home = tempfile.TemporaryDirectory()
@@ -2305,6 +2388,360 @@ class PlanRevisionTests(unittest.TestCase):
         self.store.steer("check the scale, not just the value", role="tester", plan_id=plan)
         engineer = self.store.steering(role="engineer", plan_id=plan)["plan"]
         self.assertFalse(any("scale" in note["text"] for note in engineer))
+
+
+class PlanStageConcurrencyTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("concurrency")["id"]
+
+    def test_stale_base_reports_the_intervening_writer(self):
+        initial = self.store.stage_version(
+            self.plan, grogu_plans.IMPLEMENTATION
+        )["digest"]
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-one"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "first body", base=initial
+        )
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.write_stage(
+                self.plan, grogu_plans.IMPLEMENTATION, "stale body", base=initial
+            )
+        message = str(caught.exception)
+        self.assertIn("architect-one", message)
+        self.assertIn("current revision", message)
+        self.assertIn("10 bytes", message)
+        self.assertIn("sha256:", message)
+
+    def test_only_one_racing_compare_and_swap_wins(self):
+        base = self.store.stage_version(
+            self.plan, grogu_plans.IMPLEMENTATION
+        )["digest"]
+        barrier = threading.Barrier(2)
+        results = []
+
+        def write(body):
+            contender = grogu_plans.PlanStore(self.root)
+            barrier.wait()
+            try:
+                contender.write_stage(
+                    self.plan, grogu_plans.IMPLEMENTATION, body,
+                    role=grogu_plans.ARCHITECT, base=base,
+                )
+                results.append("written")
+            except grogu_plans.PlanError as error:
+                results.append(str(error))
+
+        threads = [
+            threading.Thread(target=write, args=("body one",)),
+            threading.Thread(target=write, args=("body two",)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(results.count("written"), 1)
+        self.assertEqual(sum("changed after base" in item for item in results), 1)
+
+    def test_replacement_writer_permanently_revokes_the_stale_identity(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-old"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "old draft"
+        )
+        os.environ["GROGU_AGENT"] = "architect-new"
+        self.store.supersede_stage_writer(
+            self.plan, grogu_plans.IMPLEMENTATION
+        )
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "replacement draft"
+        )
+
+        os.environ["GROGU_AGENT"] = "architect-old"
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.write_stage(
+                self.plan, grogu_plans.IMPLEMENTATION, "stale overwrite"
+            )
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.supersede_stage_writer(
+                self.plan, grogu_plans.IMPLEMENTATION
+            )
+
+        manifest = self.store.load(self.plan)
+        self.assertEqual(len(manifest["revisions"]), 2)
+        self.assertIn("architect@architect-old", manifest["agents_seen"])
+        self.assertIn("architect@architect-new", manifest["agents_seen"])
+
+    def test_replace_allows_a_new_same_role_writer_to_take_over(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-old"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "old draft"
+        )
+        os.environ["GROGU_AGENT"] = "architect-new"
+        self.store.write_stage(
+            self.plan,
+            grogu_plans.IMPLEMENTATION,
+            "replacement draft",
+            replace=True,
+        )
+        self.assertEqual(
+            self.store.load(self.plan)["stage_writers"][
+                grogu_plans.IMPLEMENTATION
+            ]["agent"],
+            "architect-new",
+        )
+        os.environ["GROGU_AGENT"] = "architect-old"
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.write_stage(
+                self.plan,
+                grogu_plans.IMPLEMENTATION,
+                "old writer returns",
+                replace=True,
+            )
+
+    def test_reset_releases_the_active_stage_writer(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-old"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "old draft"
+        )
+        self.store.reset_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, role=grogu_plans.ARCHITECT
+        )
+        self.assertNotIn(
+            grogu_plans.IMPLEMENTATION,
+            self.store.load(self.plan)["stage_writers"],
+        )
+        os.environ["GROGU_AGENT"] = "architect-new"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "new draft"
+        )
+
+    def test_superseded_writer_cannot_reset_the_replacement_stage(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-old"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "old draft"
+        )
+        os.environ["GROGU_AGENT"] = "architect-new"
+        self.store.write_stage(
+            self.plan,
+            grogu_plans.IMPLEMENTATION,
+            "replacement draft",
+            replace=True,
+        )
+        os.environ["GROGU_AGENT"] = "architect-old"
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.reset_stage(
+                self.plan,
+                grogu_plans.IMPLEMENTATION,
+                role=grogu_plans.ARCHITECT,
+            )
+
+    def test_anonymous_write_cannot_bypass_an_active_writer(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-one"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "owned draft"
+        )
+        os.environ.pop("GROGU_ROLE")
+        os.environ.pop("GROGU_AGENT")
+        with mock.patch.object(
+            self.store, "_identified_agent", return_value=("", "")
+        ):
+            with self.assertRaises(grogu_plans.PlanError) as caught:
+                self.store.write_stage(
+                    self.plan,
+                    grogu_plans.IMPLEMENTATION,
+                    "anonymous overwrite",
+                    role=grogu_plans.ARCHITECT,
+                )
+        self.assertIn("unidentified caller", str(caught.exception))
+
+
+class PlanGovernanceTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.store = grogu_plans.PlanStore(self.root)
+        for variable in ("GROGU_ROLE", "GROGU_PLAN", "GROGU_AGENT"):
+            os.environ.pop(variable, None)
+        self.plan = self.store.create("governance")["id"]
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "implementation",
+            role=grogu_plans.ARCHITECT,
+        )
+        self.store.write_stage(
+            self.plan, grogu_plans.TESTING, "testing",
+            role=grogu_plans.ARCHITECT,
+        )
+
+    def test_exceeded_budget_blocks_completion_until_checkpoint(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
+        self.store.configure_agent_governance(
+            self.plan,
+            agent="engineer-one",
+            role=grogu_plans.ENGINEER,
+            tool_calls=5,
+            elapsed_seconds=60,
+            ai_credits=2,
+            checkpoint_tool_calls=4,
+        )
+        self.store.record_agent_usage(
+            self.plan,
+            agent="engineer-one",
+            tool_calls=6,
+            elapsed_seconds=61,
+            ai_credits=3,
+        )
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.set_stage_state(
+                self.plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+            )
+        self.assertIn("without a current checkpoint", str(caught.exception))
+        status = self.store.summary(self.plan)["governance"]
+        self.assertTrue(status["warnings"])
+        self.assertTrue(status["blockers"])
+
+        checkpoint = self.store.record_checkpoint(
+            self.plan, note="saved a recoverable checkpoint"
+        )
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.set_stage_state(
+                self.plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+            )
+        recovery = self.store.record_checkpoint_recovery(
+            self.plan, checkpoint["id"], status="available"
+        )
+        self.assertEqual(recovery["status"], "available")
+        self.store.set_stage_state(
+            self.plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+        )
+
+    def test_checkpoint_deadline_rearms_after_a_recovered_checkpoint(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
+        self.store.configure_agent_governance(
+            self.plan,
+            agent="engineer-one",
+            role=grogu_plans.ENGINEER,
+            checkpoint_tool_calls=4,
+        )
+        self.store.record_agent_usage(
+            self.plan, agent="engineer-one", tool_calls=4
+        )
+        checkpoint = self.store.record_checkpoint(self.plan)
+        self.store.record_checkpoint_recovery(
+            self.plan, checkpoint["id"], status="available"
+        )
+        self.store.record_agent_usage(
+            self.plan, agent="engineer-one", tool_calls=8
+        )
+        status = self.store.governance_status(self.plan)
+        self.assertTrue(status["agents"]["engineer-one"]["checkpoint_due"])
+        self.assertTrue(status["blockers"])
+
+    def test_partial_governance_update_preserves_other_limits(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
+        self.store.configure_agent_governance(
+            self.plan,
+            agent="engineer-one",
+            role=grogu_plans.ENGINEER,
+            tool_calls=10,
+            checkpoint_tool_calls=4,
+        )
+        updated = self.store.configure_agent_governance(
+            self.plan, agent="engineer-one", tool_calls=8
+        )
+        self.assertEqual(updated["limits"]["tool_calls"], 8)
+        self.assertEqual(updated["limits"]["checkpoint_tool_calls"], 4)
+
+    def test_usage_counters_cannot_move_backwards(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
+        self.store.configure_agent_governance(
+            self.plan, agent="engineer-one", tool_calls=10
+        )
+        self.store.record_agent_usage(
+            self.plan, agent="engineer-one", tool_calls=6
+        )
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.record_agent_usage(
+                self.plan, agent="engineer-one", tool_calls=5
+            )
+
+    def test_another_agent_is_not_blocked_by_an_unscoped_peer_budget(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-governor"
+        self.store.configure_agent_governance(
+            self.plan,
+            agent="engineer-one",
+            role=grogu_plans.ENGINEER,
+            tool_calls=5,
+        )
+        self.store.record_agent_usage(
+            self.plan, agent="engineer-one", tool_calls=6
+        )
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-two"
+        self.store.set_stage_state(
+            self.plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+        )
+
+    def test_governance_role_survives_a_partial_privileged_update(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-governor"
+        self.store.configure_agent_governance(
+            self.plan,
+            agent="engineer-one",
+            role=grogu_plans.ENGINEER,
+            tool_calls=10,
+            workstream="api",
+        )
+        updated = self.store.configure_agent_governance(
+            self.plan, agent="engineer-one", tool_calls=8
+        )
+        self.assertEqual(updated["role"], grogu_plans.ENGINEER)
+        self.assertEqual(updated["workstream"], "api")
+
+    def test_bound_agent_cannot_escalate_governance_by_changing_role_env(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
+        self.store.configure_agent_governance(
+            self.plan, agent="engineer-one", tool_calls=10
+        )
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.configure_agent_governance(
+                self.plan, agent="engineer-one", tool_calls=20
+            )
+
+    def test_lost_role_environment_still_honors_the_bound_agents_blocker(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
+        self.store.configure_agent_governance(
+            self.plan, agent="engineer-one", tool_calls=5
+        )
+        self.store.record_agent_usage(
+            self.plan, agent="engineer-one", tool_calls=6
+        )
+        os.environ.pop("GROGU_ROLE")
+        os.environ.pop("GROGU_AGENT")
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.set_stage_state(
+                self.plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+            )
 
 
 class ParallelCompletionTests(unittest.TestCase):
