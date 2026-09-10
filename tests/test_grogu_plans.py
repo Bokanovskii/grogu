@@ -2567,15 +2567,41 @@ class PlanStageConcurrencyTests(unittest.TestCase):
         )
         os.environ.pop("GROGU_ROLE")
         os.environ.pop("GROGU_AGENT")
-        with mock.patch.object(
-            self.store, "_identified_agent", return_value=("", "")
-        ):
-            with self.assertRaises(grogu_plans.PlanError):
-                self.store.reset_stage(
-                    self.plan,
-                    grogu_plans.IMPLEMENTATION,
-                    role=grogu_plans.ARCHITECT,
-                )
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.reset_stage(
+                self.plan,
+                grogu_plans.IMPLEMENTATION,
+                role=grogu_plans.ARCHITECT,
+            )
+
+    def test_stale_writer_cannot_hide_behind_the_replacement_directory_binding(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-old"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "old draft"
+        )
+        os.environ["GROGU_AGENT"] = "architect-new"
+        self.store.write_stage(
+            self.plan,
+            grogu_plans.IMPLEMENTATION,
+            "replacement draft",
+            replace=True,
+        )
+        os.environ.pop("GROGU_ROLE")
+        os.environ.pop("GROGU_AGENT")
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.write_stage(
+                self.plan,
+                grogu_plans.IMPLEMENTATION,
+                "stale hidden write",
+                role=grogu_plans.ARCHITECT,
+            )
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.reset_stage(
+                self.plan,
+                grogu_plans.IMPLEMENTATION,
+                role=grogu_plans.ARCHITECT,
+            )
 
     def test_anonymous_write_cannot_bypass_an_active_writer(self):
         os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
@@ -2585,16 +2611,13 @@ class PlanStageConcurrencyTests(unittest.TestCase):
         )
         os.environ.pop("GROGU_ROLE")
         os.environ.pop("GROGU_AGENT")
-        with mock.patch.object(
-            self.store, "_identified_agent", return_value=("", "")
-        ):
-            with self.assertRaises(grogu_plans.PlanError) as caught:
-                self.store.write_stage(
-                    self.plan,
-                    grogu_plans.IMPLEMENTATION,
-                    "anonymous overwrite",
-                    role=grogu_plans.ARCHITECT,
-                )
+        with self.assertRaises(grogu_plans.PlanError) as caught:
+            self.store.write_stage(
+                self.plan,
+                grogu_plans.IMPLEMENTATION,
+                "anonymous overwrite",
+                role=grogu_plans.ARCHITECT,
+            )
         self.assertIn("unidentified caller", str(caught.exception))
 
 

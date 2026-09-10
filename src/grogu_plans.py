@@ -2103,6 +2103,7 @@ class PlanStore:
                 f"{current_role()}"
             )
         identified = "" if as_user else self.claim_agent_role(plan_id, role)
+        writer_identity = os.environ.get("GROGU_AGENT", "").strip()
         if role != ARCHITECT:
             raise PlanError(f"role {role!r} may not reset a stage; that is the architect's")
         if stage not in STAGES:
@@ -2117,15 +2118,15 @@ class PlanStore:
                 raise PlanError(f"plan {plan_id} is finalized; supersede it instead")
             active = manifest.setdefault("stage_writers", {}).get(stage)
             if active and not as_user:
-                if not identified:
+                if not writer_identity:
                     raise PlanError(
                         f"the {stage} stage has an active writer "
                         f"({active.get('agent')!r}); an unidentified caller may "
                         "not reset and discard that writer's work"
                     )
-                if active.get("agent") != identified:
+                if active.get("agent") != writer_identity:
                     raise PlanError(
-                        f"agent {identified!r} may not reset the {stage} stage owned "
+                        f"agent {writer_identity!r} may not reset the {stage} stage owned "
                         f"by {active.get('agent')!r}"
                     )
             outgoing = self.stage_path(plan_id, stage)
@@ -2161,7 +2162,7 @@ class PlanStore:
                 "at": now(),
                 "actor": actor(),
                 "role": role,
-                "agent": identified,
+                "agent": writer_identity or identified,
             }
             manifest.setdefault("stage_written", {})[stage] = False
             manifest.setdefault("stage_state", {})[stage] = PENDING
@@ -2419,7 +2420,8 @@ class PlanStore:
     ) -> dict:
         """Transfer one stage to a replacement identity of the same writer role."""
         role = role or current_role() or ARCHITECT
-        identified = self.claim_agent_role(plan_id, role)
+        self.claim_agent_role(plan_id, role)
+        identified = os.environ.get("GROGU_AGENT", "").strip()
         if agent and agent.strip() != identified:
             raise PlanError(
                 f"this session is agent {identified!r}; it cannot install "
@@ -2613,7 +2615,7 @@ class PlanStore:
                     "stage and retry with its current base."
                 )
             active = manifest.setdefault("stage_writers", {}).get(stage)
-            agent = identified if active else explicit_agent
+            agent = explicit_agent
             revoked_agents = {
                 item.get("agent")
                 for item in manifest.get("stage_writer_history", [])
