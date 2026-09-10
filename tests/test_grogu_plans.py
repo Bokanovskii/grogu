@@ -2479,6 +2479,52 @@ class PlanStageConcurrencyTests(unittest.TestCase):
         self.assertIn("architect@architect-old", manifest["agents_seen"])
         self.assertIn("architect@architect-new", manifest["agents_seen"])
 
+    def test_replace_allows_a_new_same_role_writer_to_take_over(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-old"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "old draft"
+        )
+        os.environ["GROGU_AGENT"] = "architect-new"
+        self.store.write_stage(
+            self.plan,
+            grogu_plans.IMPLEMENTATION,
+            "replacement draft",
+            replace=True,
+        )
+        self.assertEqual(
+            self.store.load(self.plan)["stage_writers"][
+                grogu_plans.IMPLEMENTATION
+            ]["agent"],
+            "architect-new",
+        )
+        os.environ["GROGU_AGENT"] = "architect-old"
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.write_stage(
+                self.plan,
+                grogu_plans.IMPLEMENTATION,
+                "old writer returns",
+                replace=True,
+            )
+
+    def test_reset_releases_the_active_stage_writer(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-old"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "old draft"
+        )
+        self.store.reset_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, role=grogu_plans.ARCHITECT
+        )
+        self.assertNotIn(
+            grogu_plans.IMPLEMENTATION,
+            self.store.load(self.plan)["stage_writers"],
+        )
+        os.environ["GROGU_AGENT"] = "architect-new"
+        self.store.write_stage(
+            self.plan, grogu_plans.IMPLEMENTATION, "new draft"
+        )
+
     def test_anonymous_write_cannot_bypass_an_active_writer(self):
         os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
         os.environ["GROGU_AGENT"] = "architect-one"
@@ -2519,6 +2565,8 @@ class PlanGovernanceTests(unittest.TestCase):
         )
 
     def test_exceeded_budget_blocks_completion_until_checkpoint(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
         self.store.configure_agent_governance(
             self.plan,
             agent="engineer-one",
@@ -2528,8 +2576,6 @@ class PlanGovernanceTests(unittest.TestCase):
             ai_credits=2,
             checkpoint_tool_calls=4,
         )
-        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
-        os.environ["GROGU_AGENT"] = "engineer-one"
         self.store.record_agent_usage(
             self.plan,
             agent="engineer-one",
@@ -2585,6 +2631,8 @@ class PlanGovernanceTests(unittest.TestCase):
         self.assertTrue(status["blockers"])
 
     def test_partial_governance_update_preserves_other_limits(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
         self.store.configure_agent_governance(
             self.plan,
             agent="engineer-one",
@@ -2593,10 +2641,42 @@ class PlanGovernanceTests(unittest.TestCase):
             checkpoint_tool_calls=4,
         )
         updated = self.store.configure_agent_governance(
-            self.plan, agent="engineer-one", tool_calls=20
+            self.plan, agent="engineer-one", tool_calls=8
         )
-        self.assertEqual(updated["limits"]["tool_calls"], 20)
+        self.assertEqual(updated["limits"]["tool_calls"], 8)
         self.assertEqual(updated["limits"]["checkpoint_tool_calls"], 4)
+
+    def test_usage_counters_cannot_move_backwards(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-one"
+        self.store.configure_agent_governance(
+            self.plan, agent="engineer-one", tool_calls=10
+        )
+        self.store.record_agent_usage(
+            self.plan, agent="engineer-one", tool_calls=6
+        )
+        with self.assertRaises(grogu_plans.PlanError):
+            self.store.record_agent_usage(
+                self.plan, agent="engineer-one", tool_calls=5
+            )
+
+    def test_another_agent_is_not_blocked_by_an_unscoped_peer_budget(self):
+        os.environ["GROGU_ROLE"] = grogu_plans.ARCHITECT
+        os.environ["GROGU_AGENT"] = "architect-governor"
+        self.store.configure_agent_governance(
+            self.plan,
+            agent="engineer-one",
+            role=grogu_plans.ENGINEER,
+            tool_calls=5,
+        )
+        self.store.record_agent_usage(
+            self.plan, agent="engineer-one", tool_calls=6
+        )
+        os.environ["GROGU_ROLE"] = grogu_plans.ENGINEER
+        os.environ["GROGU_AGENT"] = "engineer-two"
+        self.store.set_stage_state(
+            self.plan, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
+        )
 
 
 class ParallelCompletionTests(unittest.TestCase):
