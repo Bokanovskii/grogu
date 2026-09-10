@@ -126,7 +126,8 @@ function GateRows() {
           const blocking = control.feedback.find(
             (f) =>
               f.binding &&
-              (f.state === "sent" || f.state === "routed" || f.state === "delivered") &&
+              (f.delivery_state ?? f.state) !== "acknowledged" &&
+              (f.delivery_state ?? f.state) !== "withdrawn" &&
               f.gate?.stage === stage,
           );
           return (
@@ -141,7 +142,7 @@ function GateRows() {
                   <button type="button" className="rel-link" onClick={() => actions.setMode("control")}>
                     Open in Control room
                   </button>
-                  <button type="button" className="rel-link" onClick={() => void control.withdrawFeedback(blocking.id)}>
+                  <button type="button" className="rel-link" onClick={() => void control.withdrawFeedback(blocking.id, blocking.plan)}>
                     Withdraw
                   </button>
                 </>

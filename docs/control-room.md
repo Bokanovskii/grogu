@@ -1,8 +1,26 @@
 # Plan control room
 
-The Control room is the fifth mode of the local plan workspace. It is a
-privacy-bounded view of observable agent activity, not a transcript and not a
-model-generated progress report.
+The Control room is the default operational mode of the local plan workspace.
+It shows the explicit repository program: the current plan plus plans named by
+registered sessions in the same repository. It is a privacy-bounded view of
+observable metadata, not a transcript or a model-generated progress report.
+
+## First use
+
+The board remains useful before any session registers. Its program strip shows
+the current plan's status, revision, stage written/state metadata, review and
+gate state, open defect and amendment counts, stage completion, and
+waiting-on-user count. Metadata that cannot be read is labelled unavailable
+instead of being rendered as zero.
+
+The scope selector has two choices:
+
+* **Repository program** shows all explicitly registered agents and plans in
+  this repository.
+* **This plan** shows the current plan and its registered agents.
+
+The repository program is finite and explicit. The server does not scan other
+repositories or infer plan membership from working-directory prefixes.
 
 ## Explicit registration
 
@@ -20,107 +38,114 @@ grogu plan doc register <plan-id> \
   --events "$COPILOT_HOME/session-state/<session>/events.jsonl"
 ```
 
-The registration binds repository, plan, run, agent, role, workstream, session,
-and event-agent identity. Correlation never uses a cwd prefix, display-name
-similarity, or timestamps. At most 32 distinct event sources are registered per
-reader. A path outside `session-state/<id>/events.jsonl`, including a symlink
-escape, is refused by the event reader.
+Registration binds repository, plan, run, agent, role, workstream, session, and
+event-agent identity. Correlation never uses display-name similarity or
+timestamps. Registration changes are reconciled on each collector sample, so a
+new registration appears without restarting the workspace server.
 
 Registration records are machine-local under `.grogu/state/`; they are not
-committed. An unregistered event stream is never opened and never appears on
-the API.
+committed. An unregistered event stream is never opened as an agent source.
+Safe command metadata may appear separately under **Unregistered sessions**,
+where lifecycle and activity remain `Unknown`.
 
-## Read model
+## Independent operational facts
 
-```sh
-grogu plan doc control <plan-id> [--filter-plan ID] [--filter-role ROLE]
-                              [--workstream NAME] [--state STATE]
-                              [--window MINUTES] [--json]
-grogu plan doc control <plan-id> --agent <agent-key> [--json]
-```
+Each registered agent row keeps these facts separate:
 
-Each agent row keeps three facts separate:
+* **lifecycle** is established only by an explicitly correlated run transition:
+  `registered`, `running`, `finished`, `failed`, `cancelled`, or `unknown`;
+* **activity** is attributable event activity: `active`, `quiet`,
+  `possibly_stuck`, `blocked`, or `unknown`;
+* **connection** is observer/source health: `live`, `stale`, `disconnected`, or
+  `unknown`;
+* **stage ownership** comes from recorded plan metadata, never from role alone;
+* **revision relation** requires a recorded read receipt; current plan head is
+  not proof that an agent read it.
 
-* **connection** — health of the observer (`live`, `stale`, `disconnected`,
-  `unknown`);
-* **lifecycle** — explicit run evidence (`registered`, `running`, `finished`,
-  `failed`, `cancelled`, `unknown`);
-* **activity** — recent observable action (`active`, `quiet`,
-  `possibly_stuck`, `blocked`, `unknown`).
+Registration and recent Grogu commands are not evidence that a process is
+running. Command recency changes neither lifecycle nor activity. A disconnected
+source does not turn a previously observed lifecycle into `Finished`, and a
+quiet readable source remains connected.
 
-Silence never means finished. A terminal lifecycle stays terminal if the
-collector later disconnects. `possibly_stuck` is a displayed heuristic with
-fixed evidence, never an automatic stop or replan.
+Elapsed time always names its evidence. A lifecycle-start span requires an
+observed run start. A first-observed span is an observation lower bound, not
+process runtime. Without either timestamp the board displays
+`Unknown · no start evidence`.
 
-The browser-facing DTO is constructed from the allowlisted control-room model.
-It does not pass through arbitrary event dictionaries.
+## Events, sources, and coverage
 
-## Sources and coverage
+The table and cards show allowlisted recent operational events without opening
+the timeline. **Watch** opens the selected agent's timeline and moves keyboard
+focus to it; `Escape` returns focus to the row or card that opened it.
 
-The command feed under `$GROGU_HOME/activity.jsonl` provides command names,
-roles, agents, plans, exit status, and timestamps. It never records command
-arguments.
+Operational events contain only:
 
-An explicitly registered Copilot `events.jsonl` may add lifecycle, tool name,
-phase, duration, success, and bounded error-code evidence. The normalizer drops
-everything else before returning a record. Missing, rotated, truncated,
-oversized, malformed, or unsupported sources produce a coverage gap rather
-than an invented count.
+* validated command or tool name;
+* event kind and phase;
+* timestamp and bounded duration;
+* success when known;
+* a bounded machine error code when present.
 
-`traces.db` may be probed for scalar coverage only. Arbitrary trace payloads are
-never selected, joined, returned, cached, or mentioned by value.
+No source and a readable empty source are different states. The UI also
+distinguishes stale, disconnected, permission-limited, filter-empty, and
+unavailable sources. The board keeps the last successful sample visible when a
+poll fails and labels its age.
+
+This checkout has no supported Python task-runtime status bridge. Unless a
+registered normalized event reports a run transition, lifecycle is `Unknown`
+and runtime coverage is unavailable. The Control room does not inspect OS
+processes, personal session history, command arguments, or tool results to fill
+that gap.
 
 ## Privacy boundary
 
-The board, drill-in, HTTP responses, exceptions, and in-memory cache exclude:
+The scope bar always exposes the server's fixed withheld-fields list. The
+board, timeline, HTTP responses, caches, and receipts exclude:
 
 * prompts and task descriptions;
-* assistant message bodies;
-* model reasoning and opaque reasoning fields;
-* raw command or tool arguments;
-* raw tool results;
-* permission intention text;
-* file contents and edits;
-* sealed-stage content and identifiers;
-* arbitrary trace payloads.
+* assistant message bodies and model reasoning;
+* command and tool arguments;
+* tool results;
+* permission intention text and file-edit content;
+* sealed-stage content and object identifiers;
+* local source paths;
+* credentials and personal or health data.
 
-Tool rows contain only a validated tool name, phase, duration, bounded outcome,
-and safe error code. Limits are always shown so unavailable coverage cannot be
-mistaken for a clean run.
+An unavailable source never changes this list and never makes withheld content
+appear absent.
 
 ## Feedback and receipts
 
-Feedback uses the existing `PlanStore.steer` channel:
+Feedback is scoped to an exact agent, role, role-on-plan, or plan. Agent
+feedback resolves through that registration's plan store even when the agent is
+registered on another program plan. Bare role feedback is visibly scoped to the
+current plan.
 
-```sh
-grogu plan doc control <plan-id> --agent <agent-key> \
-  --feedback - [--binding]
-```
+The composer obtains binding support and consequences from
+`feedback_capabilities`. If the backend cannot report a binding mapping for the
+target, binding is disabled. Advisory feedback closes no gate. Binding feedback
+shows the actual mapped gate or replan consequence and its recorded release
+condition.
 
-The workspace also supports agent, role, plan, and role-on-plan scopes.
-Every message receives a durable `f-NNN` receipt derived from its steering
-record. The delivery ledger reports `sent`, `routed`, `delivered`,
-`acknowledged`, or `withdrawn`.
-
-Binding feedback closes only the mapped next gate while it remains
-unacknowledged. `grogu plan gate` names the feedback id and a bounded summary.
-The target's normal steering acknowledgement reopens the gate. An
-unacknowledged binding item may be withdrawn; acknowledged feedback cannot.
-
-The relay receipt contains a command that lets a supervisor prompt the target
-to poll steering. It never embeds the feedback text in a second channel.
+An HTTP success means the feedback was durably **Sent**, not delivered.
+Delivery state advances only from recorded routing, delivery, acknowledgement,
+or withdrawal evidence. Receipts include both plan and feedback ID so the
+ledger remains unambiguous across a multi-plan program. Withdrawal sends the
+receipt's plan back to the server and remains limited to feedback the existing
+authority rules permit withdrawing.
 
 ## Browser API
 
-* `GET /api/control` — normalized snapshot with freshness, fixed limits,
-  waiting items, registered agents, and plan counts.
-* `GET /api/control/<agent-key>` — allowlisted activity, authorized evidence,
-  fixed limits, and blockers.
-* `POST /api/control/<agent-key>/feedback` — agent-scoped feedback.
-* `GET /api/feedback` — delivery ledger.
-* `POST /api/feedback` — scoped feedback.
-* `POST /api/feedback/<id>/withdraw` — withdraw unacknowledged binding
-  feedback.
+* `GET /api/control?scope=repository_program|current_plan` returns one sampled
+  repository-program snapshot with plan summaries, registered agents, source
+  coverage, feedback capabilities, and bounded recent events.
+* `GET /api/control/<agent-key>` returns the selected agent and its bounded
+  allowlisted event timeline.
+* `POST /api/control/<agent-key>/feedback` sends exact-agent feedback.
+* `GET /api/feedback?plan=<id>` returns plan-qualified delivery receipts.
+* `POST /api/feedback` sends scoped feedback.
+* `POST /api/feedback/<id>/withdraw` withdraws an eligible binding receipt using
+  the supplied plan.
 
-All routes use the same loopback cookie, token, Origin, Host, CSP, and
-no-CORS envelope as the plan document API.
+All routes use the same loopback cookie, token, Origin, Host, CSP, and no-CORS
+envelope as the plan document API.

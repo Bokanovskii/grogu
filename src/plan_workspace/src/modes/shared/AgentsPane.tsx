@@ -1,7 +1,10 @@
 import { useControl } from "../../state/control";
 import { useActions, useApp } from "../../state/store";
-import { freshnessLabel } from "../../lib/format";
-import { BADGE_META } from "../controlroom/badges";
+import {
+  LIFECYCLE_META,
+  freshnessText,
+  lastSafeAction,
+} from "../controlroom/presentation";
 
 // The right-panel Agents tab inside plan modes: compact 56px condensed cards
 // scoped to the current plan, each with Action, Tool and Freshness only, plus a
@@ -20,19 +23,18 @@ export function AgentsPane() {
   return (
     <ul className="agents-pane">
       {agents.map((a) => {
-        const meta = BADGE_META[a.badge];
+        const meta = LIFECYCLE_META[a.lifecycle];
         return (
-          <li key={a.agent_key} className={`agents-pane-row badge-border-${meta.tone}`}>
+          <li key={a.agent_key} className={`agents-pane-row tone-${meta.tone}`}>
             <div className="apr-main">
               <div className="apr-line-1">
-                <span className={`badge-text-${meta.tone}`} aria-hidden="true">
+                <span className={`tone-${meta.tone}`} aria-hidden="true">
                   {meta.glyph}
                 </span>{" "}
-                {a.role} · {a.workstream || "—"}
+                {meta.label} · {a.role} · {a.workstream || "—"}
               </div>
               <div className="apr-line-2">
-                {a.current_action?.tool_name ?? "Idle"} · {a.last_tool?.tool_name ?? "—"} ·{" "}
-                {freshnessLabel(a.last_observed_at, now)}
+                {lastSafeAction(a, now)} · {freshnessText(a, now)}
               </div>
             </div>
             <button
@@ -48,7 +50,7 @@ export function AgentsPane() {
               }}
               title="Open this agent's audit timeline"
             >
-              Open timeline
+              Watch
             </button>
           </li>
         );

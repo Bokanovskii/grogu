@@ -420,6 +420,35 @@ export type Activity =
   | "unknown";
 
 export type Connection = "live" | "stale" | "disconnected" | "unknown";
+export type CoverageState = "complete" | "partial" | "unavailable";
+export type SourceStatus =
+  | "available"
+  | "empty"
+  | "unavailable"
+  | "stale"
+  | "disconnected"
+  | "permission_limited";
+export type ControlScope = "repository_program" | "current_plan";
+export type GateName = "implement" | "test" | "evaluate";
+export type SafeReason =
+  | "not_registered"
+  | "no_run_events"
+  | "unsupported_source"
+  | "read_error"
+  | "permission_denied"
+  | "malformed_source"
+  | "source_changed"
+  | "source_limit"
+  | "plan_unavailable"
+  | "not_observed"
+  | "none";
+
+export interface SourceCoverage {
+  source: "registrations" | "commands" | "session_events" | "runtime" | "plan_state";
+  status: SourceStatus;
+  observed_through: number | null;
+  reason: SafeReason;
+}
 
 // UI-facing state badge, derived from lifecycle + activity + connection + steering.
 export type AgentBadge =
@@ -432,6 +461,68 @@ export type AgentBadge =
   | "waiting";
 
 export type Coverage = "complete" | "partial" | "unavailable";
+
+export interface OperationalEvent {
+  id: string;
+  agent_key: string;
+  plan: string;
+  type:
+    | "command"
+    | "tool"
+    | "run_started"
+    | "run_finished"
+    | "permission_requested"
+    | "permission_completed";
+  at: number;
+  name: string | null;
+  phase: "started" | "completed" | null;
+  success: boolean | null;
+  duration_ms: number | null;
+  error_code: string | null;
+  basis: "observed";
+}
+
+export interface PlanStageSummary {
+  stage: Stage;
+  written: boolean;
+  state: string;
+  sealed: boolean;
+}
+
+export interface PlanGateSummary {
+  stage: GateName;
+  allowed: boolean | null;
+  reasons: (
+    | "design_review"
+    | "user_approval"
+    | "open_defect"
+    | "open_amendment"
+    | "requires_replan"
+    | "binding_feedback"
+    | "stage_incomplete"
+    | "governance"
+    | "unknown"
+  )[];
+}
+
+export interface PlanProgramSummary {
+  title: string;
+  agents: number;
+  status?: string | null;
+  current_revision?: string | null;
+  coverage?: CoverageState;
+  stages?: PlanStageSummary[] | null;
+  completion?: { written: number; complete: number; total: number } | null;
+  review?: {
+    required: boolean;
+    state: "not_required" | "pending" | "approved" | "unknown";
+  };
+  gates?: PlanGateSummary[];
+  primary_gate?: PlanGateSummary | null;
+  open_defects?: number | null;
+  open_amendments?: number | null;
+  waiting_on_you?: number | null;
+}
 
 export interface AgentAction {
   tool_name: string;
@@ -453,20 +544,48 @@ export interface AgentRow {
   agent_key: string;
   agent: string;
   run_id: string;
+  session_key?: string | null;
+  root_session_key?: string | null;
+  parent_agent_key?: string | null;
+  lineage_status?: "root" | "recorded" | "parent_unavailable" | "unavailable";
   role: Role | "";
   roles: Role[];
   workstream: string;
   plan: string;
   plan_title?: string;
-  revision: { last_read: string; current: string; relation: "behind" | "current" | "unknown" };
+  revision: {
+    last_read: string | null;
+    current: string;
+    relation: "behind" | "current" | "unknown";
+  };
   lifecycle: Lifecycle;
+  lifecycle_source?: "session_events" | "runtime" | "unavailable";
+  lifecycle_observed_at?: number | null;
+  lifecycle_reason?: SafeReason;
   activity: Activity;
   connection: Connection;
   badge: AgentBadge;
   started_at: number | null;
-  last_observed_at: number;
-  elapsed_ms: number;
+  last_observed_at: number | null;
+  elapsed_ms: number | null;
   elapsed_basis: "lifecycle_start" | "first_observed" | "unknown";
+  owned_stages?: Stage[];
+  stage_ownership?: "recorded" | "unavailable";
+  source_coverage?: SourceCoverage[];
+  last_action?: OperationalEvent | null;
+  recent_events?: OperationalEvent[];
+  events_status?: SourceStatus;
+  event_source_registered?: boolean;
+  blocker_details?: {
+    kind:
+      | "permission_pending"
+      | "gate_closed"
+      | "defect_open"
+      | "amendment_open"
+      | "requires_replan"
+      | "binding_feedback";
+    waiting_on_user: boolean;
+  }[];
   current_action: AgentAction | null;
   last_tool?: { tool_name: string; duration_ms: number; outcome: "ok" | "err" | "timeout" } | null;
   tools: ToolStats;
@@ -492,12 +611,52 @@ export interface WaitingItem {
   reason: string;
 }
 
+export interface ControlTopology {
+  coverage: CoverageState;
+  nodes: {
+    agent_key: string;
+    session_key: string | null;
+    root_session_key: string | null;
+    parent_agent_key: string | null;
+    lineage_status: "root" | "recorded" | "parent_unavailable" | "unavailable";
+  }[];
+  edges: {
+    id: string;
+    kind: "spawned";
+    from: string;
+    to: string;
+  }[];
+}
+
 export interface ControlResponse {
   fresh_as_of: number;
+  sampled_at?: number;
+  observed_through?: number | null;
+  connection?: Connection;
+  scope?: {
+    kind: ControlScope;
+    current_plan: string;
+    selected_plan: string | null;
+  };
+  repository?: { id: string; label: string };
+  repository_agents?: number;
+  source_coverage?: SourceCoverage[];
+  recent_events?: OperationalEvent[];
+  events_status?: SourceStatus;
+  unregistered_sessions?: {
+    agent: string;
+    plan: string | null;
+    last_observed_at: number | null;
+    lifecycle: "unknown";
+    activity: "unknown";
+  }[];
+  unregistered_sessions_status?: SourceStatus;
+  feedback_capabilities?: FeedbackCapability[];
   limits: ControlLimit[];
   waiting_on_you: WaitingItem[];
   agents: AgentRow[];
-  plans: Record<string, { title: string; agents: number }>;
+  plans: Record<string, PlanProgramSummary>;
+  topology?: ControlTopology;
 }
 
 export type AuditEventType =
@@ -532,6 +691,8 @@ export interface AuditEvent {
 
 export interface AgentDrillResponse {
   agent: AgentRow;
+  recent_events?: OperationalEvent[];
+  events_status?: SourceStatus;
   activity: AuditEvent[];
   evidence: {
     id: string;
@@ -561,12 +722,31 @@ export type DeliveryState =
   | "undeliverable"
   | "withdrawn";
 
+export interface FeedbackConsequence {
+  binding: boolean;
+  gates: GateName[];
+  requires_replan: boolean;
+  release: "acknowledgement_or_withdrawal" | "replan" | "none";
+}
+
+export interface FeedbackCapability {
+  plan: string;
+  scope: "agent" | "role" | "plan";
+  role: string | null;
+  binding: boolean;
+  consequence: FeedbackConsequence;
+}
+
 export interface FeedbackRecord {
   id: string;
+  plan?: string;
+  receipt_key?: string;
   scope: FeedbackScope;
   binding: boolean;
   text: string;
   state: DeliveryState;
+  delivery_state?: DeliveryState;
+  consequence?: FeedbackConsequence;
   reason?: string;
   ack_event?: string;
   gate?: { stage: Stage; state: "blocked" | "open" };

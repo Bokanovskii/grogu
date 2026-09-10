@@ -59,6 +59,17 @@
   --h-topbar: 48px;
   --h-modebar: 40px;
   --h-statusbar: 32px;
+  --cr-scopebar-h: 44px;
+  --cr-strip-h: 124px;
+  --cr-plan-card-w: 268px;
+  --cr-plan-card-h: 108px;
+  --cr-head-h: 28px;
+  --cr-row-h: 32px;
+  --cr-row-h-comfort: 40px;
+  --cr-card-w-min: 288px;
+  --cr-card-h: 176px;
+  --cr-drawer-w: 380px;
+  --cr-band-h: 32px;
 
   /* Colour — light theme */
   --bg: #ffffff;

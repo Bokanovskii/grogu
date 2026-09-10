@@ -1,73 +1,109 @@
-import type { AgentBadge, AgentRow, Role } from "../../api/types";
+import type {
+  Activity,
+  AgentRow,
+  Connection,
+  Lifecycle,
+  Role,
+} from "../../api/types";
+import { blockerCount, waitsOnUser } from "./presentation";
 
-export type FreshBucket = "live" | "idle" | "stale" | "dead";
+export type AttentionFilter = "waiting" | "blockers" | "failures" | "unread";
 
 export interface ControlFilters {
   roles: Role[];
   plans: string[];
   workstreams: string[];
-  states: AgentBadge[];
-  fresh: FreshBucket[];
+  lifecycles: Lifecycle[];
+  activities: Activity[];
+  connections: Connection[];
+  attention: AttentionFilter[];
 }
 
 export const EMPTY_FILTERS: ControlFilters = {
   roles: [],
   plans: [],
   workstreams: [],
-  states: [],
-  fresh: [],
+  lifecycles: [],
+  activities: [],
+  connections: [],
+  attention: [],
 };
 
-export function filtersActive(f: ControlFilters): boolean {
-  return (
-    f.roles.length > 0 ||
-    f.plans.length > 0 ||
-    f.workstreams.length > 0 ||
-    f.states.length > 0 ||
-    f.fresh.length > 0
-  );
+export function filtersActive(filters: ControlFilters): boolean {
+  return Object.values(filters).some((values) => values.length > 0);
 }
 
-function bucketOf(agent: AgentRow, now: number): FreshBucket {
-  const s = (now - agent.last_observed_at) / 1000;
-  if (s < 60) return "live";
-  if (s < 5 * 60) return "idle";
-  if (s < 15 * 60) return "stale";
-  return "dead";
-}
-
-// Filters combine with AND across categories, OR within a category.
-export function applyFilters(agents: AgentRow[], f: ControlFilters, now: number): AgentRow[] {
-  return agents.filter((a) => {
-    if (f.roles.length && !f.roles.includes(a.role as Role)) return false;
-    if (f.plans.length && !f.plans.includes(a.plan)) return false;
-    if (f.workstreams.length && !f.workstreams.includes(a.workstream)) return false;
-    if (f.states.length && !f.states.includes(a.badge)) return false;
-    if (f.fresh.length && !f.fresh.includes(bucketOf(a, now))) return false;
+export function applyFilters(
+  agents: AgentRow[],
+  filters: ControlFilters,
+  waitingKeys: Set<string>,
+): AgentRow[] {
+  return agents.filter((agent) => {
+    if (filters.roles.length && !filters.roles.includes(agent.role as Role)) return false;
+    if (filters.plans.length && !filters.plans.includes(agent.plan)) return false;
+    if (
+      filters.workstreams.length &&
+      !filters.workstreams.includes(agent.workstream)
+    ) {
+      return false;
+    }
+    if (
+      filters.lifecycles.length &&
+      !filters.lifecycles.includes(agent.lifecycle)
+    ) {
+      return false;
+    }
+    if (
+      filters.activities.length &&
+      !filters.activities.includes(agent.activity)
+    ) {
+      return false;
+    }
+    if (
+      filters.connections.length &&
+      !filters.connections.includes(agent.connection)
+    ) {
+      return false;
+    }
+    if (
+      filters.attention.length &&
+      !filters.attention.some((value) => {
+        if (value === "waiting") {
+          return waitingKeys.has(agent.agent_key) || waitsOnUser(agent);
+        }
+        if (value === "blockers") return blockerCount(agent) > 0;
+        if (value === "failures") return agent.failures.length > 0;
+        return agent.steering.unread > 0;
+      })
+    ) {
+      return false;
+    }
     return true;
   });
 }
 
-// Default sort: waiting_on_you first, then stuck, then working (live/idle),
-// then the rest. This makes "is anything stuck on me" answerable at a glance.
-const BADGE_RANK: Record<AgentBadge, number> = {
-  waiting: 0,
-  stuck: 1,
-  live: 2,
-  idle: 3,
-  error: 4,
-  disconnected: 5,
-  finished: 6,
+const LIFECYCLE_RANK: Record<Lifecycle, number> = {
+  failed: 0,
+  running: 1,
+  registered: 2,
+  unknown: 3,
+  cancelled: 4,
+  finished: 5,
 };
 
-export function defaultSort(agents: AgentRow[], waitingKeys: Set<string>): AgentRow[] {
+export function defaultSort(
+  agents: AgentRow[],
+  waitingKeys: Set<string>,
+): AgentRow[] {
   return [...agents].sort((a, b) => {
-    const aw = waitingKeys.has(a.agent_key) ? -1 : 0;
-    const bw = waitingKeys.has(b.agent_key) ? -1 : 0;
-    if (aw !== bw) return aw - bw;
-    const r = BADGE_RANK[a.badge] - BADGE_RANK[b.badge];
-    if (r !== 0) return r;
-    return a.last_observed_at - b.last_observed_at;
+    const aWaiting = waitingKeys.has(a.agent_key) || waitsOnUser(a);
+    const bWaiting = waitingKeys.has(b.agent_key) || waitsOnUser(b);
+    if (aWaiting !== bWaiting) return aWaiting ? -1 : 1;
+    if (a.activity === "blocked" && b.activity !== "blocked") return -1;
+    if (b.activity === "blocked" && a.activity !== "blocked") return 1;
+    const lifecycle = LIFECYCLE_RANK[a.lifecycle] - LIFECYCLE_RANK[b.lifecycle];
+    if (lifecycle !== 0) return lifecycle;
+    return (b.last_observed_at ?? 0) - (a.last_observed_at ?? 0);
   });
 }
 
