@@ -242,7 +242,7 @@ class TaskStore:
             migrated["agent"] = migrated.get("agent") or ""
             migrated["session_id"] = migrated.get("session_id") or ""
             migrated["session_pid"] = _coerce_int(migrated.get("session_pid"), 0)
-            migrated["host"] = migrated.get("host") or ""
+            migrated.pop("host", None)
             log.append(migrated)
         normalized["log"] = log
         return normalized
@@ -651,6 +651,12 @@ class TaskStore:
                         task["status"] = OPEN
                         self._clear_assignment_fields(task)
                     self._log(task, "lease-expired", str(lease.get("owner", "")))
+                    parent_id = task.get("parent_task_id")
+                    if parent_id and self._is_grogu_owned(task):
+                        parent = self.load(parent_id) if self.task_path(parent_id).exists() else {}
+                        if parent and parent.get("status") in CLOSED_STATUSES:
+                            task["status"] = CANCELLED
+                            self._log(task, "cleanup", f"parent {parent_id}")
                     self._write_task(task)
         return released
 

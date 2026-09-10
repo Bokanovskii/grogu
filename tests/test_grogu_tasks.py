@@ -56,7 +56,12 @@ class GroguTaskStoreTests(unittest.TestCase):
                     "updated_at": "2026-01-01T00:00:00+00:00",
                     "revision": 1,
                     "log": [
-                        {"at": "2026-01-01T00:00:00+00:00", "by": "charlie", "event": "created"}
+                        {
+                            "at": "2026-01-01T00:00:00+00:00",
+                            "by": "charlie",
+                            "event": "created",
+                            "host": "legacy-host",
+                        }
                     ],
                 },
                 indent=2,
@@ -78,12 +83,16 @@ class GroguTaskStoreTests(unittest.TestCase):
         self.assertEqual(view["log"][0]["by"], "charlie")
         self.assertIn("agent", view["log"][0])
         self.assertIn("session_id", view["log"][0])
+        self.assertNotIn("host", view["log"][0])
 
         self.store.update("t-legacy", note="touched")
         raw = json.loads(self.store.task_path("t-legacy").read_text(encoding="utf8"))
         self.assertEqual(raw["schema_version"], grogu_tasks.SCHEMA_VERSION)
         self.assertIn("created_by_agent", raw)
         self.assertIn("assignee_session_id", raw)
+        self.assertNotIn("created_by_host", raw)
+        self.assertNotIn("assignee_host", raw)
+        self.assertNotIn("host", raw["log"][0])
 
     def test_claim_records_agent_and_groups_by_agent_session(self):
         task_a = self.store.create("Task A")
@@ -164,6 +173,21 @@ class GroguTaskStoreTests(unittest.TestCase):
             len([entry for entry in second["log"] if entry["event"] == "cleanup"]),
             1,
         )
+
+    def test_expired_grogu_child_is_cancelled_after_parent_closed(self):
+        with identity_env(agent="parent-agent", session_id="parent-session"):
+            parent = self.store.create("Parent task")
+            child = self.store.create("Child task", parent_task_id=parent["id"])
+            self.store.claim(child["id"], ttl=3600)
+
+        self.store.release(parent["id"], status=grogu_tasks.DONE, note="closed")
+
+        lease = self.store.lease(child["id"])
+        lease["expires_at"] = "2026-01-01T00:00:00+00:00"
+        self.store._write_json(self.store.lease_path(child["id"]), lease)
+
+        self.assertIn(child["id"], self.store.collect_expired())
+        self.assertEqual(self.store.view(child["id"])["status"], grogu_tasks.CANCELLED)
 
 
 if __name__ == "__main__":
