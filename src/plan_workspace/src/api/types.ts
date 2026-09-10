@@ -4,6 +4,15 @@
 
 export type Stage = "design" | "implementation" | "testing" | "evaluation";
 export const STAGES: Stage[] = ["design", "implementation", "testing", "evaluation"];
+export const STAGE_LABEL: Record<Stage, string> = {
+  design: "UX",
+  implementation: "Implementation",
+  testing: "Testing",
+  evaluation: "Evaluation",
+};
+export function stageLabel(stage: string): string {
+  return STAGE_LABEL[stage as Stage] ?? stage;
+}
 
 export type Role =
   | "architect"

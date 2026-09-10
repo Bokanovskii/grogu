@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { FeedbackRecord } from "../api/types";
+import { stageLabel, type FeedbackRecord } from "../api/types";
 import { Modal, ModalBody } from "../shell/Modal";
 import { useActions } from "../state/store";
 import { useControl } from "../state/control";
@@ -82,7 +82,7 @@ export function DeliveryLedger() {
                           {f.ack_event ? <p className="ledger-ack">Acknowledged: event {f.ack_event}</p> : null}
                           {f.gate ? (
                             <p className="ledger-gate">
-                              Gate {f.gate.stage}: {f.gate.state}
+                              Gate {stageLabel(f.gate.stage)}: {f.gate.state}
                             </p>
                           ) : null}
                         </div>

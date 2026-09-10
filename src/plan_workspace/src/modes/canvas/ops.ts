@@ -248,8 +248,13 @@ export function useCanvasOps() {
       try {
         const res = await api.layout({ scope: "canvas", algorithm: "dagre", direction });
         if (res.ops.length) {
-          await actions.writeGesture(res.ops, "auto-layout", "layout", "auto-layout");
-          actions.toast("Applied auto-layout.", "success");
+          const applied = await actions.writeGesture(
+            res.ops,
+            "auto-layout",
+            "layout",
+            "auto-layout",
+          );
+          if (applied) actions.toast("Applied auto-layout.", "success");
         }
       } catch {
         actions.toast("Auto-layout failed.", "danger");

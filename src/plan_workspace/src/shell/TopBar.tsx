@@ -1,5 +1,6 @@
 import { useApp } from "../state/store";
 import { NODE_LABEL } from "../lib/selection";
+import { stageLabel } from "../api/types";
 
 // The identity strip (visually the top 48px row). It is static text — the
 // breadcrumb shows plan · title · stage · mode · selection so the current
@@ -27,7 +28,7 @@ export function TopBar() {
             <span className="crumb-sep" aria-hidden="true">·</span>
             <span className="crumb-static crumb-title">{state.title}</span>
             <span className="crumb-sep" aria-hidden="true">·</span>
-            <span className="crumb-static">{state.stage}</span>
+            <span className="crumb-static">{stageLabel(state.stage)}</span>
             <span className="crumb-sep" aria-hidden="true">·</span>
             <span className="crumb-static">{state.mode}</span>
             <span className="crumb-sep" aria-hidden="true">·</span>

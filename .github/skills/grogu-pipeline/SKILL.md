@@ -88,7 +88,7 @@ grogu design template "<change>"
 grogu plan write <id> design --role designer --file -
 ```
 
-Only the designer writes the design stage, and the engineer *may* read it — a
+Only the designer writes the UX stage (`design` internally), and the engineer *may* read it — a
 test is a proxy for correctness so showing it corrupts the signal, while a
 design spec is the requirement, so withholding it just guarantees the wrong
 interface. The store rejects a spec that skips a required section or leans on

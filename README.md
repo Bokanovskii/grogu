@@ -309,7 +309,8 @@ verbatim pre-migration directory stay local and ignored. Existing
 truth. If `<id>/` and `<id>.plan/` both exist, every command refuses and names
 both. See [docs/plan-documents.md](docs/plan-documents.md).
 
-Work with a user-visible surface adds a design stage:
+Work with a user-visible surface adds a **UX** stage (`design` internally for
+CLI and storage compatibility):
 
 ```sh
 grogu plan doc create "Settings page" --design
@@ -351,7 +352,7 @@ Five things make this more than a naming scheme:
 * **Gates are state, not advice.** When the user asks for a plan directly,
   `--review-required` makes `grogu plan gate` refuse work until they approve.
   Autopilot does not waive user review.
-* **Design is specified, then verified by eye.** The designer writes concrete
+* **UX is specified, then verified by eye.** The designer writes concrete
   values rather than adjectives — the store rejects "clean" and "modern" — and
   is spawned again after implementation to look at the result running. The test
   gate stays shut until it signs off with evidence.

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { ProjectionResponse } from "../api/types";
+import { stageLabel, type ProjectionResponse } from "../api/types";
 import { Modal, ModalBody, ModalFooter, ModalHeader, ModalTitle } from "../shell/Modal";
 import { useActions, useApp } from "../state/store";
 import { Markdown } from "../lib/markdown";
@@ -34,7 +34,7 @@ export function CompiledPreview() {
     <Modal title="Compiled projection" onClose={actions.closeOverlay} width={1100} className="compiled-modal">
       <ModalHeader>
         <ModalTitle>
-          Compiled projection · Role: {role} · Stage: {state.stage} · Include:{" "}
+          Compiled projection · Role: {role} · Stage: {stageLabel(state.stage)} · Include:{" "}
           {data?.include ?? "normative"} · Budget: {data?.budget ?? "—"} · Digest:{" "}
           {data ? shortDigest(data.digest) : "…"}
         </ModalTitle>

@@ -3,7 +3,7 @@ import { api } from "../api/client";
 import type { RevisionEnvelope } from "../api/types";
 import { Modal, ModalBody } from "../shell/Modal";
 import { PLAN_MODES, useActions, useApp, type Mode } from "../state/store";
-import { STAGES } from "../api/types";
+import { STAGES, stageLabel } from "../api/types";
 import { deriveThreads, THREAD_KIND_META } from "../modes/shared/threads";
 import { NODE_GLYPH, NODE_LABEL } from "../lib/selection";
 
@@ -54,7 +54,7 @@ export function CommandPalette() {
       })),
       ...STAGES.map((s) => ({
         id: `stage-${s}`,
-        name: `Go to ${s} stage`,
+        name: `Go to ${stageLabel(s)} stage`,
         run: () => actions.setStage(s),
         enabled: planScoped,
         reason: planScoped ? undefined : "Open a plan first",

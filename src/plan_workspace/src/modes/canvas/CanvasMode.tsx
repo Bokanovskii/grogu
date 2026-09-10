@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
-  MiniMap,
   Panel,
   ReactFlow,
   ReactFlowProvider,
@@ -215,8 +214,14 @@ function CanvasInner() {
         }}
         aria-label="Canvas"
       >
-        {grid ? <Background variant={BackgroundVariant.Lines} gap={[8, 8]} /> : null}
-        <MiniMap position="bottom-right" pannable zoomable ariaLabel="Canvas minimap" />
+        {grid ? (
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={[24, 24]}
+            size={1}
+            color="var(--canvas-grid)"
+          />
+        ) : null}
         <ContextualToolbar />
         <Panel position="top-left">
           <div className="tool-palette" role="toolbar" aria-label="Canvas tools">

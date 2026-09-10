@@ -1,6 +1,6 @@
 import { api } from "../api/client";
 import { PLAN_MODES, useActions, useApp, type Mode } from "../state/store";
-import { STAGES, type Stage } from "../api/types";
+import { STAGES, stageLabel, type Stage } from "../api/types";
 import { readableStage } from "../state/store";
 import { AgentsChip } from "./AgentsChip";
 import { Menu } from "./Menu";
@@ -60,9 +60,9 @@ export function ModeBar() {
                 actions.setStage(s);
                 if (state.mode === "control") actions.setMode("document");
               }}
-              title={`${s} · ${STAGE_CHORD[s]}${status !== "readable" ? ` (${status})` : ""}`}
+              title={`${stageLabel(s)} · ${STAGE_CHORD[s]}${status !== "readable" ? ` (${status})` : ""}`}
             >
-              {s}
+              {stageLabel(s)}
               {status === "sealed" ? <span className="stage-lock" aria-hidden="true"> 🔒</span> : null}
             </button>
           );

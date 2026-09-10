@@ -57,7 +57,7 @@ place.
 
 ## What you produce
 
-One design stage on the plan, written with the required structure:
+One UX stage (`design` internally) on the plan, written with the required structure:
 
 ```sh
 grogu design template "<change>" | ...      # the skeleton

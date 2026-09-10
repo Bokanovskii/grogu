@@ -6,6 +6,8 @@ test.describe("boot and shell", () => {
     await openApp(page);
     await expect(page.locator(".shell-header")).toBeVisible();
     await expect(page.locator(".statusbar")).toBeVisible();
+    await expect(page.getByRole("tab", { name: "UX" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "design" })).toHaveCount(0);
     // Skip links are the first focusable elements.
     await page.keyboard.press("Tab");
     await expect(page.locator("a.skip-link:focus")).toBeVisible();
@@ -43,6 +45,24 @@ test.describe("boot and shell", () => {
     await openApp(page);
     await page.keyboard.press("Meta+2");
     await expect(page.locator(".react-flow__attribution")).toBeVisible();
+    await expect(page.locator(".react-flow__minimap")).toHaveCount(0);
+  });
+
+  test("Tidy reports only the failed local apply when layout ops are invalid", async ({ page }) => {
+    await openApp(page);
+    await page.route("**/api/layout", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ops: [{ op: "replace", path: "/nodes/missing/title", value: "invalid" }],
+        }),
+      });
+    });
+    await page.keyboard.press("Meta+2");
+    await page.getByRole("button", { name: "Tidy" }).click();
+    await expect(page.getByText("That change could not be applied locally.")).toBeVisible();
+    await expect(page.getByText("Applied auto-layout.")).toHaveCount(0);
   });
 
   test("command palette opens and filters", async ({ page }) => {

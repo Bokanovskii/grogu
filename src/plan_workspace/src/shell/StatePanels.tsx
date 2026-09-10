@@ -1,4 +1,4 @@
-import type { ApiError, Role, Stage } from "../api/types";
+import { stageLabel, type ApiError, type Role, type Stage } from "../api/types";
 
 /** A centred state panel with a title and body. Used both full-screen (boot
  * failures) and inline (sealed/unwritten stages, empty states). Every literal
@@ -92,7 +92,7 @@ export function BootError({ error }: { error: ApiError | null }) {
 export function SealedStagePanel({ stage }: { stage: Stage }) {
   const owner = OWNER[stage];
   return (
-    <StatePanel title={`The ${stage} stage is sealed.`} tone="neutral">
+    <StatePanel title={`The ${stageLabel(stage)} stage is sealed.`} tone="neutral">
       <p>
         Only {owner} can unseal it. Ask for a review round to re-open.
       </p>
@@ -103,7 +103,7 @@ export function SealedStagePanel({ stage }: { stage: Stage }) {
 export function UnwrittenStagePanel({ stage }: { stage: Stage }) {
   const owner = OWNER[stage];
   return (
-    <StatePanel title={`The ${stage} stage has not been written yet.`} tone="neutral">
+    <StatePanel title={`The ${stageLabel(stage)} stage has not been written yet.`} tone="neutral">
       <p>
         {owner} is responsible for writing it. When they publish, it will appear
         here.

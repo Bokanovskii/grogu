@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api/client";
 import type { RevisionEnvelope, Stage } from "../../api/types";
-import { STAGES } from "../../api/types";
+import { STAGES, stageLabel } from "../../api/types";
 import { ModeLayout } from "../../shell/ModeLayout";
 import { useActions, useApp } from "../../state/store";
 import { useControl } from "../../state/control";
@@ -131,7 +131,7 @@ function GateRows() {
           );
           return (
             <li key={stage} className={`gate-row${blocking ? " gate-blocked" : ""}`}>
-              <span className="gate-stage">{stage}</span>
+              <span className="gate-stage">{stageLabel(stage)}</span>
               {blocking ? (
                 <>
                   <span className="gate-blocked-copy">
