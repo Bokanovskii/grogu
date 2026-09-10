@@ -207,41 +207,13 @@ fi
 
 if [ -f "$ROOT/plugin.json" ] &&
    [ -f "$ROOT/.github/skills/grogu-pipeline/SKILL.md" ]; then
-    check_ok "Bundled Copilot skills found"
+    check_ok "Harness Copilot skills found"
 else
-    check_fail "Bundled Copilot skills missing"
+    check_fail "Harness Copilot skills missing"
     printf '%s\n' "  Fix: reinstall Grogu from a complete checkout."
 fi
 
-if [ "$(uname -s)" = "Darwin" ]; then
-    imessage_status=$("$TARGET" imessage status 2>/dev/null || true)
-    if printf '%s' "$imessage_status" | grep -q '"available": true'; then
-        check_ok "iMessage access available"
-    else
-        check_fail "iMessage access unavailable (optional)"
-        printf '%s\n' "  Fix: grant Full Disk Access to the terminal running Grogu,"
-        printf '%s\n' "  restart it, then run: grogu imessage status"
-    fi
-else
-    check_fail "iMessage unavailable on this platform (optional)"
-    printf '%s\n' "  Fix: use Grogu on macOS to enable iMessage access."
-fi
+check_ok "Platform-specific capabilities remain user-configured"
+printf '%s\n' "  Add a local Copilot plugin repository with: grogu capability add PATH"
 
-gmail_status=$("$TARGET" gmail status 2>/dev/null || true)
-if printf '%s' "$gmail_status" | grep -q '"enabled": true' &&
-   printf '%s' "$gmail_status" | grep -q '"authenticated": true'; then
-    check_ok "Gmail access configured"
-else
-    check_fail "Gmail access unavailable (optional)"
-    printf '%s\n' "  Fix: configure a Google OAuth desktop client with the Gmail API enabled."
-    printf '%s\n' "  Authorize these scopes:"
-    printf '%s\n' "    https://www.googleapis.com/auth/gmail.readonly"
-    printf '%s\n' "    https://www.googleapis.com/auth/gmail.compose"
-    printf '%s\n' "  Then export these values in the shell that runs Grogu:"
-    printf '%s\n' "    export GROGU_GMAIL_ENABLED=1"
-    printf '%s\n' "    export GROGU_GMAIL_ACCESS_TOKEN='YOUR_OAUTH_ACCESS_TOKEN'"
-    printf '%s\n' "  Get a user token with OAuth Playground: https://developers.google.com/oauthplayground"
-    printf '%s\n' "  Verify with: grogu gmail status"
-fi
-
-printf '\n%s\n' "Grogu setup complete. Optional messaging access may remain disabled."
+printf '\n%s\n' "Grogu setup complete."

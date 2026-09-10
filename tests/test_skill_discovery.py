@@ -62,7 +62,11 @@ class SkillDiscoveryTests(unittest.TestCase):
             self.assertTrue(launcher.is_symlink())
             self.assertEqual(launcher.resolve(), ROOT / "bin" / "grogu")
             self.assertTrue((launcher.resolve().parents[1] / "plugin.json").is_file())
-            self.assertIn("Bundled Copilot skills found", result.stdout)
+            self.assertIn("Harness Copilot skills found", result.stdout)
+            self.assertIn(
+                "Platform-specific capabilities remain user-configured",
+                result.stdout,
+            )
             self.assertFalse((home / ".copilot").exists())
 
     def test_launcher_adds_the_plugin_without_replacing_user_directories(self):
@@ -105,13 +109,30 @@ with open(os.environ["CAPTURE"], "w", encoding="utf8") as handle:
             copilot_home = base / "copilot-home"
             user_instructions = base / "user-instructions"
             user_plugin = base / "user-plugin"
+            capability_plugin = base / "capability-plugin"
+            capability_plugin.mkdir()
+            (capability_plugin / "plugin.json").write_text(
+                json.dumps({"name": "example-capability"}),
+                encoding="utf8",
+            )
+            grogu_home = base / "grogu-home"
+            grogu_home.mkdir()
+            (grogu_home / "capabilities.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "repositories": [str(capability_plugin.resolve())],
+                    }
+                ),
+                encoding="utf8",
+            )
             environment = {
                 **os.environ,
                 "CAPTURE": str(capture),
                 "COPILOT_CUSTOM_INSTRUCTIONS_DIRS": str(user_instructions),
                 "COPILOT_HOME": str(copilot_home),
                 "GROGU_BANNER": "0",
-                "GROGU_HOME": str(base / "grogu-home"),
+                "GROGU_HOME": str(grogu_home),
                 "GROGU_PRUNE_WORKTREES": "0",
                 "GROGU_SYNC_MAIN": "0",
                 "GROGU_TAB_COLOR": "0",
@@ -141,6 +162,8 @@ with open(os.environ["CAPTURE"], "w", encoding="utf8") as handle:
                 [
                     "--plugin-dir",
                     str(ROOT),
+                    "--plugin-dir",
+                    str(capability_plugin.resolve()),
                     "--autopilot",
                     "--model",
                     "gpt-5.4",

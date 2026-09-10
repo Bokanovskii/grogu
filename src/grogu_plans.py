@@ -641,7 +641,6 @@ _PERSONAL_PATTERNS = (
     # "email service", "text field" and "reply to the review comment" are all
     # software, so these require a personal correspondent or an actual inbox
     # rather than firing on the verb alone.
-    r"\bimessage\b",
     r"\b(?:email|message|text|call|remind)\s+(?:my|his|her|their|mom|dad|wife|"
     r"husband|partner|landlord|doctor|dentist|him|her|them)\b",
     r"\b(?:check|read|search|go through)\s+(?:my\s+)?(?:email|inbox|messages|texts|mail)\b",

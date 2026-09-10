@@ -1,5 +1,5 @@
 {
   "name": "grogu",
-  "description": "Bundled skills for Grogu sessions.",
+  "description": "Harness skills for Grogu sessions.",
   "skills": ".github/skills"
 }

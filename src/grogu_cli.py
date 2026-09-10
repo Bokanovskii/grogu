@@ -24,11 +24,10 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import grogu_banner
+import grogu_capabilities
 import grogu_codemode
 import grogu_context
 import grogu_design
-import grogu_gmail
-import grogu_imessage
 import grogu_mcp
 import grogu_memory
 import grogu_personal_memory
@@ -188,6 +187,14 @@ def doctor(_: argparse.Namespace) -> int:
         main_behind_origin = grogu_worktrees.main_behind_origin(ROOT)
     except Exception:  # pragma: no cover - best-effort diagnostic only
         main_behind_origin = None
+    try:
+        capability_repositories = grogu_capabilities.CapabilityStore(
+            GROGU_HOME
+        ).list()
+        capability_error = ""
+    except grogu_capabilities.CapabilityError as error:
+        capability_repositories = []
+        capability_error = str(error)
     checks = {
         "python": sys.version.split()[0],
         "python_min_required": ".".join(str(part) for part in MIN_PYTHON),
@@ -201,6 +208,10 @@ def doctor(_: argparse.Namespace) -> int:
         "trace_db": str(TRACE_DB),
         "catalog_db": str(CATALOG_DB),
         "personal_memory_dir": str(grogu_personal_memory.PersonalMemoryStore(GROGU_HOME).directory),
+        "capability_store": str(GROGU_HOME / "capabilities.json"),
+        "capability_repositories": capability_repositories,
+        "capability_config_valid": not capability_error,
+        "capability_error": capability_error,
         "azure_enabled": os.environ.get("GROGU_AZURE", "0") == "1",
         "autopilot_default": autopilot_default_enabled(),
         "banner_enabled": banner_enabled(),
@@ -219,7 +230,11 @@ def doctor(_: argparse.Namespace) -> int:
         "main_behind_origin": main_behind_origin,
     }
     print_json(checks)
-    return 0 if checks["copilot_available"] and checks["instructions_available"] else 1
+    return 0 if (
+        checks["copilot_available"]
+        and checks["instructions_available"]
+        and checks["capability_config_valid"]
+    ) else 1
 
 
 def trace_record(args: argparse.Namespace) -> int:
@@ -766,119 +781,22 @@ def personal_reject(args: argparse.Namespace) -> int:
     return 0
 
 
-def imessage_adapter(_: argparse.Namespace) -> grogu_imessage.MacOSIMessageAdapter:
-    return grogu_imessage.MacOSIMessageAdapter()
+def capability_store() -> grogu_capabilities.CapabilityStore:
+    return grogu_capabilities.CapabilityStore(GROGU_HOME)
 
 
-def imessage_status(args: argparse.Namespace) -> int:
-    print_json(imessage_adapter(args).status())
+def capability_list(_: argparse.Namespace) -> int:
+    print_json({"repositories": capability_store().list()})
     return 0
 
 
-def imessage_sync(args: argparse.Namespace) -> int:
-    print_json(grogu_imessage.sync_seaglass_index(wait=not args.no_wait))
+def capability_add(args: argparse.Namespace) -> int:
+    print_json(capability_store().add(args.repository))
     return 0
 
 
-def imessage_search(args: argparse.Namespace) -> int:
-    messages = imessage_adapter(args).search(
-        args.query, limit=args.limit, use_seaglass=not args.no_seaglass
-    )
-    for message in messages:
-        print(json.dumps(message, sort_keys=True))
-    return 0
-
-
-def imessage_draft(args: argparse.Namespace) -> int:
-    recipient = imessage_adapter(args).resolve_recipient(
-        args.recipient, args.display_name
-    )
-    draft = grogu_imessage.DraftStore(GROGU_HOME).create(
-        recipient,
-        args.message,
-        args.attachment,
-    )
-    print_json(draft.review())
-    return 0
-
-
-def imessage_send(args: argparse.Namespace) -> int:
-    store = grogu_imessage.DraftStore(GROGU_HOME)
-    draft = store.get(args.draft)
-    if draft is None:
-        print(f"grogu: no iMessage draft with id {args.draft!r}", file=sys.stderr)
-        return 2
-    store.require_draft_status(draft)
-    if not args.confirm:
-        raise grogu_imessage.ConfirmationRequiredError(
-            f"iMessage draft '{draft.id}' was not submitted because --confirm "
-            "is required; no staging copy, message, or attachment was submitted; "
-            "next: review the saved draft JSON, then run `grogu imessage send "
-            f"{draft.id} --confirm`"
-        )
-    adapter = imessage_adapter(args)
-    adapter.validate_submission(draft.recipient, draft.body, confirmed=True)
-    draft, staged = store.prepare_submission(draft.id, adapter.stage_attachments)
-    try:
-        result = adapter.send(
-            draft.recipient,
-            draft.body,
-            confirmed=True,
-            attachments=staged.paths,
-        )
-        store.mark_submitted(draft.id)
-    except Exception as error:
-        # Messages may have accepted an earlier operation and may still be
-        # consuming a staged file, so keep the unknown state and staged bytes.
-        raise grogu_imessage.IMessageError(
-            f"iMessage draft '{draft.id}' may have been partially submitted and "
-            "is now submission_unknown; private staged copies were retained for "
-            "Messages; do not retry this draft; next: inspect the conversation in "
-            "Messages, then create and review a replacement draft only for "
-            "content still unsent"
-        ) from error
-    print_json(result)
-    return 0
-
-
-def gmail_adapter(_: argparse.Namespace) -> grogu_gmail.GmailAdapter:
-    return grogu_gmail.GmailAdapter()
-
-
-def gmail_status(args: argparse.Namespace) -> int:
-    print_json(gmail_adapter(args).status())
-    return 0
-
-
-def gmail_search(args: argparse.Namespace) -> int:
-    for message in gmail_adapter(args).search(args.query, limit=args.limit):
-        print(json.dumps(message, sort_keys=True))
-    return 0
-
-
-def gmail_draft(args: argparse.Namespace) -> int:
-    draft = grogu_gmail.DraftStore(GROGU_HOME).create(
-        args.to, args.subject, args.message
-    )
-    print_json(dataclasses.asdict(draft))
-    return 0
-
-
-def gmail_send(args: argparse.Namespace) -> int:
-    store = grogu_gmail.DraftStore(GROGU_HOME)
-    draft = store.get(args.draft)
-    if draft is None:
-        print(f"grogu: no Gmail draft with id {args.draft!r}", file=sys.stderr)
-        return 2
-    if draft.status != "draft":
-        print(
-            f"grogu: Gmail draft {args.draft!r} is already {draft.status}",
-            file=sys.stderr,
-        )
-        return 2
-    result = gmail_adapter(args).send(draft, confirmed=args.confirm)
-    store.mark_sent(draft.id)
-    print_json(result)
+def capability_remove(args: argparse.Namespace) -> int:
+    print_json(capability_store().remove(args.repository))
     return 0
 
 
@@ -1146,7 +1064,10 @@ def copilot_arguments(arguments: list[str]) -> list[str]:
             "--effort", DEFAULT_MODEL_EFFORT,
             *prepared,
         ]
-    return ["--plugin-dir", str(ROOT), *prepared]
+    plugins = ["--plugin-dir", str(ROOT)]
+    for path in capability_store().plugin_paths():
+        plugins.extend(("--plugin-dir", str(path)))
+    return [*plugins, *prepared]
 
 
 def task_store(args: argparse.Namespace) -> grogu_tasks.TaskStore:
@@ -5009,7 +4930,9 @@ def build_parser() -> argparse.ArgumentParser:
     personal_suggest_parser.add_argument("--name", required=True)
     personal_suggest_parser.add_argument("--summary", required=True)
     personal_suggest_parser.add_argument(
-        "--source", required=True, help="where this candidate was observed, e.g. gmail, imessage"
+        "--source",
+        required=True,
+        help="where this candidate was observed, e.g. a capability plugin name",
     )
     personal_suggest_parser.add_argument("--tag", action="append")
     personal_suggest_parser.add_argument("--confidence", type=_confidence, default=0.5, help="0-1, or certain/high/medium/low/guess")
@@ -5030,67 +4953,23 @@ def build_parser() -> argparse.ArgumentParser:
     personal_reject_parser.add_argument("candidate")
     personal_reject_parser.set_defaults(handler=personal_reject)
 
-    imessage = subparsers.add_parser(
-        "imessage",
-        help="opt-in local macOS Messages access with confirmation-gated sending",
+    capability = subparsers.add_parser(
+        "capability",
+        help="manage user-scoped Copilot plugin repositories",
     )
-    imessage_subparsers = imessage.add_subparsers(
-        dest="imessage_command", required=True
+    capability_subparsers = capability.add_subparsers(
+        dest="capability_command", required=True
     )
-    imessage_status_parser = imessage_subparsers.add_parser("status")
-    imessage_status_parser.set_defaults(handler=imessage_status)
-    imessage_search_parser = imessage_subparsers.add_parser("search")
-    imessage_search_parser.add_argument("query")
-    imessage_search_parser.add_argument("--limit", type=int, default=20)
-    imessage_search_parser.add_argument(
-        "--no-seaglass",
-        action="store_true",
-        help="force the local SQL LIKE scan even if a seaglass MCP server is configured",
+    capability_list_parser = capability_subparsers.add_parser("list")
+    capability_list_parser.set_defaults(handler=capability_list)
+    capability_add_parser = capability_subparsers.add_parser("add")
+    capability_add_parser.add_argument(
+        "repository", help="local repository containing plugin.json"
     )
-    imessage_search_parser.set_defaults(handler=imessage_search)
-    imessage_sync_parser = imessage_subparsers.add_parser(
-        "sync", help="bring the seaglass search index up to date"
-    )
-    imessage_sync_parser.add_argument(
-        "--no-wait", action="store_true", help="start the sync and return immediately"
-    )
-    imessage_sync_parser.set_defaults(handler=imessage_sync)
-    imessage_draft_parser = imessage_subparsers.add_parser("draft")
-    imessage_draft_parser.add_argument("--recipient", required=True)
-    imessage_draft_parser.add_argument("--display-name", default="")
-    imessage_draft_parser.add_argument("--message", required=True)
-    imessage_draft_parser.add_argument(
-        "--attachment",
-        action="append",
-        default=[],
-        metavar="PATH",
-        help="snapshot a local file; repeat in send order",
-    )
-    imessage_draft_parser.set_defaults(handler=imessage_draft)
-    imessage_send_parser = imessage_subparsers.add_parser("send")
-    imessage_send_parser.add_argument("draft")
-    imessage_send_parser.add_argument("--confirm", action="store_true")
-    imessage_send_parser.set_defaults(handler=imessage_send)
-
-    gmail = subparsers.add_parser(
-        "gmail", help="opt-in Gmail access with draft-first safety"
-    )
-    gmail_subparsers = gmail.add_subparsers(dest="gmail_command", required=True)
-    gmail_status_parser = gmail_subparsers.add_parser("status")
-    gmail_status_parser.set_defaults(handler=gmail_status)
-    gmail_search_parser = gmail_subparsers.add_parser("search")
-    gmail_search_parser.add_argument("query")
-    gmail_search_parser.add_argument("--limit", type=int, default=20)
-    gmail_search_parser.set_defaults(handler=gmail_search)
-    gmail_draft_parser = gmail_subparsers.add_parser("draft")
-    gmail_draft_parser.add_argument("--to", required=True)
-    gmail_draft_parser.add_argument("--subject", required=True)
-    gmail_draft_parser.add_argument("--message", required=True)
-    gmail_draft_parser.set_defaults(handler=gmail_draft)
-    gmail_send_parser = gmail_subparsers.add_parser("send")
-    gmail_send_parser.add_argument("draft")
-    gmail_send_parser.add_argument("--confirm", action="store_true")
-    gmail_send_parser.set_defaults(handler=gmail_send)
+    capability_add_parser.set_defaults(handler=capability_add)
+    capability_remove_parser = capability_subparsers.add_parser("remove")
+    capability_remove_parser.add_argument("repository")
+    capability_remove_parser.set_defaults(handler=capability_remove)
 
     banner = subparsers.add_parser("banner")
     banner_subparsers = banner.add_subparsers(dest="banner_command", required=True)
@@ -6622,7 +6501,11 @@ def launch_copilot(arguments: list[str]) -> int:
         os.execvpe(copilot, [copilot, *arguments], os.environ.copy())
         return 127
 
-    arguments = copilot_arguments(arguments)
+    try:
+        arguments = copilot_arguments(arguments)
+    except grogu_capabilities.CapabilityError as error:
+        print(f"grogu: {error}", file=sys.stderr)
+        return 2
     mark_grogu_terminal()
     sync_grogu_main_checkout()
     prune_stale_grogu_worktrees()
@@ -6696,8 +6579,7 @@ GROGU_COMMANDS = frozenset(
         "aggregate",
         "codemode",
         "personal",
-        "imessage",
-        "gmail",
+        "capability",
         "banner",
         "task",
         "plan",
@@ -6809,7 +6691,7 @@ def main(arguments: list[str]) -> int:
     except grogu_tasks.TaskError as error:
         print(f"grogu: {error}", file=sys.stderr)
         return 2
-    except (grogu_imessage.IMessageError, grogu_gmail.GmailError, ValueError) as error:
+    except (grogu_capabilities.CapabilityError, ValueError) as error:
         print(f"grogu: {error}", file=sys.stderr)
         return 2
     finally:
