@@ -3653,6 +3653,8 @@ def plan_doc_register(args: argparse.Namespace) -> int:
             "agent_id": args.agent_id,
             "registered_at": args.registered_at or now(),
             "events_path": args.events or "",
+            "parent_run_id": args.parent_run_id or "",
+            "root_session_id": args.root_session_id or "",
         }
     )
     print_json(value) if args.json else print(
@@ -5351,6 +5353,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doc_register.add_argument("--workstream", default="")
     doc_register.add_argument("--events", default="")
+    doc_register.add_argument("--parent-run-id", default="")
+    doc_register.add_argument("--root-session-id", default="")
     doc_register.add_argument("--registered-at", default="")
     doc_register.set_defaults(handler=plan_doc_register)
 

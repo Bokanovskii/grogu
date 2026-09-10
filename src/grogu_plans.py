@@ -42,6 +42,7 @@ import shutil
 import sys
 import subprocess
 import secrets
+import threading
 import zlib
 from contextlib import contextmanager
 from pathlib import Path
@@ -5014,6 +5015,7 @@ class PlanStore:
             "task_id": manifest.get("task_id", ""),
             "status": manifest.get("status"),
             "review_required": manifest.get("review_required", False),
+            "approved_at": manifest.get("approved_at"),
             "stages": manifest.get("stages", []),
             "stage_state": manifest.get("stage_state", {}),
             "stage_written": manifest.get("stage_written", {}),
@@ -6051,6 +6053,9 @@ class PlanDocumentStore:
         self.plan_id = plan_id
         self.package = plans.document_plan_dir(plan_id)
         self.last_recovery: list[str] = []
+        self._control_lock = threading.RLock()
+        self._control_plan_cache: dict = {}
+        self._control_plan_cache_sample = ""
 
     # -- identity and paths ----------------------------------------------
 
@@ -9365,18 +9370,6 @@ class PlanDocumentStore:
                 "events_path must be an explicit "
                 "session-state/<session>/events.jsonl path"
             )
-        current = self.registrations()
-        paths = {
-            item.get("events_path", "")
-            for item in current
-            if item.get("events_path")
-        }
-        if (
-            registration.events_path
-            and registration.events_path not in paths
-            and len(paths) >= grogu_agentevents.MAX_REGISTERED_SOURCES
-        ):
-            raise PlanError("at most 32 registered session event sources are allowed")
         directory = self._registration_dir()
         directory.mkdir(parents=True, exist_ok=True)
         name = hashlib.sha256(registration.run_id.encode("utf8")).hexdigest()
@@ -9384,24 +9377,44 @@ class PlanDocumentStore:
         return registration.to_dict()
 
     def registrations(self) -> list[dict]:
+        values, _status, _reason = self._program_registrations()
+        return [value for value in values if value.get("plan") == self.plan_id]
+
+    def _program_registrations(self) -> tuple[list[dict], str, str]:
         directory = self._registration_dir()
         if not directory.is_dir():
-            return []
+            return ([], "empty", "none")
         values = []
-        for path in sorted(directory.glob("*.json")):
-            value = self.plans._read_json(path)
+        malformed = False
+        limited = False
+        paths = sorted(directory.glob("*.json"))
+        if len(paths) > 2048:
+            paths = paths[:2048]
+            limited = True
+        for path in paths:
+            try:
+                value = self.plans._read_json(path)
+            except (OSError, PlanError, ValueError):
+                malformed = True
+                continue
             try:
                 registration = grogu_controlroom.load_registration(value)
             except ValueError:
+                malformed = True
                 continue
             try:
                 repository = Path(registration.repository).expanduser().resolve()
             except OSError:
+                malformed = True
                 continue
-            if repository != self.plans.root or registration.plan != self.plan_id:
+            if repository != self.plans.root:
                 continue
             values.append(registration.to_dict())
-        return values
+        if limited:
+            return (values, "stale", "source_limit")
+        if malformed:
+            return (values, "stale", "malformed_source")
+        return (values, "available" if values else "empty", "none")
 
     def control_room(self, *, role: str):
         effective = self._role(role)
@@ -9411,20 +9424,24 @@ class PlanDocumentStore:
             watch_home=home,
             traces_db=home / "traces.db",
         )
-        for value in self.registrations():
-            room.register(grogu_controlroom.load_registration(value))
+        values, status, reason = self._program_registrations()
+        room.reconcile(
+            [grogu_controlroom.load_registration(value) for value in values],
+            status=status,
+            reason=reason,
+        )
         return room
 
     @staticmethod
-    def _epoch_millis(value) -> int:
+    def _epoch_millis(value) -> Optional[int]:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return int(float(value) * (1000 if float(value) < 10_000_000_000 else 1))
         if not isinstance(value, str) or not value:
-            return 0
+            return None
         try:
             parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
-            return 0
+            return None
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=dt.timezone.utc)
         return int(parsed.timestamp() * 1000)
@@ -9444,51 +9461,253 @@ class PlanDocumentStore:
             return "stuck"
         if row.get("activity") == "active":
             return "live"
-        return "idle"
+        return "unknown"
 
     @staticmethod
     def _limit_detail(category: str) -> str:
         return {
-            "model_reasoning": "Model reasoning is never recorded.",
-            "command_arguments": "Command arguments are never shown.",
-            "tool_arguments": "Tool arguments are dropped before parsing returns.",
-            "tool_results": "Tool results are dropped before parsing returns.",
-            "file_edits": "File edits are not observable from passive sources.",
-            "tool_activity": "Tool activity is unavailable without registration.",
-            "sealed_stage_content": "Sealed-stage content is never returned.",
-            "trace_payload": "Trace payloads are never selected or returned.",
+            "prompts": "Prompts are not shown.",
+            "model_reasoning": "Model reasoning is not shown.",
+            "arguments": "Tool and command arguments are not shown.",
+            "tool_results": "Tool results are not shown.",
+            "permission_and_edits": (
+                "Permission intentions and file-edit content are not shown."
+            ),
+            "sealed": "Sealed stage content and object identifiers are not shown.",
+            "local_paths": "Local source paths are not shown.",
+            "sensitive_data": (
+                "Credentials and personal or health data are not shown."
+            ),
         }.get(category, "Unavailable by design.")
+
+    @staticmethod
+    def _privacy_limits() -> list[dict]:
+        categories = (
+            "prompts",
+            "model_reasoning",
+            "arguments",
+            "tool_results",
+            "permission_and_edits",
+            "sealed",
+            "local_paths",
+            "sensitive_data",
+        )
+        return [
+            {
+                "category": category,
+                "detail": PlanDocumentStore._limit_detail(category),
+            }
+            for category in categories
+        ]
+
+    @staticmethod
+    def _gate_reason(blocker: str) -> str:
+        value = blocker.casefold()
+        if "designer has not signed off" in value or "design review" in value:
+            return "design_review"
+        if "has not approved" in value or "user asked for this plan" in value:
+            return "user_approval"
+        if "defect" in value:
+            return "open_defect"
+        if "amendment" in value:
+            return "open_amendment"
+        if "binding feedback" in value:
+            return "binding_feedback"
+        if "steering" in value or "replan" in value or "needs_review" in value:
+            return "requires_replan"
+        if "stage" in value and (
+            "not complete" in value
+            or "not written" in value
+            or "unwritten" in value
+        ):
+            return "stage_incomplete"
+        if any(
+            token in value
+            for token in (
+                "governance",
+                "checkpoint",
+                "budget",
+                "workstream",
+                "review of:",
+            )
+        ):
+            return "governance"
+        return "unknown"
+
+    def _control_plan_projection(self, plan_id: str, effective_role: str) -> dict:
+        try:
+            summary = self.plans.summary(plan_id)
+            current_revision = PlanDocumentStore.for_plan(
+                self.plans, plan_id
+            ).head(repair=False)
+        except (PlanError, OSError, ValueError):
+            return {
+                "title": plan_id,
+                "agents": 0,
+                "status": None,
+                "current_revision": None,
+                "coverage": "unavailable",
+                "stages": None,
+                "completion": None,
+                "review": {
+                    "required": False,
+                    "state": "unknown",
+                },
+                "gates": [
+                    {
+                        "stage": gate,
+                        "allowed": None,
+                        "reasons": ["unknown"],
+                    }
+                    for gate in GATES
+                ],
+                "primary_gate": {
+                    "stage": GATE_IMPLEMENT,
+                    "allowed": None,
+                    "reasons": ["unknown"],
+                },
+                "open_defects": None,
+                "open_amendments": None,
+                "waiting_on_you": None,
+                "_stage_writers": {},
+            }
+        stage_names = [
+            stage for stage in STAGES if stage in summary.get("stages", [])
+        ]
+        stages = [
+            {
+                "stage": stage,
+                "written": bool(summary.get("stage_written", {}).get(stage)),
+                "state": str(
+                    summary.get("stage_state", {}).get(stage, PENDING)
+                ),
+                "sealed": stage
+                not in ROLE_READABLE_STAGES.get(effective_role, frozenset()),
+            }
+            for stage in stage_names
+        ]
+        gates = []
+        for gate in GATES:
+            try:
+                result = self.plans.gate(plan_id, gate)
+                reasons = []
+                for blocker in result.get("blockers", []):
+                    reason = self._gate_reason(str(blocker))
+                    if reason not in reasons:
+                        reasons.append(reason)
+                gates.append(
+                    {
+                        "stage": gate,
+                        "allowed": bool(result.get("allowed")),
+                        "reasons": reasons,
+                    }
+                )
+            except (PlanError, OSError, ValueError):
+                gates.append(
+                    {
+                        "stage": gate,
+                        "allowed": None,
+                        "reasons": ["unknown"],
+                    }
+                )
+        primary = next(
+            (gate for gate in gates if gate["allowed"] is False),
+            None,
+        )
+        if primary is None:
+            primary = next(
+                (gate for gate in gates if gate["allowed"] is None),
+                None,
+            )
+        if primary is None:
+            gate_for_stage = {
+                IMPLEMENTATION: GATE_IMPLEMENT,
+                TESTING: GATE_TEST,
+                EVALUATION: GATE_EVALUATE,
+            }
+            incomplete = next(
+                (
+                    stage
+                    for stage in stages
+                    if stage["state"] != COMPLETE
+                    and stage["stage"] in gate_for_stage
+                ),
+                None,
+            )
+            if incomplete is not None:
+                primary = next(
+                    gate
+                    for gate in gates
+                    if gate["stage"] == gate_for_stage[incomplete["stage"]]
+                )
+        required = bool(summary.get("review_required"))
+        status = summary.get("status")
+        review_state = (
+            "not_required"
+            if not required
+            else (
+                "approved"
+                if summary.get("approved_at")
+                or status in {APPROVED, COMPLETE}
+                else "pending"
+            )
+        )
+        return {
+            "title": str(summary.get("title", "")),
+            "agents": 0,
+            "status": status if status in PLAN_STATUSES else None,
+            "current_revision": current_revision or None,
+            "coverage": "complete",
+            "stages": stages,
+            "completion": {
+                "written": sum(stage["written"] for stage in stages),
+                "complete": sum(
+                    stage["state"] == COMPLETE for stage in stages
+                ),
+                "total": len(stages),
+            },
+            "review": {"required": required, "state": review_state},
+            "gates": gates,
+            "primary_gate": copy.deepcopy(primary),
+            "open_defects": len(summary.get("open_defects", [])),
+            "open_amendments": len(summary.get("open_amendments", [])),
+            "waiting_on_you": 0,
+            "_stage_writers": {
+                stage: copy.deepcopy(
+                    summary.get("stage_writers", {}).get(stage)
+                    or summary.get("stage_versions", {}).get(stage)
+                    or {}
+                )
+                for stage in stage_names
+            },
+            "_steering_undelivered": copy.deepcopy(
+                summary.get("steering_undelivered", [])
+            ),
+        }
 
     def _normalized_agent(
         self,
         row: dict,
         *,
-        plan_titles: dict,
-        room,
+        plan_projections: dict,
         registrations: dict,
         effective_role: str,
     ) -> dict:
         registration = registrations.get(row.get("agent_key", ""))
         last_tool = None
-        if registration is not None:
-            drill = room.drill_in(registration, max_events=25)
-            for event in reversed(drill.get("activity", [])):
-                if event.get("kind") != "tool_completed":
-                    continue
-                last_tool = {
-                    "tool_name": event.get("name", ""),
-                    "duration_ms": int(event.get("duration_ms", 0) or 0),
-                    "outcome": (
-                        "ok"
-                        if event.get("success") is True
-                        else (
-                            "err"
-                            if event.get("success") is False
-                            else "timeout"
-                        )
-                    ),
-                }
-                break
+        for event in row.get("recent_events", []):
+            if event.get("type") != "tool" or event.get("phase") != "completed":
+                continue
+            last_tool = {
+                "tool_name": event.get("name"),
+                "duration_ms": event.get("duration_ms"),
+                "outcome": (
+                    "ok"
+                    if event.get("success") is True
+                    else ("err" if event.get("success") is False else None)
+                ),
+            }
+            break
         current_action = row.get("current_action")
         if current_action:
             current_action = {
@@ -9497,27 +9716,36 @@ class PlanDocumentStore:
                 "at": self._epoch_millis(current_action.get("at")),
                 "summary": None,
             }
-        steering = dict(row.get("steering", {}))
-        feedback = self.feedback_records(role=effective_role)
-        matching_feedback = [
-            item
-            for item in feedback
-            if item.get("scope", {}).get("kind") == "agent"
-            and item.get("scope", {}).get("agent_key") == row.get("agent_key")
-        ]
-        steering["unread"] = sum(
-            item.get("state") not in {"acknowledged", "withdrawn", "undeliverable"}
-            for item in matching_feedback
-        )
         plan_id = str(row.get("plan", ""))
-        try:
-            revision = (
-                PlanDocumentStore.for_plan(self.plans, plan_id).head()
-                if plan_id
-                else ""
-            )
-        except PlanError:
-            revision = ""
+        projection = plan_projections.get(plan_id, {})
+        current_revision = projection.get("current_revision")
+        stage_writers = projection.get("_stage_writers", {})
+        owned_stages = []
+        if registration is not None:
+            for stage, writer in stage_writers.items():
+                if (
+                    isinstance(writer, dict)
+                    and writer.get("agent") == registration.agent
+                    and writer.get("role") == registration.role
+                ):
+                    owned_stages.append(stage)
+        unread_identity = (
+            f"{registration.role}@{registration.agent}"
+            if registration is not None
+            else ""
+        )
+        unread = 0
+        for note in projection.get("_steering_undelivered", []):
+            targets = note.get("unread_by", [])
+            if (
+                unread_identity in targets
+                or (
+                    registration is not None
+                    and registration.role in targets
+                )
+                or "all" in targets
+            ):
+                unread += 1
         failures = [
             {
                 "code": str(item.get("code", "")),
@@ -9525,42 +9753,114 @@ class PlanDocumentStore:
             }
             for item in row.get("failures", [])
         ]
+        blocker_details = []
+        for item in row.get("blockers", []):
+            if item.get("kind") == "permission_pending":
+                blocker_details.append(
+                    {
+                        "kind": "permission_pending",
+                        "waiting_on_user": True,
+                    }
+                )
+        primary_gate = projection.get("primary_gate") or {}
+        if primary_gate.get("allowed") is False:
+            reasons = set(primary_gate.get("reasons", []))
+            blocker_details.append(
+                {
+                    "kind": (
+                        "binding_feedback"
+                        if "binding_feedback" in reasons
+                        else (
+                            "requires_replan"
+                            if "requires_replan" in reasons
+                            else "gate_closed"
+                        )
+                    ),
+                    "waiting_on_user": "user_approval" in reasons,
+                }
+            )
+        if projection.get("open_defects"):
+            blocker_details.append(
+                {"kind": "defect_open", "waiting_on_user": False}
+            )
+        if projection.get("open_amendments"):
+            blocker_details.append(
+                {"kind": "amendment_open", "waiting_on_user": False}
+            )
+        deduped_blockers = []
+        seen_blockers = set()
+        for item in blocker_details:
+            key = (item["kind"], item["waiting_on_user"])
+            if key not in seen_blockers:
+                seen_blockers.add(key)
+                deduped_blockers.append(item)
+        coverage = dict(row.get("coverage", {}))
         return {
             "agent_key": str(row.get("agent_key", "")),
             "agent": str(row.get("agent", "")),
             "run_id": str(row.get("run_id", "")),
+            "session_key": (
+                "session-"
+                + hashlib.sha256(
+                    registration.session_id.encode("utf8")
+                ).hexdigest()[:16]
+                if registration is not None and registration.session_id
+                else None
+            ),
+            "root_session_key": (
+                "session-"
+                + hashlib.sha256(
+                    (
+                        registration.root_session_id
+                        or registration.session_id
+                    ).encode("utf8")
+                ).hexdigest()[:16]
+                if registration is not None
+                and (
+                    registration.root_session_id
+                    or registration.session_id
+                )
+                else None
+            ),
+            "parent_agent_key": None,
+            "lineage_status": "unavailable",
             "role": str(row.get("role", "")),
             "roles": list(row.get("roles", [])),
             "workstream": str(row.get("workstream", "")),
             "plan": plan_id,
-            "plan_title": plan_titles.get(plan_id, ""),
+            "plan_title": str(projection.get("title", "")),
             "revision": {
-                "last_read": str(row.get("revision", {}).get("last_read", "")),
-                "current": revision,
-                "relation": (
-                    "current"
-                    if revision
-                    and row.get("revision", {}).get("last_read") == revision
-                    else (
-                        "behind"
-                        if revision and row.get("revision", {}).get("last_read")
-                        else "unknown"
-                    )
-                ),
+                "last_read": None,
+                "current": current_revision,
+                "relation": "unknown",
             },
             "lifecycle": row.get("lifecycle", "unknown"),
+            "lifecycle_source": row.get(
+                "lifecycle_source", "unavailable"
+            ),
+            "lifecycle_observed_at": row.get("lifecycle_observed_at"),
+            "lifecycle_reason": row.get(
+                "lifecycle_reason", "no_run_events"
+            ),
             "activity": row.get("activity", "unknown"),
             "connection": row.get("connection", "unknown"),
-            "badge": self._badge({**row, "steering": steering}),
+            "badge": self._badge(
+                {
+                    **row,
+                    "steering": {"unread": unread},
+                }
+            ),
             "started_at": (
                 self._epoch_millis(row.get("started_at"))
                 if row.get("started_at")
                 else None
             ),
-            "last_observed_at": self._epoch_millis(
-                row.get("last_observed_at")
+            "last_observed_at": (
+                self._epoch_millis(row.get("last_observed_at"))
+                if row.get("last_observed_at")
+                else None
             ),
-            "elapsed_ms": int(row.get("elapsed_ms") or 0),
+            "elapsed_ms": row.get("elapsed_ms"),
             "elapsed_basis": row.get("elapsed_basis", "unknown"),
             "current_action": current_action,
             "last_tool": last_tool,
@@ -9581,23 +9881,33 @@ class PlanDocumentStore:
                 ),
             },
             "failures": failures,
-            "blockers": [str(item) for item in row.get("blockers", [])],
+            "blockers": copy.deepcopy(row.get("blockers", [])),
+            "blocker_details": deduped_blockers,
             "steering": {
-                "unread": int(steering.get("unread", 0)),
-                "delivered": int(steering.get("delivered", 0)),
-                "acknowledged": int(steering.get("acknowledged", 0)),
+                "unread": unread,
+                "delivered": int(row.get("steering", {}).get("delivered", 0)),
+                "acknowledged": int(
+                    row.get("steering", {}).get("acknowledged", 0)
+                ),
             },
             "coverage": {
-                "lifecycle": row.get("coverage", {}).get(
-                    "lifecycle", "unavailable"
-                ),
-                "tools": row.get("coverage", {}).get(
-                    "tools", "unavailable"
-                ),
-                "outcomes": row.get("coverage", {}).get(
-                    "outcomes", "unavailable"
-                ),
+                "lifecycle": coverage.get("lifecycle", "unavailable"),
+                "activity": coverage.get("activity", "unavailable"),
+                "tools": coverage.get("tools", "unavailable"),
+                "outcomes": coverage.get("outcomes", "unavailable"),
+                "commands": coverage.get("commands", "unavailable"),
             },
+            "owned_stages": owned_stages,
+            "stage_ownership": "recorded" if owned_stages else "unavailable",
+            "source_coverage": copy.deepcopy(
+                row.get("source_coverage", [])
+            ),
+            "last_action": copy.deepcopy(row.get("last_action")),
+            "recent_events": copy.deepcopy(row.get("recent_events", [])),
+            "events_status": row.get("events_status", "unavailable"),
+            "event_source_registered": bool(
+                row.get("event_source_registered")
+            ),
             "basis": "observed",
             "stuck_threshold_s": 300,
             "last_error": "",
@@ -9609,46 +9919,119 @@ class PlanDocumentStore:
         *,
         role: str,
         room=None,
+        scope: str = "repository_program",
         plan: str = "",
         filter_role: str = "",
         workstream: str = "",
         state: str = "",
         window_minutes: int = 120,
     ) -> dict:
-        self._role(role)
+        effective = self._role(role)
+        if scope not in {"repository_program", "current_plan"}:
+            raise PlanError(
+                "scope must be repository_program or current_plan"
+            )
+        if filter_role and filter_role not in ROLES:
+            raise PlanError(f"unknown role filter {filter_role!r}")
+        if workstream and (
+            len(workstream) > 80
+            or re.fullmatch(r"[A-Za-z0-9._:@/-]+", workstream) is None
+        ):
+            raise PlanError("workstream filter is invalid")
         room = room or self.control_room(role=role)
-        summaries = {
-            item["id"]: self.plans.summary(item["id"])
-            for item in self.plans.list_plans()
-        }
-        raw = room.snapshot(
-            plan_summaries=summaries,
-            window_minutes=window_minutes,
+        registration_values, registration_status, registration_reason = (
+            self._program_registrations()
         )
-        registration_values = [
-            grogu_controlroom.load_registration(item)
-            for item in self.registrations()
-        ]
+        registrations_list = []
+        for value in registration_values:
+            try:
+                registration = grogu_controlroom.load_registration(value)
+            except ValueError:
+                continue
+            if re.fullmatch(
+                r"p-[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+                registration.plan,
+            ) is None:
+                continue
+            registrations_list.append(registration)
+        room.reconcile(
+            registrations_list,
+            status=registration_status,
+            reason=registration_reason,
+        )
+        raw = room.snapshot(
+            plan_summaries={},
+            window_minutes=window_minutes,
+            repository=str(self.plans.root),
+        )
         registrations = {
-            item.agent_key: item for item in registration_values
+            item.agent_key: item for item in registrations_list
         }
-        titles = {
-            plan_id: str(summary.get("title", ""))
-            for plan_id, summary in summaries.items()
-        }
-        agents = [
+        program_plan_ids = {self.plan_id}
+        program_plan_ids.update(
+            registration.plan for registration in registrations_list
+        )
+        if plan and plan not in program_plan_ids:
+            raise PlanError(
+                "plan filter must name the current plan or an explicitly "
+                "registered repository-program plan"
+            )
+        effective_plan_ids = set(program_plan_ids)
+        if scope == "current_plan":
+            effective_plan_ids = {self.plan_id}
+        if plan:
+            effective_plan_ids = {plan}
+        sample_key = str(raw.get("sampled_at", ""))
+        with self._control_lock:
+            if sample_key != self._control_plan_cache_sample:
+                self._control_plan_cache.clear()
+                self._control_plan_cache_sample = sample_key
+            for plan_id in sorted(program_plan_ids):
+                key = (plan_id, effective)
+                if key not in self._control_plan_cache:
+                    self._control_plan_cache[key] = (
+                        self._control_plan_projection(plan_id, effective)
+                    )
+            plan_projections = {
+                plan_id: copy.deepcopy(
+                    self._control_plan_cache[(plan_id, effective)]
+                )
+                for plan_id in program_plan_ids
+            }
+        all_agents = [
             self._normalized_agent(
                 row,
-                plan_titles=titles,
-                room=room,
+                plan_projections=plan_projections,
                 registrations=registrations,
-                effective_role=role,
+                effective_role=effective,
             )
             for row in raw.get("agents", [])
             if row.get("agent_key") in registrations
         ]
-        if plan:
-            agents = [item for item in agents if item["plan"] == plan]
+        repository_agents = len(all_agents)
+        run_to_agent = {
+            registration.run_id: registration.agent_key
+            for registration in registrations_list
+        }
+        registered_keys = set(registrations)
+        for item in all_agents:
+            registration = registrations.get(item["agent_key"])
+            if registration is None:
+                continue
+            if not registration.parent_run_id:
+                item["lineage_status"] = "root"
+                continue
+            parent_key = run_to_agent.get(registration.parent_run_id)
+            item["parent_agent_key"] = parent_key
+            item["lineage_status"] = (
+                "recorded"
+                if parent_key in registered_keys
+                else "parent_unavailable"
+            )
+        scoped_agents = [
+            item for item in all_agents if item["plan"] in effective_plan_ids
+        ]
+        agents = list(scoped_agents)
         if filter_role:
             agents = [item for item in agents if item["role"] == filter_role]
         if workstream:
@@ -9657,6 +10040,26 @@ class PlanDocumentStore:
             ]
         if state:
             wanted = state.casefold()
+            allowed_states = {
+                "registered",
+                "running",
+                "finished",
+                "failed",
+                "cancelled",
+                "unknown",
+                "active",
+                "quiet",
+                "blocked",
+                "possibly_stuck",
+                "live",
+                "stale",
+                "disconnected",
+                "waiting",
+                "error",
+                "stuck",
+            }
+            if wanted not in allowed_states:
+                raise PlanError(f"unknown state filter {state!r}")
             agents = [
                 item
                 for item in agents
@@ -9669,51 +10072,265 @@ class PlanDocumentStore:
                 }
             ]
         plans = {}
-        for item in agents:
-            entry = plans.setdefault(
-                item["plan"],
-                {
-                    "title": titles.get(item["plan"], item["plan"]),
-                    "agents": 0,
-                },
+        for plan_id in sorted(effective_plan_ids):
+            projection = copy.deepcopy(plan_projections[plan_id])
+            projection["agents"] = sum(
+                item["plan"] == plan_id for item in scoped_agents
             )
-            entry["agents"] += 1
+            waiting_agents = {
+                item["agent_key"]
+                for item in scoped_agents
+                if item["plan"] == plan_id
+                and any(
+                    blocker.get("waiting_on_user")
+                    for blocker in item.get("blocker_details", [])
+                )
+            }
+            projection["waiting_on_you"] = len(waiting_agents)
+            projection.pop("_stage_writers", None)
+            projection.pop("_steering_undelivered", None)
+            plans[plan_id] = projection
         waiting = [
             {
                 "agent_key": item["agent_key"],
                 "agent": item["agent"],
-                "reason": (
-                    f"{item['steering']['unread']} unread steering"
-                    if item["steering"]["unread"]
-                    else "; ".join(item["blockers"])
+                "reason": next(
+                    blocker["kind"]
+                    for blocker in item["blocker_details"]
+                    if blocker["waiting_on_user"]
                 ),
             }
             for item in agents
-            if item["steering"]["unread"] or item["blockers"]
+            if any(
+                blocker.get("waiting_on_user")
+                for blocker in item.get("blocker_details", [])
+            )
         ]
+        visible_agent_keys = {item["agent_key"] for item in agents}
+        recent_events = [
+            copy.deepcopy(event)
+            for event in raw.get("recent_events", [])
+            if event.get("agent_key") in visible_agent_keys
+            and event.get("plan") in effective_plan_ids
+        ][:50]
+        visible_keys = {item["agent_key"] for item in agents}
+        topology_nodes = [
+            {
+                "agent_key": item["agent_key"],
+                "session_key": item.get("session_key"),
+                "root_session_key": item.get("root_session_key"),
+                "parent_agent_key": item.get("parent_agent_key"),
+                "lineage_status": item.get(
+                    "lineage_status", "unavailable"
+                ),
+            }
+            for item in agents
+        ]
+        topology_edges = [
+            {
+                "id": "spawn-"
+                + hashlib.sha256(
+                    (
+                        str(item.get("parent_agent_key"))
+                        + "\0"
+                        + item["agent_key"]
+                    ).encode("utf8")
+                ).hexdigest()[:20],
+                "kind": "spawned",
+                "from": item["parent_agent_key"],
+                "to": item["agent_key"],
+            }
+            for item in agents
+            if item.get("parent_agent_key") in visible_keys
+        ]
+        topology = {
+            "coverage": (
+                "complete"
+                if topology_nodes
+                and all(
+                    item["lineage_status"] in {"root", "recorded"}
+                    for item in topology_nodes
+                )
+                else (
+                    "partial" if topology_nodes else "unavailable"
+                )
+            ),
+            "nodes": topology_nodes,
+            "edges": topology_edges,
+        }
+        event_sources = {
+            item.get("events_status", "unavailable") for item in agents
+        }
+        if recent_events:
+            events_status = "available"
+        elif event_sources & {"available", "empty"}:
+            events_status = "empty"
+        elif "permission_limited" in event_sources:
+            events_status = "permission_limited"
+        elif "disconnected" in event_sources:
+            events_status = "disconnected"
+        else:
+            events_status = "unavailable"
+        source_coverage = copy.deepcopy(raw.get("source_coverage", []))
+        plan_states = [
+            plan_projections[plan_id].get("coverage", "unavailable")
+            for plan_id in effective_plan_ids
+        ]
+        source_coverage.append(
+            {
+                "source": "plan_state",
+                "status": (
+                    "available"
+                    if plan_states
+                    and all(value == "complete" for value in plan_states)
+                    else (
+                        "stale"
+                        if any(value == "complete" for value in plan_states)
+                        else "unavailable"
+                    )
+                ),
+                "observed_through": self._epoch_millis(raw.get("sampled_at")),
+                "reason": (
+                    "none"
+                    if plan_states
+                    and all(value == "complete" for value in plan_states)
+                    else "plan_unavailable"
+                ),
+            }
+        )
+        unregistered_sessions = []
+        for item in raw.get("uncorrelated", [])[:50]:
+            agent_name = str(item.get("agent", ""))
+            if not agent_name:
+                continue
+            item_plan = str(item.get("plan", "")) or None
+            if item_plan is not None and re.fullmatch(
+                r"p-[A-Za-z0-9][A-Za-z0-9._-]{0,127}", item_plan
+            ) is None:
+                item_plan = None
+            unregistered_sessions.append(
+                {
+                    "agent": agent_name,
+                    "plan": item_plan,
+                    "last_observed_at": self._epoch_millis(
+                        item.get("last_observed_at")
+                    ),
+                    "lifecycle": "unknown",
+                    "activity": "unknown",
+                }
+            )
+        capabilities = []
+        capability_keys = set()
+        for plan_id in sorted(effective_plan_ids):
+            gates = self._feedback_gates("all")
+            capabilities.append(
+                {
+                    "plan": plan_id,
+                    "scope": "plan",
+                    "role": None,
+                    "agent_key": None,
+                    "binding": bool(gates),
+                    "consequence": {
+                        "binding": bool(gates),
+                        "gates": gates,
+                        "requires_replan": False,
+                        "release": "acknowledgement_or_withdrawal",
+                    },
+                }
+            )
+            capability_keys.add(("plan", "", plan_id, None))
+        for item in scoped_agents:
+            targets = (
+                (
+                    "agent",
+                    item["agent_key"],
+                    item["plan"],
+                    item["role"],
+                ),
+                ("role", "", item["plan"], item["role"]),
+                ("plan", "", item["plan"], None),
+            )
+            for target_scope, agent_key, target_plan, target_role in targets:
+                key = (target_scope, agent_key, target_plan, target_role)
+                if key in capability_keys:
+                    continue
+                capability_keys.add(key)
+                gates = (
+                    self._feedback_gates(target_role or "all")
+                    if target_scope != "plan"
+                    else self._feedback_gates("all")
+                )
+                capabilities.append(
+                    {
+                        "plan": target_plan,
+                        "scope": target_scope,
+                        "role": target_role,
+                        "agent_key": agent_key or None,
+                        "binding": bool(gates),
+                        "consequence": {
+                            "binding": bool(gates),
+                            "gates": gates,
+                            "requires_replan": False,
+                            "release": (
+                                "acknowledgement_or_withdrawal"
+                                if gates
+                                else "none"
+                            ),
+                        },
+                    }
+                )
+        observed_through = self._epoch_millis(raw.get("observed_through"))
+        sampled_at = self._epoch_millis(raw.get("sampled_at"))
+        connection = "live"
+        if registration_status == "stale":
+            connection = "stale"
+        elif registration_status == "unavailable":
+            connection = "disconnected"
         return {
             "fresh_as_of": self._epoch_millis(raw.get("fresh_as_of")),
-            "limits": [
-                {
-                    "category": str(category),
-                    "detail": self._limit_detail(str(category)),
-                }
-                for category in raw.get("limits", [])
-            ],
+            "sampled_at": sampled_at,
+            "observed_through": observed_through,
+            "connection": connection,
+            "scope": {
+                "kind": scope,
+                "current_plan": self.plan_id,
+                "selected_plan": plan or None,
+            },
+            "repository": {
+                "id": "repo-"
+                + hashlib.sha256(
+                    str(self.plans.root).encode("utf8")
+                ).hexdigest()[:16],
+                "label": self.plans.root.name,
+            },
+            "repository_agents": repository_agents,
+            "limits": self._privacy_limits(),
+            "source_coverage": source_coverage,
+            "recent_events": recent_events,
+            "events_status": events_status,
             "waiting_on_you": waiting,
             "agents": agents,
             "plans": plans,
+            "topology": topology,
+            "unregistered_sessions": unregistered_sessions,
+            "unregistered_sessions_status": (
+                "available" if unregistered_sessions else "empty"
+            ),
+            "feedback_capabilities": capabilities,
         }
 
     def control_drill(self, agent_key: str, *, role: str, room=None) -> dict:
         self._role(role)
         room = room or self.control_room(role=role)
+        registration_values, status, reason = self._program_registrations()
+        registration_items = [
+            grogu_controlroom.load_registration(value)
+            for value in registration_values
+        ]
+        room.reconcile(registration_items, status=status, reason=reason)
         registrations = {
             item.agent_key: item
-            for item in (
-                grogu_controlroom.load_registration(value)
-                for value in self.registrations()
-            )
+            for item in registration_items
         }
         registration = registrations.get(agent_key)
         if registration is None:
@@ -9743,7 +10360,7 @@ class PlanDocumentStore:
                 event_type = "workstream_started"
                 summary = "Agent run started"
             elif kind == "subagent_completed":
-                event_type = "workstream_merged"
+                event_type = "run_finished"
                 summary = "Agent run completed"
             elif kind == "permission_requested":
                 event_type = "gate_blocked"
@@ -9764,14 +10381,14 @@ class PlanDocumentStore:
             if kind.startswith("tool_"):
                 item["tool"] = {
                     "tool_name": str(event.get("name", "")),
-                    "duration_ms": int(event.get("duration_ms", 0) or 0),
+                    "duration_ms": event.get("duration_ms"),
                     "outcome": (
                         "ok"
                         if event.get("success") is True
                         else (
                             "err"
                             if event.get("success") is False
-                            else "timeout"
+                            else None
                         )
                     ),
                 }
@@ -9790,14 +10407,10 @@ class PlanDocumentStore:
                 }
                 for index, value in enumerate(raw.get("evidence", []), 1)
             ],
-            "limits": [
-                {
-                    "category": str(category),
-                    "detail": self._limit_detail(str(category)),
-                }
-                for category in raw.get("limits", [])
-            ],
-            "blockers": [str(item) for item in raw.get("blockers", [])],
+            "limits": self._privacy_limits(),
+            "blockers": copy.deepcopy(raw.get("blockers", [])),
+            "recent_events": copy.deepcopy(raw.get("recent_events", [])),
+            "events_status": raw.get("events_status", "unavailable"),
         }
 
     # -- durable feedback receipts through PlanStore.steer --------------
@@ -9830,35 +10443,44 @@ class PlanDocumentStore:
         kind = str(scope.get("kind", ""))
         target_role = "all"
         target_agent = ""
-        delivered_to = str(scope.get("label", ""))
+        target_plan = self.plan_id
         registration = None
+        program_values, _status, _reason = self._program_registrations()
+        program_registrations = [
+            grogu_controlroom.load_registration(value)
+            for value in program_values
+        ]
+        program_plans = {self.plan_id}
+        program_plans.update(item.plan for item in program_registrations)
         if kind == "agent":
             agent_key = str(scope.get("agent_key", ""))
             registrations = {
                 item.agent_key: item
-                for item in (
-                    grogu_controlroom.load_registration(value)
-                    for value in self.registrations()
-                )
+                for item in program_registrations
             }
             registration = registrations.get(agent_key)
             if registration is None:
                 raise PlanError(f"agent {agent_key!r} is not registered")
             target_role = registration.role or "all"
             target_agent = registration.agent
-            delivered_to = agent_key
+            target_plan = registration.plan
         elif kind == "role":
             target_role = str(scope.get("role", ""))
+            requested_plan = str(scope.get("plan", ""))
+            target_plan = requested_plan or self.plan_id
         elif kind == "plan":
-            if str(scope.get("plan", "")) not in {"", self.plan_id}:
-                raise PlanError("feedback plan scope does not match this plan")
+            target_plan = str(scope.get("plan", "")) or self.plan_id
             target_role = "all"
         elif kind == "role_plan":
-            if str(scope.get("plan", "")) not in {"", self.plan_id}:
-                raise PlanError("feedback plan scope does not match this plan")
+            target_plan = str(scope.get("plan", "")) or self.plan_id
             target_role = str(scope.get("role", ""))
         else:
             raise PlanError(f"unknown feedback scope {kind!r}")
+        if target_plan not in program_plans:
+            raise PlanError(
+                "feedback plan must be the current plan or an explicitly "
+                "registered repository-program plan"
+            )
         if target_role != "all" and target_role not in ROLES:
             raise PlanError(f"unknown feedback role {target_role!r}")
         gates = self._feedback_gates(target_role) if binding else []
@@ -9867,7 +10489,7 @@ class PlanDocumentStore:
             receipt = room.route_feedback(
                 registration,
                 text=text,
-                binding=False,
+                binding=binding,
                 plan_store=self.plans,
                 gates_map={target_role: gates},
             )
@@ -9875,15 +10497,47 @@ class PlanDocumentStore:
         else:
             note = self.plans.steer(
                 text,
-                plan_id=self.plan_id,
+                plan_id=target_plan,
                 role=target_role,
                 requires_replan=False,
             )
             seq = int(note["seq"])
         feedback_id = f"f-{seq:03d}"
+        receipt_key = f"{target_plan}:{feedback_id}"
         sent_at = self._epoch_millis(now())
+        matching = [
+            item
+            for item in program_registrations
+            if item.plan == target_plan
+            and (
+                kind == "plan"
+                or (
+                    kind in {"role", "role_plan"}
+                    and item.role == target_role
+                )
+                or (
+                    kind == "agent"
+                    and item.agent_key == registration.agent_key
+                )
+            )
+        ]
+        delivery_state = (
+            "routed"
+            if matching or kind in {"role", "plan", "role_plan"}
+            else "undeliverable"
+        )
+        consequence = {
+            "binding": bool(binding),
+            "gates": gates,
+            "requires_replan": False,
+            "release": (
+                "acknowledgement_or_withdrawal"
+                if binding and gates
+                else "none"
+            ),
+        }
         with self.plans.locked():
-            manifest = self.plans.load(self.plan_id)
+            manifest = self.plans.load(target_plan)
             note = next(
                 (
                     item
@@ -9897,29 +10551,52 @@ class PlanDocumentStore:
             note.update(
                 {
                     "feedback_id": feedback_id,
+                    "receipt_key": receipt_key,
+                    "feedback_plan": target_plan,
                     "feedback_scope": copy.deepcopy(scope),
                     "binding_feedback": bool(binding),
                     "target_agent": target_agent,
                     "feedback_sender_role": effective,
                     "feedback_sender_agent": sender_agent,
                     "gates": gates,
+                    "delivery_state": delivery_state,
+                    "consequence": consequence,
                     "feedback_history": [
                         {"state": "sent", "at": sent_at},
-                        {"state": "routed", "at": sent_at},
-                        {"state": "delivered", "at": sent_at},
+                        {"state": delivery_state, "at": sent_at},
                     ],
                 }
             )
-            self.plans._write_json(self.plans.manifest_path(self.plan_id), manifest)
-        record = self.feedback_record(feedback_id, role=effective)
+            self.plans._write_json(self.plans.manifest_path(target_plan), manifest)
+        target_documents = PlanDocumentStore.for_plan(self.plans, target_plan)
+        record = target_documents.feedback_record(
+            feedback_id, role=effective
+        )
         return {
             "seq": feedback_id,
-            "delivered_to": delivered_to,
+            "plan": target_plan,
+            "receipt_key": receipt_key,
+            "delivered_to": [],
             "gates_closed": gates,
             "record": record,
         }
 
-    def feedback_records(self, *, role: str) -> list[dict]:
+    def feedback_records(self, *, role: str, plan: str = "") -> list[dict]:
+        target_plan = plan or self.plan_id
+        if target_plan != self.plan_id:
+            values, _status, _reason = self._program_registrations()
+            program_plans = {self.plan_id}
+            program_plans.update(
+                value.get("plan", "") for value in values
+            )
+            if target_plan not in program_plans:
+                raise PlanError(
+                    "feedback plan must be the current plan or an explicitly "
+                    "registered repository-program plan"
+                )
+            return PlanDocumentStore.for_plan(
+                self.plans, target_plan
+            ).feedback_records(role=role)
         effective = self._role(role)
         caller_agent = self.plans._identified_agent()[0]
         manifest = self.plans.load(self.plan_id)
@@ -9951,8 +10628,10 @@ class PlanDocumentStore:
                 state = "withdrawn"
             elif acknowledged:
                 state = "acknowledged"
-            else:
+            elif self.plans._note_was_delivered(manifest, note):
                 state = "delivered"
+            else:
+                state = str(note.get("delivery_state", "sent"))
             history = copy.deepcopy(note.get("feedback_history", []))
             if state == "acknowledged" and not any(
                 item.get("state") == "acknowledged" for item in history
@@ -9975,13 +10654,41 @@ class PlanDocumentStore:
                     }
                 )
             gates = list(note.get("gates", []))
+            consequence = copy.deepcopy(
+                note.get(
+                    "consequence",
+                    {
+                        "binding": bool(note.get("binding_feedback")),
+                        "gates": gates,
+                        "requires_replan": False,
+                        "release": (
+                            "acknowledgement_or_withdrawal"
+                            if note.get("binding_feedback") and gates
+                            else "none"
+                        ),
+                    },
+                )
+            )
+            feedback_id = str(note["feedback_id"])
+            feedback_plan = str(
+                note.get("feedback_plan", self.plan_id)
+            )
             values.append(
                 {
-                    "id": note["feedback_id"],
+                    "id": feedback_id,
+                    "plan": feedback_plan,
+                    "receipt_key": str(
+                        note.get(
+                            "receipt_key",
+                            f"{feedback_plan}:{feedback_id}",
+                        )
+                    ),
                     "scope": copy.deepcopy(note.get("feedback_scope", {})),
                     "binding": bool(note.get("binding_feedback")),
                     "text": str(note.get("text", "")),
                     "state": state,
+                    "delivery_state": state,
+                    "consequence": consequence,
                     "gate": (
                         {
                             "stage": (
@@ -10012,11 +10719,17 @@ class PlanDocumentStore:
             )
         return sorted(values, key=lambda item: item["at"], reverse=True)
 
-    def feedback_record(self, feedback_id: str, *, role: str) -> dict:
+    def feedback_record(
+        self,
+        feedback_id: str,
+        *,
+        role: str,
+        plan: str = "",
+    ) -> dict:
         record = next(
             (
                 item
-                for item in self.feedback_records(role=role)
+                for item in self.feedback_records(role=role, plan=plan)
                 if item["id"] == feedback_id
             ),
             None,
@@ -10025,7 +10738,27 @@ class PlanDocumentStore:
             raise PlanError(f"feedback {feedback_id!r} was not found")
         return record
 
-    def withdraw_feedback(self, feedback_id: str, *, role: str) -> dict:
+    def withdraw_feedback(
+        self,
+        feedback_id: str,
+        *,
+        role: str,
+        plan: str = "",
+    ) -> dict:
+        target_plan = plan or self.plan_id
+        if target_plan != self.plan_id:
+            values, _status, _reason = self._program_registrations()
+            if target_plan not in {
+                self.plan_id,
+                *(value.get("plan", "") for value in values),
+            }:
+                raise PlanError(
+                    "feedback plan must be the current plan or an explicitly "
+                    "registered repository-program plan"
+                )
+            return PlanDocumentStore.for_plan(
+                self.plans, target_plan
+            ).withdraw_feedback(feedback_id, role=role)
         effective = self._role(role)
         caller_agent = self.plans._identified_agent()[0]
         with self.plans.locked():
@@ -10056,7 +10789,12 @@ class PlanDocumentStore:
             note["withdrawn"] = True
             note["withdrawn_at"] = now()
             self.plans._write_json(self.plans.manifest_path(self.plan_id), manifest)
-        return {"ok": True, "feedback": feedback_id}
+        return {
+            "ok": True,
+            "feedback": feedback_id,
+            "plan": self.plan_id,
+            "receipt_key": f"{self.plan_id}:{feedback_id}",
+        }
 
     @classmethod
     def revert(

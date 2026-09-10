@@ -79,10 +79,13 @@ it. A broader view cannot be reused for a narrower one; each new
 from __future__ import annotations
 
 import calendar
+import functools
+import hashlib
 import json
 import os
 import re
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -116,6 +119,9 @@ MAX_AUDIT_LOG_PER_AGENT = 1024
 MAX_FAILURES_TRACKED = 128
 MAX_FAILURES_ON_ROW = 32
 MAX_PENDING_PERMISSIONS = 64
+MAX_UNREGISTERED_SESSIONS = 50
+MAX_RECENT_EVENTS = 50
+MAX_INLINE_EVENTS = 3
 
 # What the interface must always disclose as beyond the reader's sight.
 BOARD_LIMITS: tuple = (
@@ -154,9 +160,11 @@ class Registration:
     agent_id: str
     registered_at: str
     events_path: str = ""
+    parent_run_id: str = ""
+    root_session_id: str = ""
 
     def to_dict(self) -> dict:
-        return {
+        value = {
             "schema_version": 1,
             "run_id": self.run_id,
             "repository": self.repository,
@@ -169,6 +177,11 @@ class Registration:
             "registered_at": self.registered_at,
             "events_path": self.events_path,
         }
+        if self.parent_run_id:
+            value["parent_run_id"] = self.parent_run_id
+        if self.root_session_id:
+            value["root_session_id"] = self.root_session_id
+        return value
 
 
 _REGISTRATION_STRING_FIELDS = (
@@ -182,6 +195,8 @@ _REGISTRATION_STRING_FIELDS = (
     "agent_id",
     "registered_at",
     "events_path",
+    "parent_run_id",
+    "root_session_id",
 )
 
 
@@ -189,6 +204,13 @@ def _repository_key(value: object) -> str:
     if not isinstance(value, str) or not value:
         return ""
     return str(Path(value).expanduser().resolve())
+
+
+def _repository_public_id(value: object) -> str:
+    key = _repository_key(value)
+    if not key:
+        return ""
+    return "repo-" + hashlib.sha256(key.encode("utf8")).hexdigest()[:16]
 
 
 def load_registration(mapping: dict) -> Registration:
@@ -229,8 +251,10 @@ def _classify_connection(sample_age_seconds: float) -> str:
 class _AgentState:
     """In-memory per-agent bookkeeping. Purely disposable."""
 
-    lifecycle: str = "registered"
+    lifecycle: str = "unknown"
     lifecycle_at: float = 0.0
+    lifecycle_source: str = "unavailable"
+    lifecycle_reason: str = "no_run_events"
     started_at: float = 0.0
     started_basis: str = "unknown"
     last_observed_at: float = 0.0
@@ -244,6 +268,8 @@ class _AgentState:
     failure_log: list = field(default_factory=list)
     pending_permissions: dict = field(default_factory=dict)
     outcome_at: float = 0.0
+    source_status: str = "unavailable"
+    source_reason: str = "not_registered"
 
     def lifecycle_rank(self) -> int:
         """A total ordering so a terminal state never regresses.
@@ -280,6 +306,15 @@ class _AgentState:
 # -- the control room ------------------------------------------------------
 
 
+def _synchronized(method):
+    @functools.wraps(method)
+    def locked(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return locked
+
+
 class ControlRoom:
     """Read-only observability model. Instance-local, disposable.
 
@@ -301,6 +336,9 @@ class ControlRoom:
         self._watch_home = watch_home
         self._traces_db = traces_db
         self._registrations: dict = {}
+        self._source_limited_runs: set = set()
+        self._registration_status = "empty"
+        self._registration_reason = "none"
         self._agent_state: dict = {}
         self._cursors: dict = {}
         self._generation = 0
@@ -309,13 +347,16 @@ class ControlRoom:
         # SAMPLE_INTERVAL_SECONDS``). This keeps the throttle honest for
         # subsequent calls without preventing a cold-start read.
         self._last_sample: float = -1.0e12
+        self._cached_sample_at: float = 0.0
         self._cached_watch_rows: list = []
         self._cached_gaps: dict = {}
         self._last_healthy_sample: dict = {}
         self._audit_log_store: dict = {}
+        self._lock = threading.RLock()
 
     # -- registration -----------------------------------------------------
 
+    @_synchronized
     def register(self, registration: Registration) -> None:
         """Add or replace a registration.
 
@@ -325,21 +366,56 @@ class ControlRoom:
         """
         if not isinstance(registration, Registration):
             raise TypeError("register expects a Registration instance")
-        events_paths = {
-            r.events_path
-            for r in self._registrations.values()
-            if r.events_path
-        }
-        if (
-            registration.events_path
-            and registration.events_path not in events_paths
-            and len(events_paths) >= grogu_agentevents.MAX_REGISTERED_SOURCES
-        ):
-            raise ValueError(
-                "reader has too many registered event sources"
-            )
         self._registrations[registration.run_id] = registration
+        self._recompute_source_limits()
 
+    @_synchronized
+    def reconcile(
+        self,
+        registrations: Iterable[Registration],
+        *,
+        status: str = "available",
+        reason: str = "none",
+    ) -> None:
+        """Hot-load the explicit registration index without resetting healthy runs."""
+        incoming = {
+            registration.run_id: registration
+            for registration in registrations
+            if isinstance(registration, Registration) and registration.run_id
+        }
+        for run_id, previous in list(self._registrations.items()):
+            replacement = incoming.get(run_id)
+            if replacement == previous:
+                continue
+            agent_key = previous.agent_key
+            self._agent_state.pop(agent_key, None)
+            self._audit_log_store.pop(agent_key, None)
+            self._cursors.pop(run_id, None)
+            self._cached_gaps.pop(run_id, None)
+            self._last_healthy_sample.pop(run_id, None)
+        self._registrations = incoming
+        self._registration_status = status
+        self._registration_reason = reason
+        self._recompute_source_limits()
+
+    def _recompute_source_limits(self) -> None:
+        accepted_paths: set = set()
+        limited: set = set()
+        for registration in sorted(
+            self._registrations.values(),
+            key=lambda item: (item.events_path, item.run_id),
+        ):
+            if not registration.events_path:
+                continue
+            if registration.events_path in accepted_paths:
+                continue
+            if len(accepted_paths) >= grogu_agentevents.MAX_REGISTERED_SOURCES:
+                limited.add(registration.run_id)
+                continue
+            accepted_paths.add(registration.events_path)
+        self._source_limited_runs = limited
+
+    @_synchronized
     def registrations(self) -> list:
         """A stable list of the current registrations."""
         return [
@@ -349,11 +425,13 @@ class ControlRoom:
 
     # -- board assembly ---------------------------------------------------
 
+    @_synchronized
     def snapshot(
         self,
         *,
         plan_summaries: Optional[dict] = None,
         window_minutes: int = grogu_watch.DEFAULT_WINDOW_MINUTES,
+        repository: str = "",
     ) -> dict:
         """Return one board :class:`dict` matching ``boardSnapshot`` in the schema.
 
@@ -369,7 +447,7 @@ class ControlRoom:
         if do_sample:
             self._last_sample = current
             self._cached_watch_rows = grogu_watch.sessions(
-                window_minutes=window_minutes,
+                window_minutes=max(window_minutes, 7 * 24 * 60),
                 home=self._watch_home,
             )
             self._cached_sample_at = current
@@ -380,8 +458,12 @@ class ControlRoom:
         watch_by_agent: dict = {}
         for row in watch_rows:
             repository_value = _repository_key(row.get("repository", ""))
+            if repository and repository_value != _repository_key(repository):
+                continue
             plan_value = row.get("plan", "") or ""
             agent_value = row.get("agent", "") or ""
+            if not agent_value:
+                continue
             key = (repository_value, plan_value, agent_value)
             watch_by_agent.setdefault(key, row)
         agent_rows: list = []
@@ -389,6 +471,9 @@ class ControlRoom:
         all_gaps: list = []
         source2_present = False
         source2_available = False
+        operational_events: list = []
+        observed_through = 0.0
+        commands_observed_through = 0.0
         for registration in sorted(
             self._registrations.values(),
             key=lambda registration: registration.run_id,
@@ -398,22 +483,14 @@ class ControlRoom:
                 previous_observed_at = state.last_observed_at
                 gaps = self._ingest_source_two(registration, state, current)
                 self._cached_gaps[registration.run_id] = gaps
-                if (
-                    registration.events_path
-                    and state.last_observed_at > previous_observed_at
-                    and not any(
-                        gap.kind == grogu_agentevents.GAP_SOURCE_READ_ERROR
-                        for gap in gaps
-                    )
-                ):
-                    self._last_healthy_sample[registration.run_id] = (
-                        state.last_observed_at
-                    )
+                if state.last_observed_at > previous_observed_at:
+                    observed_through = max(observed_through, state.last_observed_at)
             gaps = self._cached_gaps.get(registration.run_id, [])
             all_gaps.extend(gaps)
+            observed_through = max(observed_through, state.last_observed_at)
             if registration.events_path:
                 source2_present = True
-                if state.tools_started or state.subagent_completed_seen:
+                if state.source_status in {"available", "empty"}:
                     source2_available = True
             watch_key = (
                 _repository_key(registration.repository),
@@ -422,11 +499,35 @@ class ControlRoom:
             )
             watch_row = watch_by_agent.pop(watch_key, None)
             self._merge_watch(state, watch_row)
-            agent_rows.append(
-                self._agent_row(registration, state, watch_row, current)
+            row = self._agent_row(
+                registration,
+                state,
+                watch_row,
+                current,
+                window_minutes=window_minutes,
             )
+            agent_rows.append(row)
+            operational_events.extend(row.get("recent_events", []))
+            command_event = self._command_event(registration, watch_row)
+            if command_event is not None:
+                if command_event["at"] >= int(
+                    (current - window_minutes * 60) * 1000
+                ):
+                    operational_events.append(command_event)
+                command_at = float(command_event["at"]) / 1000
+                observed_through = max(observed_through, command_at)
+                commands_observed_through = max(
+                    commands_observed_through, command_at
+                )
+                if (
+                    row.get("last_action") is None
+                    or command_event["at"] > row["last_action"]["at"]
+                ):
+                    row["last_action"] = command_event
         # Anything from source 1 that had no registration is uncorrelated.
-        for key, row in sorted(watch_by_agent.items(), key=lambda item: str(item[0])):
+        for key, row in sorted(watch_by_agent.items(), key=lambda item: str(item[0]))[
+            :MAX_UNREGISTERED_SESSIONS
+        ]:
             uncorrelated.append(self._uncorrelated_row(row, current))
         if source2_present:
             source2_coverage = "complete" if source2_available else "partial"
@@ -454,9 +555,27 @@ class ControlRoom:
             }
         )
         fresh_as_of = self._fresh_as_of(current)
+        operational_events = self._sort_operational_events(operational_events)[
+            :MAX_RECENT_EVENTS
+        ]
+        registration_coverage = {
+            "source": "registrations",
+            "status": self._registration_status,
+            "observed_through": int(self._cached_sample_at * 1000)
+            if self._cached_sample_at
+            else None,
+            "reason": self._registration_reason,
+        }
+        session_status = (
+            "available"
+            if source2_available
+            else ("unavailable" if not source2_present else "disconnected")
+        )
         return {
             "schema_version": 1,
             "fresh_as_of": fresh_as_of,
+            "sampled_at": _epoch_to_iso(self._cached_sample_at or current),
+            "observed_through": _epoch_to_iso(observed_through),
             "generation": self._generation,
             "limits": deduped_limits,
             "coverage": {
@@ -467,10 +586,42 @@ class ControlRoom:
             "agents": agent_rows,
             "uncorrelated": uncorrelated,
             "waiting_on_you": waiting,
+            "source_coverage": [
+                registration_coverage,
+                {
+                    "source": "commands",
+                    "status": "available" if watch_rows else "empty",
+                    "observed_through": int(commands_observed_through * 1000)
+                    if commands_observed_through
+                    else None,
+                    "reason": "none",
+                },
+                {
+                    "source": "session_events",
+                    "status": session_status,
+                    "observed_through": int(observed_through * 1000)
+                    if observed_through
+                    else None,
+                    "reason": "none" if source2_available else "no_run_events",
+                },
+                {
+                    "source": "runtime",
+                    "status": "unavailable",
+                    "observed_through": None,
+                    "reason": "unsupported_source",
+                },
+            ],
+            "recent_events": operational_events,
+            "events_status": (
+                "available"
+                if operational_events
+                else ("empty" if source2_available else "unavailable")
+            ),
         }
 
     # -- drill-in ---------------------------------------------------------
 
+    @_synchronized
     def drill_in(
         self,
         registration: Registration,
@@ -495,6 +646,7 @@ class ControlRoom:
         if not registration.events_path:
             limits.append("tool_activity")
         blockers = self._blockers(registration, state, current)
+        recent_events = self._operational_events_for(registration, max_events)
         return {
             "schema_version": 1,
             "agent_key": registration.agent_key,
@@ -503,6 +655,8 @@ class ControlRoom:
             "gaps": [_control_room_gap_from_agentevents(gap) for gap in gaps],
             "limits": self._dedupe(limits),
             "blockers": blockers,
+            "recent_events": recent_events,
+            "events_status": state.source_status,
         }
 
     # -- feedback routing -------------------------------------------------
@@ -543,12 +697,22 @@ class ControlRoom:
         if not isinstance(note, dict):
             raise TypeError("steer must return a dict")
         seq = int(note.get("seq", 0))
-        gates = list(gates_map.get(role, [])) if gates_map else []
-        if binding and not gates:
-            gates = ["design", "implement", "test", "evaluate"]
-        delivered_to = [f"role:{role}"]
-        if registration.agent:
-            delivered_to.append(f"agent:{registration.agent}")
+        gates = (
+            list(gates_map.get(role, []))
+            if gates_map
+            else (
+                ["design", "implement", "test", "evaluate"]
+                if binding
+                else []
+            )
+        )
+        feedback_id = f"f-{seq:03d}"
+        consequence = {
+            "binding": bool(binding),
+            "gates": gates,
+            "requires_replan": bool(binding),
+            "release": "replan" if binding else "none",
+        }
         relay_command = ""
         if registration.agent:
             relay_command = (
@@ -562,11 +726,14 @@ class ControlRoom:
             "role": role,
             "agent": registration.agent,
             "plan": registration.plan,
+            "receipt_key": f"{registration.plan}:{feedback_id}",
             "binding": bool(binding),
             "gates_closed": gates,
-            "delivered_to": delivered_to,
+            "delivered_to": [],
             "acknowledged_by": [],
             "relay_command": relay_command or None,
+            "delivery_state": "routed",
+            "consequence": consequence,
         }
 
     def acknowledge_delivery(
@@ -604,17 +771,9 @@ class ControlRoom:
         return row.get("agent") or f"{row.get('role', '')}@{row.get('cwd', '')}"
 
     def _merge_watch(self, state: _AgentState, row: Optional[dict]) -> None:
-        if row is None:
-            return
-        last = float(row.get("last") or 0)
-        first = float(row.get("first") or 0)
-        state.observe_activity(last)
-        if state.started_at == 0.0 or state.started_basis == "unknown":
-            if state.started_basis != "lifecycle_start":
-                state.started_at = first
-                state.started_basis = "first_observed"
-        if state.lifecycle == "unknown":
-            state.lifecycle = "running"
+        # Command observations are projected separately as harness audit.
+        # They never establish runtime lifecycle or elapsed time.
+        return
 
     # -- internals: source 2 ---------------------------------------------
 
@@ -625,7 +784,13 @@ class ControlRoom:
         current: float,
     ) -> list:
         gaps: list = []
+        if registration.run_id in self._source_limited_runs:
+            state.source_status = "unavailable"
+            state.source_reason = "source_limit"
+            return gaps
         if not registration.events_path:
+            state.source_status = "unavailable"
+            state.source_reason = "not_registered"
             gaps.append(grogu_agentevents.unregistered_gap())
             return gaps
         path = Path(registration.events_path)
@@ -633,6 +798,37 @@ class ControlRoom:
         result = grogu_agentevents.read_source(path, cursor=cursor)
         self._cursors[registration.run_id] = result.cursor
         gaps.extend(result.gaps)
+        read_failed = any(
+            gap.kind == grogu_agentevents.GAP_SOURCE_READ_ERROR
+            for gap in result.gaps
+        )
+        if read_failed:
+            state.source_status = "disconnected"
+            state.source_reason = "read_error"
+        else:
+            self._last_healthy_sample[registration.run_id] = current
+            state.source_status = "available" if result.events else "empty"
+            if any(
+                gap.kind
+                in {
+                    grogu_agentevents.GAP_MALFORMED_LINE,
+                    grogu_agentevents.GAP_UNKNOWN_EVENT_VERSION,
+                }
+                for gap in result.gaps
+            ):
+                state.source_reason = "malformed_source"
+            elif any(
+                gap.kind == grogu_agentevents.GAP_ROTATED_OR_TRUNCATED
+                for gap in result.gaps
+            ):
+                state.source_reason = "source_changed"
+            elif any(
+                gap.kind == grogu_agentevents.GAP_OVERSIZED_SOURCE
+                for gap in result.gaps
+            ):
+                state.source_reason = "source_limit"
+            else:
+                state.source_reason = "none"
         audit_events = self._audit_events_for(registration.agent_key)
         for event in result.events:
             if (
@@ -660,10 +856,15 @@ class ControlRoom:
         at_epoch = _iso_to_epoch(event.at)
         if at_epoch > state.last_observed_at:
             state.last_observed_at = at_epoch
+        if at_epoch and state.started_at == 0.0:
+            state.started_at = at_epoch
+            state.started_basis = "first_observed"
         if event.phase == "subagent_started":
             if state.lifecycle_rank() < 2:
                 state.lifecycle = "running"
                 state.lifecycle_at = at_epoch
+                state.lifecycle_source = "session_events"
+                state.lifecycle_reason = "none"
             if state.started_basis != "lifecycle_start":
                 state.started_at = at_epoch
                 state.started_basis = "lifecycle_start"
@@ -672,8 +873,10 @@ class ControlRoom:
             # stronger kind.
             state.subagent_completed_seen = True
             if state.lifecycle not in ("failed", "cancelled"):
-                state.lifecycle = "finished"
+                state.lifecycle = "failed" if event.success is False else "finished"
                 state.lifecycle_at = at_epoch
+                state.lifecycle_source = "session_events"
+                state.lifecycle_reason = "none"
             state.outcome_at = max(state.outcome_at, at_epoch)
             state.current_tool = None
             state.current_tool_call = None
@@ -682,9 +885,6 @@ class ControlRoom:
             state.current_tool = event.tool_name or None
             state.current_tool_call = event.tool_call_id or None
             state.current_tool_started_at = at_epoch
-            if state.lifecycle_rank() < 2:
-                state.lifecycle = "running"
-                state.lifecycle_at = at_epoch
         elif event.phase == "tool_completed":
             state.tools_completed += 1
             if event.success is False:
@@ -737,20 +937,24 @@ class ControlRoom:
         state: _AgentState,
         watch_row: Optional[dict],
         current: float,
+        *,
+        window_minutes: int,
     ) -> dict:
-        last_observed_epoch = max(
-            state.last_observed_at,
-            float(watch_row.get("last") or 0) if watch_row else 0.0,
-        )
+        last_observed_epoch = state.last_observed_at
         # Connection is the observer's health, NOT the agent's activity.
         # Base it on the last time the collector succeeded on this source
         # rather than on the age of the newest event; a silent-but-alive
         # agent with a healthy collector is ``live``, not ``disconnected``.
         connection = self._classify_source_health(registration, current)
-        lifecycle = state.lifecycle if state.lifecycle != "unknown" else (
-            "running" if watch_row else "registered"
-        )
+        lifecycle = state.lifecycle
         activity, evidence = self._classify_activity(state, connection, current)
+        command_at = float(watch_row.get("last") or 0) if watch_row else 0.0
+        if state.last_observed_at == 0 and command_at > 0:
+            activity = (
+                "active"
+                if current - command_at <= grogu_watch.IDLE_AFTER_SECONDS
+                else "quiet"
+            )
         blockers = self._blockers(registration, state, current)
         if blockers:
             activity = "blocked"
@@ -759,12 +963,7 @@ class ControlRoom:
         if not registration.events_path:
             limits.append("tool_activity")
         current_action = None
-        current_tool_is_fresh = (
-            state.current_tool
-            and state.current_tool_started_at > 0
-            and current - state.current_tool_started_at
-            <= CONNECTION_DISCONNECTED_SECONDS
-        )
+        current_tool_is_fresh = state.current_tool and state.current_tool_started_at > 0
         if current_tool_is_fresh:
             current_action = {
                 "tool_name": state.current_tool,
@@ -805,6 +1004,15 @@ class ControlRoom:
             if tool_name and grogu_agentevents.SAFE_NAME_PATTERN.match(tool_name):
                 record["tool_name"] = tool_name
             failures.append(record)
+        all_operational_events = self._operational_events_for(
+            registration, MAX_AUDIT_LOG_PER_AGENT
+        )
+        window_start = int((current - window_minutes * 60) * 1000)
+        recent_events = [
+            event
+            for event in all_operational_events
+            if event.get("at", 0) >= window_start
+        ][:MAX_INLINE_EVENTS]
         row = {
             "agent_key": registration.agent_key,
             "agent": registration.agent,
@@ -813,12 +1021,17 @@ class ControlRoom:
             "roles": [registration.role] if registration.role else [],
             "workstream": registration.workstream,
             "plan": registration.plan,
-            "repository": registration.repository,
+            "repository": _repository_public_id(registration.repository),
             "revision": {
                 "current": "",
                 "relation": "unknown",
             },
             "lifecycle": lifecycle,
+            "lifecycle_source": state.lifecycle_source,
+            "lifecycle_observed_at": (
+                int(state.lifecycle_at * 1000) if state.lifecycle_at else None
+            ),
+            "lifecycle_reason": state.lifecycle_reason,
             "activity": activity,
             "connection": connection,
             "started_at": started_iso,
@@ -847,6 +1060,15 @@ class ControlRoom:
             "limits": self._dedupe(limits),
             "objects": self._authorized_objects(registration),
             "basis": "observed",
+            "source_coverage": self._source_coverage_for(
+                registration, state, watch_row
+            ),
+            "recent_events": recent_events,
+            "events_status": state.source_status,
+            "event_source_registered": bool(registration.events_path),
+            "last_action": (
+                all_operational_events[0] if all_operational_events else None
+            ),
         }
         return row
 
@@ -870,9 +1092,14 @@ class ControlRoom:
             "roles": [],
             "workstream": "",
             "plan": watch_row.get("plan", "") or "",
-            "repository": watch_row.get("repository", "") or "",
+            "repository": _repository_public_id(
+                watch_row.get("repository", "") or ""
+            ),
             "revision": {"current": "", "relation": "unknown"},
             "lifecycle": "unknown",
+            "lifecycle_source": "unavailable",
+            "lifecycle_observed_at": None,
+            "lifecycle_reason": "no_run_events",
             "activity": "unknown",
             "connection": connection,
             "started_at": _epoch_to_iso(float(watch_row.get("first") or 0)),
@@ -907,6 +1134,18 @@ class ControlRoom:
             "limits": list(ROW_BASE_LIMITS) + ["tool_activity"],
             "objects": [],
             "basis": "observed",
+            "source_coverage": [
+                {
+                    "source": "commands",
+                    "status": "available",
+                    "observed_through": int(last * 1000) if last else None,
+                    "reason": "none",
+                }
+            ],
+            "recent_events": [],
+            "events_status": "unavailable",
+            "event_source_registered": False,
+            "last_action": None,
         }
 
     # -- internals: activity classification ------------------------------
@@ -929,6 +1168,9 @@ class ControlRoom:
             # A source-1-only registration has no source 2 to be healthy or
             # not; the plan classifies "no source" as ``unknown``.
             return "unknown"
+        if registration.run_id in self._source_limited_runs:
+            return "unknown"
+        state = self._agent_state.get(registration.agent_key)
         last = self._last_healthy_sample.get(registration.run_id, 0.0)
         if not last:
             return "unknown"
@@ -956,9 +1198,7 @@ class ControlRoom:
         """
         last = state.last_observed_at
         idle = current - last if last else float("inf")
-        if state.lifecycle in ("finished", "failed", "cancelled"):
-            return (state.lifecycle_terminal_activity(), [])
-        if last == 0 and idle > CONNECTION_DISCONNECTED_SECONDS:
+        if last == 0:
             return ("unknown", [])
         evidence: list = []
         stuck = False
@@ -999,6 +1239,8 @@ class ControlRoom:
                         evidence.append("repeated_failures")
         if stuck:
             return ("possibly_stuck", evidence)
+        if state.lifecycle in ("finished", "failed", "cancelled"):
+            return ("quiet", [])
         if idle <= grogu_watch.IDLE_AFTER_SECONDS:
             return ("active", [])
         return ("quiet", [])
@@ -1028,11 +1270,19 @@ class ControlRoom:
         state: _AgentState,
         watch_row: Optional[dict],
     ) -> dict:
-        lifecycle = "complete" if state.started_basis == "lifecycle_start" else (
-            "partial" if watch_row else "unavailable"
+        lifecycle = (
+            "complete" if state.lifecycle_source != "unavailable" else "unavailable"
         )
-        activity = "complete" if watch_row or state.tools_started else "unavailable"
-        tools = "complete" if registration.events_path else "unavailable"
+        activity = (
+            "complete"
+            if state.last_observed_at or watch_row
+            else "unavailable"
+        )
+        tools = (
+            "complete"
+            if state.source_status in {"available", "empty"}
+            else "unavailable"
+        )
         outcomes = (
             "complete"
             if state.subagent_completed_seen
@@ -1078,8 +1328,94 @@ class ControlRoom:
             if state.last_observed_at > newest:
                 newest = state.last_observed_at
         if newest == 0.0:
-            return _epoch_to_iso(current)
+            return ""
         return _epoch_to_iso(newest)
+
+    def _source_coverage_for(
+        self,
+        registration: Registration,
+        state: _AgentState,
+        watch_row: Optional[dict],
+    ) -> list:
+        command_at = float(watch_row.get("last") or 0) if watch_row else 0.0
+        return [
+            {
+                "source": "registrations",
+                "status": "available",
+                "observed_through": int(self._cached_sample_at * 1000)
+                if self._cached_sample_at
+                else None,
+                "reason": "none",
+            },
+            {
+                "source": "commands",
+                "status": "available" if watch_row else "empty",
+                "observed_through": int(command_at * 1000) if command_at else None,
+                "reason": "none" if watch_row else "not_observed",
+            },
+            {
+                "source": "session_events",
+                "status": state.source_status,
+                "observed_through": int(state.last_observed_at * 1000)
+                if state.last_observed_at
+                else None,
+                "reason": state.source_reason,
+            },
+            {
+                "source": "runtime",
+                "status": "unavailable",
+                "observed_through": None,
+                "reason": "unsupported_source",
+            },
+        ]
+
+    def _operational_events_for(
+        self,
+        registration: Registration,
+        limit: int,
+    ) -> list:
+        events = [
+            _operational_event(registration, event)
+            for event in self._audit_events_for(registration.agent_key)
+        ]
+        return self._sort_operational_events(events)[: max(0, limit)]
+
+    @staticmethod
+    def _sort_operational_events(events: Iterable[dict]) -> list:
+        unique = {str(event.get("id", "")): event for event in events}
+        return sorted(
+            unique.values(),
+            key=lambda event: (int(event.get("at", 0)), str(event.get("id", ""))),
+            reverse=True,
+        )
+
+    @staticmethod
+    def _command_event(
+        registration: Registration,
+        watch_row: Optional[dict],
+    ) -> Optional[dict]:
+        if not watch_row:
+            return None
+        name = grogu_agentevents._safe_name(watch_row.get("last_command"))
+        at = float(watch_row.get("last") or 0)
+        if not name or not at:
+            return None
+        seed = (
+            f"{registration.agent_key}\0command\0{name}\0{at:.6f}"
+        ).encode("utf8")
+        return {
+            "id": "evt-" + hashlib.sha256(seed).hexdigest()[:24],
+            "agent_key": registration.agent_key,
+            "plan": registration.plan,
+            "type": "command",
+            "at": int(at * 1000),
+            "name": name,
+            "phase": "completed",
+            "success": None,
+            "duration_ms": None,
+            "error_code": None,
+            "basis": "observed",
+        }
 
     # -- misc -----------------------------------------------------------
 
@@ -1156,6 +1492,48 @@ def _audit_event_from_normalised(event) -> dict:
     if event.duration_ms is not None:
         audit["duration_ms"] = event.duration_ms
     return audit
+
+
+def _operational_event(
+    registration: Registration,
+    event: grogu_agentevents.NormalisedEvent,
+) -> dict:
+    event_type = {
+        "subagent_started": "run_started",
+        "subagent_completed": "run_finished",
+        "tool_started": "tool",
+        "tool_completed": "tool",
+        "permission_requested": "permission_requested",
+        "permission_completed": "permission_completed",
+    }.get(event.phase)
+    if event_type is None:
+        return {}
+    phase = {
+        "subagent_started": "started",
+        "subagent_completed": "completed",
+        "tool_started": "started",
+        "tool_completed": "completed",
+        "permission_requested": "started",
+        "permission_completed": "completed",
+    }[event.phase]
+    at = _iso_to_epoch(event.at)
+    seed = (
+        f"{registration.agent_key}\0{event.event_id}\0{event.phase}\0"
+        f"{event.at}\0{event.tool_call_id}\0{event.request_id}"
+    ).encode("utf8")
+    return {
+        "id": "evt-" + hashlib.sha256(seed).hexdigest()[:24],
+        "agent_key": registration.agent_key,
+        "plan": registration.plan,
+        "type": event_type,
+        "at": int(at * 1000),
+        "name": event.tool_name or None,
+        "phase": phase,
+        "success": event.success,
+        "duration_ms": event.duration_ms,
+        "error_code": event.error_code,
+        "basis": "observed",
+    }
 
 
 def _control_room_gap_from_agentevents(gap) -> dict:

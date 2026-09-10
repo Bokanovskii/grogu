@@ -481,13 +481,14 @@ def _normalise(event: object) -> Optional[NormalisedEvent]:
     success = _boolean(data.get("success"))
     duration_ms = _positive_int(data.get("durationMs"))
     error_code = None
-    if event_type == "tool.execution_complete":
+    if event_type in {"tool.execution_complete", "subagent.completed"}:
         raw_result = data.get("result")
-        # A tool result is not a normalised field; the only thing extracted
-        # from it is a safe error CLASS if the tool declared success=False.
-        # The result body itself is never inspected beyond that.
+        # A result is not a normalised field; the only thing extracted from it
+        # is a safe error CLASS if the producer declared success=False.
         if isinstance(raw_result, dict) and success is False:
             error_code = _error_code(raw_result.get("errorCode"))
+        if error_code is None and success is False:
+            error_code = _error_code(data.get("errorCode"))
     elif event_type == "permission.completed":
         result = data.get("result")
         if isinstance(result, dict):

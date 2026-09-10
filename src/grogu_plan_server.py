@@ -427,11 +427,13 @@ class _Handler(BaseHTTPRequestHandler):
                     ),
                 )
             elif path == "/api/feedback":
+                params = parse_qs(parsed.query)
                 self._json(
                     HTTPStatus.OK,
                     {
                         "feedback": self.context.documents.feedback_records(
-                            role=self.context.role
+                            role=self.context.role,
+                            plan=(params.get("plan") or [""])[0],
                         )
                     },
                 )
@@ -696,6 +698,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.context.documents.control_snapshot(
                 role=self.context.role,
                 room=self.context.control,
+                scope=(params.get("scope") or ["repository_program"])[0],
                 plan=(params.get("plan") or [""])[0],
                 filter_role=(params.get("role") or [""])[0],
                 workstream=(params.get("workstream") or [""])[0],
@@ -830,7 +833,11 @@ class _Handler(BaseHTTPRequestHandler):
             )
             self._json(
                 HTTPStatus.OK,
-                documents.withdraw_feedback(feedback_id, role=role),
+                documents.withdraw_feedback(
+                    feedback_id,
+                    role=role,
+                    plan=str(body.get("plan", "")),
+                ),
             )
             self.context.events.publish("control", {})
             return
