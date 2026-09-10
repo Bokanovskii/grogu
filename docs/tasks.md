@@ -57,17 +57,17 @@ different files, and a status change is a small, readable diff.
   "priority": "normal",
   "labels": [],
   "issue": 42,
-  "assignee": "ana@laptop",
-  "assignee_owner": "ana@laptop",
+  "assignee": "ana",
+  "assignee_owner": "ana",
   "assignee_agent": "friction-task-store",
   "assignee_session_id": "8b6d9e4b-4f7c-4b7f-9e26-9a7a4af0a4e0",
   "created_at": "2026-08-07T00:44:53+00:00",
-  "created_by": "ana@laptop",
-  "created_by_owner": "ana@laptop",
+  "created_by": "ana",
+  "created_by_owner": "ana",
   "created_by_agent": "friction-task-store",
   "updated_at": "2026-08-07T00:45:13+00:00",
   "revision": 3,
-  "log": [{"at": "…", "by": "ana@laptop", "event": "claim"}]
+  "log": [{"at": "…", "by": "ana", "event": "claim"}]
 }
 ```
 

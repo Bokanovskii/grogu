@@ -189,6 +189,25 @@ class GroguTaskStoreTests(unittest.TestCase):
         self.assertIn(child["id"], self.store.collect_expired())
         self.assertEqual(self.store.view(child["id"])["status"], grogu_tasks.CANCELLED)
 
+    def test_releasing_a_child_after_parent_closed_cancels_it(self):
+        with identity_env(agent="parent-agent", session_id="parent-session"):
+            parent = self.store.create("Parent task")
+            child = self.store.create("Child task", parent_task_id=parent["id"])
+            self.store.claim(child["id"], ttl=3600)
+
+        self.store.release(parent["id"], status=grogu_tasks.DONE, note="closed")
+
+        with identity_env(agent="parent-agent", session_id="parent-session"):
+            released = self.store.release(
+                child["id"], status=grogu_tasks.REVIEW, note="handoff"
+            )
+
+        self.assertEqual(released["status"], grogu_tasks.CANCELLED)
+        self.assertEqual(
+            len([entry for entry in released["log"] if entry["event"] == "cleanup"]),
+            1,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -313,6 +313,21 @@ class TaskStore:
             cleaned.append(child["id"])
         return cleaned
 
+    def _cancel_if_closed_parent(self, task: dict) -> bool:
+        parent_id = task.get("parent_task_id")
+        if not parent_id or not self._is_grogu_owned(task):
+            return False
+        parent_path = self.task_path(parent_id)
+        if not parent_path.exists():
+            return False
+        parent = self.load(parent_id)
+        if parent.get("status") not in CLOSED_STATUSES or task.get("status") in CLOSED_STATUSES:
+            return False
+        task["status"] = CANCELLED
+        self._clear_assignment_fields(task)
+        self._log(task, "cleanup", f"parent {parent_id}")
+        return True
+
     def grouped_tasks(self) -> dict:
         groups = {}
         tasks = self.list_tasks()
@@ -626,6 +641,8 @@ class TaskStore:
             if task["status"] == OPEN:
                 self._clear_assignment_fields(task)
             self._log(task, "release", note or task["status"])
+            if self._cancel_if_closed_parent(task):
+                self.lease_path(task_id).unlink(missing_ok=True)
             if task["status"] in CLOSED_STATUSES:
                 self.lease_path(task_id).unlink(missing_ok=True)
                 self._cleanup_subordinates(task_id)
@@ -651,12 +668,7 @@ class TaskStore:
                         task["status"] = OPEN
                         self._clear_assignment_fields(task)
                     self._log(task, "lease-expired", str(lease.get("owner", "")))
-                    parent_id = task.get("parent_task_id")
-                    if parent_id and self._is_grogu_owned(task):
-                        parent = self.load(parent_id) if self.task_path(parent_id).exists() else {}
-                        if parent and parent.get("status") in CLOSED_STATUSES:
-                            task["status"] = CANCELLED
-                            self._log(task, "cleanup", f"parent {parent_id}")
+                    self._cancel_if_closed_parent(task)
                     self._write_task(task)
         return released
 
