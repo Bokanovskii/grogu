@@ -935,6 +935,12 @@ class _Handler(BaseHTTPRequestHandler):
     def _layout(self, body: dict) -> dict:
         if body.get("algorithm") != "dagre":
             raise grogu_plans.PlanError("layout algorithm must be dagre")
+        scope = str(body.get("scope", "canvas"))
+        if scope not in {"canvas", "stage"}:
+            raise grogu_plans.PlanError("layout scope must be canvas or stage")
+        stage = str(body.get("stage", ""))
+        if scope == "stage" and stage not in grogu_plans.STAGES:
+            raise grogu_plans.PlanError("stage layout requires a known stage")
         direction = str(body.get("direction", "TB"))
         if direction not in {"TB", "LR"}:
             raise grogu_plans.PlanError("layout direction must be TB or LR")
@@ -946,7 +952,9 @@ class _Handler(BaseHTTPRequestHandler):
             for node in sorted(
                 document["nodes"].values(), key=grogu_plandoc.node_sort_key
             )
-            if node.get("kind") != "thread" and node.get("geometry")
+            if node.get("kind") != "thread"
+            and node.get("geometry")
+            and (scope != "stage" or node.get("stage") == stage)
         ]
         # A deterministic standard-library fallback. The contract freezes the
         # returned patch, not a Node runtime; the React build's explicit

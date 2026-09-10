@@ -1,5 +1,5 @@
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
-import type { EdgeKind, PlanEdge, PlanNode } from "../../api/types";
+import type { EdgeKind, PlanEdge, PlanNode, Stage } from "../../api/types";
 
 // Map the plan graph to xyflow's node/edge model and back. Regions are drawn as
 // frames behind their contents by z-order rather than as xyflow subflows, so
@@ -12,11 +12,16 @@ export function nodeType(n: PlanNode): "region" | "card" {
   return n.kind === "region" ? "region" : "card";
 }
 
-export function toFlowNodes(nodes: Record<string, PlanNode>, selectedIds: Set<string>): Node<FlowNodeData>[] {
+export function toFlowNodes(
+  nodes: Record<string, PlanNode>,
+  selectedIds: Set<string>,
+  stage: Stage,
+): Node<FlowNodeData>[] {
   const out: Node<FlowNodeData>[] = [];
   for (const n of Object.values(nodes)) {
     if (!n.geometry) continue; // only placed nodes appear on the canvas
     if (n.kind === "thread") continue; // threads are marks, not canvas shapes
+    if (n.stage !== stage) continue;
     out.push({
       id: n.id,
       type: nodeType(n),
@@ -43,6 +48,7 @@ export function toFlowEdges(
   edges: Record<string, PlanEdge>,
   nodes: Record<string, PlanNode>,
   selectedIds: Set<string>,
+  stage: Stage,
 ): Edge[] {
   const out: Edge[] = [];
   for (const e of Object.values(edges)) {
@@ -50,6 +56,7 @@ export function toFlowEdges(
     const a = nodes[e.from];
     const b = nodes[e.to];
     if (!a?.geometry || !b?.geometry) continue;
+    if (a.stage !== stage || b.stage !== stage) continue;
     if (e.kind === "contains" || e.kind === "anchors") continue; // structural, not drawn as connectors
     out.push({
       id: e.id,

@@ -334,6 +334,7 @@ export interface ProposalPreview {
 
 export interface LayoutRequest {
   scope: string;
+  stage?: Stage;
   algorithm: "dagre";
   direction?: "TB" | "LR";
 }

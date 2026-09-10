@@ -74,6 +74,18 @@ export function buildInitialState() {
       attrs: { status: i <= 2 ? "in_progress" : "todo" },
       geometry: { x: 100 + ((i - 1) % 4) * 260, y: 420 + Math.floor((i - 1) / 4) * 180, w: 220, h: 120, z: 3 },
     }));
+  add(node(
+    "task-implementation",
+    "task",
+    "implementation",
+    "Implementation-only canvas task",
+    "This node verifies that each stage owns a distinct canvas.",
+    {
+      order: 700,
+      attrs: { status: "todo" },
+      geometry: { x: 120, y: 120, w: 260, h: 120, z: 2 },
+    },
+  ));
 
   // Diagrams (2), each with parsed sub-nodes and a diagram self-loop.
   for (let d = 1; d <= 2; d++) {

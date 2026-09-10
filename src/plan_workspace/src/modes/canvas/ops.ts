@@ -46,7 +46,11 @@ export function useCanvasOps() {
       const ops: PatchOp[] = [];
       const alloc = new Allocator(state.counters);
       const regions = Object.values(state.nodes).filter(
-        (n) => n.kind === "region" && n.geometry && n.attrs?.["shape"] !== "arrow",
+        (n) =>
+          n.kind === "region" &&
+          n.stage === state.stage &&
+          n.geometry &&
+          n.attrs?.["shape"] !== "arrow",
       );
       for (const m of moves) {
         const n = state.nodes[m.id];
@@ -59,7 +63,13 @@ export function useCanvasOps() {
         const inside = regions.find(
           (r) => cx >= r.geometry!.x && cx <= r.geometry!.x + r.geometry!.w && cy >= r.geometry!.y && cy <= r.geometry!.y + r.geometry!.h,
         );
-        const existing = Object.values(state.edges).find((e) => e.kind === "contains" && e.to === m.id);
+        const existing = Object.values(state.edges).find(
+          (edge) =>
+            edge.kind === "contains" &&
+            edge.to === m.id &&
+            state.nodes[edge.from]?.kind === "region" &&
+            state.nodes[edge.from]?.stage === state.stage,
+        );
         if (inside && (!existing || existing.from !== inside.id)) {
           if (existing) ops.push({ op: "remove", path: `/edges/${existing.id}` });
           const edgeId = alloc.edge("contains");
@@ -246,7 +256,12 @@ export function useCanvasOps() {
 
     async autoLayout(direction: "TB" | "LR" = "TB") {
       try {
-        const res = await api.layout({ scope: "canvas", algorithm: "dagre", direction });
+        const res = await api.layout({
+          scope: "stage",
+          stage: state.stage,
+          algorithm: "dagre",
+          direction,
+        });
         if (res.ops.length) {
           const applied = await actions.writeGesture(
             res.ops,

@@ -561,7 +561,14 @@ async function handle(req, res) {
     const g = new dagre.graphlib.Graph();
     g.setGraph({ rankdir: dir, nodesep: 40, ranksep: 64 });
     g.setDefaultEdgeLabel(() => ({}));
-    const placed = Object.values(state.graph.nodes).filter((n) => n.geometry && n.kind !== "thread").sort((a, b) => a.id.localeCompare(b.id));
+    const placed = Object.values(state.graph.nodes)
+      .filter(
+        (node) =>
+          node.geometry &&
+          node.kind !== "thread" &&
+          (body.scope !== "stage" || node.stage === body.stage),
+      )
+      .sort((a, b) => a.id.localeCompare(b.id));
     for (const n of placed) g.setNode(n.id, { width: n.geometry.w, height: n.geometry.h });
     for (const e of Object.values(state.graph.edges).sort((a, b) => a.id.localeCompare(b.id))) {
       if (g.hasNode(e.from) && g.hasNode(e.to)) g.setEdge(e.from, e.to);

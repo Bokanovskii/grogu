@@ -94,6 +94,16 @@ test.describe("boot and shell", () => {
     await expect(page.locator(".tool-select")).toBeVisible();
   });
 
+  test("Canvas shows only the selected stage", async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press("Meta+2");
+    await expect(page.locator("#cv-title-goal-1")).toBeVisible();
+    await expect(page.locator("#cv-title-task-implementation")).toHaveCount(0);
+    await page.getByRole("tab", { name: "Implementation" }).click();
+    await expect(page.locator("#cv-title-task-implementation")).toBeVisible();
+    await expect(page.locator("#cv-title-goal-1")).toHaveCount(0);
+  });
+
   test("switching to Canvas with a document node selected does not crash", async ({ page }) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));

@@ -9,11 +9,20 @@ export function Layers() {
   const state = useApp();
   const actions = useActions();
 
-  const placed = Object.values(state.nodes).filter((n) => n.geometry && n.kind !== "thread");
+  const placed = Object.values(state.nodes).filter(
+    (node) =>
+      node.geometry &&
+      node.kind !== "thread" &&
+      node.stage === state.stage,
+  );
   const regions = placed.filter((n) => n.kind === "region");
   const containsByRegion = new Map<string, string[]>();
   for (const e of Object.values(state.edges)) {
-    if (e.kind === "contains") {
+    if (
+      e.kind === "contains" &&
+      state.nodes[e.from]?.kind === "region" &&
+      state.nodes[e.from]?.stage === state.stage
+    ) {
       const list = containsByRegion.get(e.from) ?? [];
       list.push(e.to);
       containsByRegion.set(e.from, list);

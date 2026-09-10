@@ -75,8 +75,8 @@ function CanvasInner() {
     [state.nodes, state.selection],
   );
   const flowEdges: Edge[] = useMemo(
-    () => toFlowEdges(state.edges, state.nodes, selectedIds),
-    [state.edges, state.nodes, selectedIds],
+    () => toFlowEdges(state.edges, state.nodes, selectedIds, state.stage),
+    [state.edges, state.nodes, selectedIds, state.stage],
   );
 
   // Sync nodes from the server graph whenever it advances or selection changes,
@@ -84,12 +84,12 @@ function CanvasInner() {
   useEffect(() => {
     if (draggingRef.current) return;
     hydratingSelectionRef.current = true;
-    setNodes(toFlowNodes(state.nodes, selectedIds));
+    setNodes(toFlowNodes(state.nodes, selectedIds, state.stage));
     const frame = window.requestAnimationFrame(() => {
       hydratingSelectionRef.current = false;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [state.revision, state.nodes, selectedIds, setNodes]);
+  }, [state.revision, state.nodes, state.stage, selectedIds, setNodes]);
 
   const onConnect = useCallback<OnConnect>(
     (conn) => {
@@ -275,7 +275,9 @@ function CanvasInner() {
     setModifierPan(event.metaKey || event.ctrlKey || modifierPanRef.current);
   };
 
-  const nodeCount = Object.values(state.nodes).filter((n) => n.geometry).length;
+  const nodeCount = Object.values(state.nodes).filter(
+    (node) => node.geometry && node.stage === state.stage,
+  ).length;
 
   return (
     <div
