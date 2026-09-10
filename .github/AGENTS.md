@@ -57,6 +57,17 @@ surfaced back to the user unprompted. When it reports a cluster as ripe, the fix
 belongs in the Grogu checkout, and a session there should propose that work
 rather than noting it and moving on.
 
+The user reviews a plan with `grogu review <plan-id>`, which opens it as a
+document in a local, loopback-only browser workspace for reading and commenting
+— on a passage, or on a node or edge of a diagram — and then requesting changes
+or approving. Comments live beside the plan in a git-ignored `review.json`,
+never in the plan Markdown, and never leave the machine. **Request changes**
+sends one steering note to the architect and blocks the gate; **Approve** is the
+user's alone, so an agent-launched workspace reads and comments but cannot
+approve. The same surface has a headless mirror (`grogu review list`, `comment`,
+`reply`, `resolve`, `request-changes`, `status`) so the architect reads a round
+without a browser; `docs/review.md` is the reference.
+
 Record steering with `grogu plan steer` so it reaches agents spawned later, and
 relay it to running subagents by pointing at the command rather than pasting the
 text. Give each repository its own role context in

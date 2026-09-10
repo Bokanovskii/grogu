@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plan review</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#doc-region">Skip to the plan</a>
+
+  <header class="header">
+    <div class="header-row">
+      <div class="header-identity">
+        <span class="header-plan-id" id="header-plan-id"></span>
+        <span class="header-title" id="header-title"></span>
+        <span class="header-role" id="header-role" hidden></span>
+      </div>
+      <div class="header-actions" id="header-actions">
+        <button class="btn drawer-toggle" id="drawer-toggle" type="button">Comments</button>
+        <button class="btn" id="request-changes-button" type="button">Request changes</button>
+        <button class="btn btn-primary" id="approve-button" type="button">Approve</button>
+        <span class="header-approved" id="header-approved" hidden></span>
+        <span class="header-refusal" id="header-refusal" hidden></span>
+        <span class="visually-hidden" id="rc-reason"></span>
+      </div>
+    </div>
+    <div class="tab-row">
+      <div class="tablist" id="tablist" role="tablist" aria-label="Plan stages"></div>
+      <div class="stage-select-wrap">
+        <label for="stage-select">Stage</label>
+        <select id="stage-select"></select>
+      </div>
+      <span class="round-chip" id="round-chip" aria-live="polite"></span>
+    </div>
+    <div class="round-line" id="round-line" hidden></div>
+  </header>
+
+  <div class="revision-banner" id="revision-banner" role="status" hidden></div>
+
+  <main class="layout" id="layout">
+    <section class="doc-region" id="doc-region" tabindex="-1" aria-label="Plan">
+      <div class="stage-meta" id="stage-meta"></div>
+      <div class="doc" id="doc"></div>
+    </section>
+    <aside class="rail" id="rail" aria-label="Comments"></aside>
+    <footer class="footer" id="footer">
+      <p class="privacy-line" id="privacy-line"></p>
+      <div><button class="btn" id="end-session-button" type="button">End session</button></div>
+    </footer>
+  </main>
+
+  <dialog id="dialog-request-changes">
+    <form method="dialog" data-form="request-changes">
+      <h2>Request changes</h2>
+      <p id="rc-summary"></p>
+      <label for="rc-note">Covering note (optional)</label>
+      <textarea id="rc-note" placeholder="What the architect should understand before reading the comments"></textarea>
+      <p class="dialog-error" id="rc-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn-text" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="rc-confirm">Request changes</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dialog-approve">
+    <form method="dialog" data-form="approve">
+      <h2 id="approve-heading">Approve this plan</h2>
+      <p id="approve-body"></p>
+      <p id="approve-body-2" hidden></p>
+      <label for="approve-note">Note (optional)</label>
+      <textarea id="approve-note"></textarea>
+      <p class="dialog-error" id="approve-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn-text" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="approve-confirm">Approve</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dialog-discard">
+    <form method="dialog">
+      <h2>Discard this comment?</h2>
+      <p id="discard-body"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn-text" data-discard-keep>Keep writing</button>
+        <button type="button" class="btn btn-primary" data-discard-confirm>Discard</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dialog-keyboard">
+    <form method="dialog">
+      <h2>Keyboard</h2>
+      <dl class="kbd-table">
+        <dt>j</dt><dd>next comment</dd>
+        <dt>k</dt><dd>previous comment</dd>
+        <dt>o</dt><dd>next orphaned comment</dd>
+        <dt>Enter</dt><dd>open the focused comment, or comment on the focused diagram target</dd>
+        <dt>c</dt><dd>comment on the selected text</dd>
+        <dt>r</dt><dd>reply to the open comment</dd>
+        <dt>e</dt><dd>resolve the open comment</dd>
+        <dt>[</dt><dd>previous stage</dd>
+        <dt>]</dt><dd>next stage</dd>
+        <dt>1 2 3 4</dt><dd>design, implementation, testing, evaluation</dd>
+        <dt>?</dt><dd>this list</dd>
+        <dt>Esc</dt><dd>close this list, a dialog, or the composer</dd>
+      </dl>
+      <p>Approve and Request changes have no shortcut. Reach them with Tab.</p>
+      <div class="dialog-actions">
+        <button type="submit" class="btn">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

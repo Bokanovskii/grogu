@@ -34,6 +34,8 @@ import grogu_personal_memory
 import grogu_platform
 import grogu_plans
 import grogu_privacy
+import grogu_review
+import grogu_review_server
 import grogu_skills
 import grogu_telemetry
 import grogu_tasks
@@ -1783,7 +1785,17 @@ def plan_list(args: argparse.Namespace) -> int:
 
 def plan_status(args: argparse.Namespace) -> int:
     store = plan_store(args)
-    summary = store.summary(store.resolve(args.id))
+    plan_id = store.resolve(args.id)
+    summary = store.summary(plan_id)
+    review_line = ""
+    review = grogu_review.ReviewStore(store)
+    if review.path(plan_id).exists():
+        rsummary = review.summary(plan_id)
+        if rsummary.get("threads"):
+            review_line = f"review: round {rsummary.get('round')}, {rsummary.get('open', 0)} open"
+            if rsummary.get("orphaned"):
+                review_line += f", {rsummary['orphaned']} orphaned"
+            summary = dict(summary, review=rsummary)
     if args.json:
         print_json(summary)
         return 0
@@ -1850,6 +1862,8 @@ def plan_status(args: argparse.Namespace) -> int:
                 text = text[:87] + "... (`grogu plan steering --all` for the rest)"
             who = ", ".join(note.get("unread_by") or [note["role"]])
             print(f"  steering #{note['seq']} has not reached {who}: {text}")
+    if review_line:
+        print(f"  {review_line}")
     return 0
 
 
@@ -2740,6 +2754,26 @@ def plan_brief(args: argparse.Namespace) -> int:
             f"{len(summary.get('open_amendments') or [])} open amendment(s), "
             f"{len(summary.get('open_defects') or [])} open defect(s)"
         )
+    # The user reviews the plan through `grogu review`; the architect reads the
+    # round back here, without a browser. Assembled in the CLI from the review
+    # store so the module dependency stays one-way (grogu_plans never imports
+    # grogu_review).
+    if plan_id and args.role == grogu_plans.ARCHITECT:
+        review = grogu_review.ReviewStore(store)
+        if review.path(plan_id).exists():
+            rsummary = review.summary(plan_id)
+            open_threads = review.threads(plan_id, status="open")
+            if open_threads:
+                print(
+                    f"\n## Open review comments ({rsummary.get('open', len(open_threads))})\n"
+                )
+                for thread in open_threads:
+                    target = _thread_target(thread)
+                    comments = thread.get("comments", [])
+                    body = comments[0].get("body", "") if comments else ""
+                    print(f"- [{thread['id']} {thread['stage']} {_thread_state_word(thread)}] {target}")
+                    if body:
+                        print(f"    {body}")
     return 0
 
 
@@ -3522,6 +3556,319 @@ def _confidence(value: str) -> float:
     if not 0.0 <= number <= 1.0:
         raise argparse.ArgumentTypeError("confidence is between 0 and 1")
     return number
+
+
+# -- the `review` command family ---------------------------------------------
+
+
+def _review_effective_role() -> str:
+    return grogu_review_server.effective_role()
+
+
+def _review_store(args: argparse.Namespace):
+    store = plan_store(args)
+    return store, grogu_review.ReviewStore(store)
+
+
+def _open_in_browser(url: str) -> bool:
+    try:
+        import webbrowser
+
+        return webbrowser.open(url, new=1)
+    except Exception:  # noqa: BLE001 -- a browser that will not open is not fatal
+        return False
+
+
+def review_open(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id)
+    role = _review_effective_role()
+    manifest = store.load(plan_id)
+    readable = [
+        stage
+        for stage in grogu_plans.STAGES
+        if stage in grogu_plans.ROLE_READABLE_STAGES[role]
+    ]
+    assets = grogu_review_server.assets_status()
+
+    def on_ready(info: dict) -> None:
+        if args.json:
+            print_json(
+                {
+                    "url": info["url"],
+                    "host": info["host"],
+                    "port": info["port"],
+                    "plan": info["plan"],
+                    "role": info["role"],
+                    "assets": {"mermaid": assets["mermaid"], "version": assets["version"]},
+                    "token": info["token"],
+                    "launch_url": f"{info['url']}/?t={info['token']}",
+                }
+            )
+            return
+        print(f"{plan_id}  {manifest.get('status')}  {manifest.get('title', '')}")
+        print(f"  reading as {role}: {', '.join(readable)}")
+        if not assets["mermaid"]:
+            print(
+                "  diagrams: mermaid not installed; "
+                "`grogu review assets --install`"
+            )
+        launch_url = f"{info['url']}/?t={info['token']}"
+        if args.no_open:
+            print(f"  open {launch_url}")
+        else:
+            _open_in_browser(launch_url)
+            print(f"  {info['url']}  opened in your browser")
+        print("  ctrl-c ends the session")
+
+    grogu_review_server.serve(
+        plan_id,
+        role=role,
+        stage=args.stage or "",
+        port=args.port,
+        timeout=args.timeout,
+        store=store,
+        on_ready=on_ready,
+    )
+    return 0
+
+
+def _thread_state_word(thread: dict) -> str:
+    state = thread.get("anchor_state", "anchored")
+    return "moved" if state == "shifted" else state
+
+
+def _thread_target(thread: dict) -> str:
+    anchor = thread.get("anchor", {}) or {}
+    if anchor.get("kind") == "mermaid":
+        target = anchor.get("target", "diagram")
+        name = anchor.get("node_id", "")
+        label = anchor.get("label", "")
+        head = f"{target}:{name}".rstrip(":")
+        return f'{head} "{label}"' if label else head
+    return f'"{anchor.get("exact", "")}"'
+
+
+def review_list(args: argparse.Namespace) -> int:
+    store, review = _review_store(args)
+    plan_id = store.resolve(args.id)
+    role = _review_effective_role()
+    review.sync(plan_id, role=role)
+    threads = review.threads(
+        plan_id,
+        stage=args.stage or "",
+        status="open" if getattr(args, "open_only", False) else "",
+    )
+    if args.json:
+        print_json({"plan": plan_id, "threads": threads})
+        return 0
+    for thread in threads:
+        target = _thread_target(thread)
+        print(
+            f"{thread['id']:<3} {thread['status']:<9} {thread['stage']:<15} "
+            f"{_thread_state_word(thread):<9} {target}"
+        )
+        comments = thread.get("comments", [])
+        if comments:
+            first = comments[0]
+            author = first.get("author") or "reviewer"
+            print(f"{'':<40}{author}: {first.get('body', '')}")
+    return 0
+
+
+def review_comment(args: argparse.Namespace) -> int:
+    store, review = _review_store(args)
+    plan_id = store.resolve(args.id)
+    role = _review_effective_role()
+    view = review.stage_view(plan_id, args.stage, role=role)
+    body_md = view.get("markdown", "")
+    revision = view.get("revision", 0)
+    chosen = [name for name in ("quote", "node", "edge") if getattr(args, name)]
+    if len(chosen) != 1:
+        raise grogu_review.ReviewError(
+            "comment on exactly one of --quote, --node or --edge"
+        )
+    if args.quote:
+        occurrences = body_md.count(args.quote)
+        if occurrences == 0:
+            raise grogu_review.ReviewError(
+                f"the quoted text is not in the {args.stage} stage body"
+            )
+        if occurrences > 1:
+            raise grogu_review.ReviewError(
+                f"the quoted text occurs {occurrences} times in the {args.stage} "
+                "stage body; quote more context so it is unambiguous"
+            )
+        start = body_md.index(args.quote)
+        anchor = grogu_review.text_anchor(
+            body_md, start, start + len(args.quote), stage=args.stage, revision=revision
+        )
+    else:
+        blocks = view.get("mermaid", [])
+        if not blocks:
+            raise grogu_review.ReviewError(
+                f"the {args.stage} stage body has no diagrams to comment on"
+            )
+        if args.diagram < 0 or args.diagram >= len(blocks):
+            raise grogu_review.ReviewError(
+                f"diagram {args.diagram} is out of range (0..{len(blocks) - 1})"
+            )
+        block = blocks[args.diagram]
+        parsed = block.get("parsed", {})
+        if args.node:
+            if not any(node.get("id") == args.node for node in parsed.get("nodes", [])):
+                raise grogu_review.ReviewError(
+                    f"no node {args.node!r} in diagram {args.diagram}"
+                )
+            anchor = grogu_review.mermaid_anchor(
+                stage=args.stage,
+                revision=revision,
+                body=body_md,
+                block=block,
+                parsed=parsed,
+                target="node",
+                node_id=args.node,
+            )
+        else:
+            if ">" not in args.edge:
+                raise grogu_review.ReviewError("edge is written as A>B")
+            source_id, target_id = (part.strip() for part in args.edge.split(">", 1))
+            edge = next(
+                (
+                    e
+                    for e in parsed.get("edges", [])
+                    if e.get("from") == source_id and e.get("to") == target_id
+                ),
+                None,
+            )
+            if edge is None:
+                raise grogu_review.ReviewError(
+                    f"no edge {source_id}>{target_id} in diagram {args.diagram}"
+                )
+            anchor = grogu_review.mermaid_anchor(
+                stage=args.stage,
+                revision=revision,
+                body=body_md,
+                block=block,
+                parsed=parsed,
+                target="edge",
+                edge=edge,
+            )
+    thread = review.add_thread(
+        plan_id, stage=args.stage, anchor=anchor, body=args.body, author=grogu_plans.actor()
+    )
+    if args.json:
+        print_json(thread)
+    else:
+        print(f"{thread['id']} on {args.stage}: {_thread_target(thread)}")
+    return 0
+
+
+def review_reply(args: argparse.Namespace) -> int:
+    store, review = _review_store(args)
+    plan_id = store.resolve(args.id)
+    thread = review.reply(plan_id, args.thread, args.body, author=grogu_plans.actor())
+    if args.json:
+        print_json(thread)
+    else:
+        print(f"replied to {args.thread}")
+    return 0
+
+
+def review_resolve(args: argparse.Namespace) -> int:
+    store, review = _review_store(args)
+    plan_id = store.resolve(args.id)
+    thread = review.resolve_thread(
+        plan_id, args.thread, note=args.note or "", author=grogu_plans.actor()
+    )
+    if args.json:
+        print_json(thread)
+    else:
+        print(f"resolved {args.thread}")
+    return 0
+
+
+def review_request_changes(args: argparse.Namespace) -> int:
+    store, review = _review_store(args)
+    plan_id = store.resolve(args.id)
+    role = _review_effective_role()
+    result = review.request_changes(plan_id, note=args.note or "", role=role)
+    if args.json:
+        print_json(result)
+    else:
+        summary = review.summary(plan_id)
+        print(
+            f"requested changes on {plan_id}: round {summary.get('round')} sent "
+            "to the architect as one steering note"
+        )
+    return 0
+
+
+def review_status(args: argparse.Namespace) -> int:
+    store, review = _review_store(args)
+    plan_id = store.resolve(args.id)
+    role = _review_effective_role()
+    review.sync(plan_id, role=role)
+    manifest = store.load(plan_id)
+    summary = review.summary(plan_id)
+    data = review.load(plan_id)
+    if args.json:
+        print_json({"plan": plan_id, "summary": summary, "rounds": data.get("rounds", [])})
+        return 0
+    print(f"{plan_id}  {manifest.get('status')}  {manifest.get('title', '')}")
+    if summary.get("threads"):
+        line = f"  review: round {summary.get('round')}, {summary.get('open', 0)} open"
+        if summary.get("orphaned"):
+            line += f", {summary['orphaned']} orphaned"
+        print(line)
+    else:
+        print("  review: no comments yet")
+    for entry in data.get("rounds", []):
+        stamp = entry.get("requested_at") or entry.get("opened_at") or ""
+        print(f"  rounds: {entry.get('number')} {entry.get('state')} at {stamp}")
+    by_stage: dict = {}
+    for thread in review.threads(plan_id):
+        by_stage[thread["stage"]] = by_stage.get(thread["stage"], 0) + 1
+    if by_stage:
+        print(
+            "  threads: "
+            + ", ".join(f"{stage} {count}" for stage, count in sorted(by_stage.items()))
+        )
+    return 0
+
+
+def review_assets(args: argparse.Namespace) -> int:
+    if args.install:
+        result = grogu_review_server.install_asset(source=args.from_path or "")
+        if args.json:
+            print_json(result)
+        else:
+            print(
+                f"installed mermaid {result['version']} "
+                f"({result['bytes']} bytes) at {result['installed']}"
+            )
+        return 0
+    status = grogu_review_server.assets_status()
+    if args.json:
+        print_json(status)
+        return 0
+    if status["mermaid"]:
+        print(f"mermaid {status['version']} installed at {status['path']}")
+    else:
+        print(
+            f"mermaid {status['version']} not installed; "
+            "`grogu review assets --install` (or set GROGU_REVIEW_MERMAID)"
+        )
+    return 0
+
+
+def _review_no_subcommand(args: argparse.Namespace) -> int:
+    print(
+        "grogu review <plan-id> [open|list|comment|reply|resolve|"
+        "request-changes|status|assets]",
+        file=sys.stderr,
+    )
+    return 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -4642,6 +4989,85 @@ def build_parser() -> argparse.ArgumentParser:
     plan_design_review_parser.add_argument("--role")
     plan_design_review_parser.set_defaults(handler=plan_design_review)
 
+    review = subparsers.add_parser(
+        "review", help="read a plan and comment on it in a local browser workspace"
+    )
+    review_subparsers = review.add_subparsers(dest="review_command")
+    review.set_defaults(handler=_review_no_subcommand, _plan_id_required=False)
+    review_common = argparse.ArgumentParser(add_help=False)
+    review_common.add_argument(
+        "--repo", help="repository root (default: the enclosing Git work tree)"
+    )
+
+    def _review_plan_id(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("id", nargs="?", default="")
+        parser.add_argument(
+            "--plan", "--id", dest="plan_flag", default="", help=argparse.SUPPRESS
+        )
+        parser.set_defaults(_plan_id_required=True)
+
+    review_open_parser = review_subparsers.add_parser("open", parents=[review_common])
+    _review_plan_id(review_open_parser)
+    review_open_parser.add_argument("--stage", default="")
+    review_open_parser.add_argument("--port", type=int, default=0)
+    review_open_parser.add_argument("--no-open", dest="no_open", action="store_true")
+    review_open_parser.add_argument(
+        "--timeout", type=int, default=grogu_review_server.DEFAULT_TIMEOUT
+    )
+    review_open_parser.add_argument("--json", action="store_true")
+    review_open_parser.set_defaults(handler=review_open)
+
+    review_list_parser = review_subparsers.add_parser("list", parents=[review_common])
+    _review_plan_id(review_list_parser)
+    review_list_parser.add_argument("--stage", default="")
+    review_list_parser.add_argument("--open", dest="open_only", action="store_true")
+    review_list_parser.add_argument("--json", action="store_true")
+    review_list_parser.set_defaults(handler=review_list)
+
+    review_comment_parser = review_subparsers.add_parser("comment", parents=[review_common])
+    _review_plan_id(review_comment_parser)
+    review_comment_parser.add_argument("--stage", required=True)
+    review_comment_parser.add_argument("--quote")
+    review_comment_parser.add_argument("--node")
+    review_comment_parser.add_argument("--edge")
+    review_comment_parser.add_argument("--diagram", type=int, default=0)
+    review_comment_parser.add_argument("--body", required=True)
+    review_comment_parser.add_argument("--json", action="store_true")
+    review_comment_parser.set_defaults(handler=review_comment)
+
+    review_reply_parser = review_subparsers.add_parser("reply", parents=[review_common])
+    _review_plan_id(review_reply_parser)
+    review_reply_parser.add_argument("thread")
+    review_reply_parser.add_argument("--body", required=True)
+    review_reply_parser.add_argument("--json", action="store_true")
+    review_reply_parser.set_defaults(handler=review_reply)
+
+    review_resolve_parser = review_subparsers.add_parser("resolve", parents=[review_common])
+    _review_plan_id(review_resolve_parser)
+    review_resolve_parser.add_argument("thread")
+    review_resolve_parser.add_argument("--note", default="")
+    review_resolve_parser.add_argument("--json", action="store_true")
+    review_resolve_parser.set_defaults(handler=review_resolve)
+
+    review_rc_parser = review_subparsers.add_parser(
+        "request-changes", parents=[review_common]
+    )
+    _review_plan_id(review_rc_parser)
+    review_rc_parser.add_argument("--note", default="")
+    review_rc_parser.add_argument("--json", action="store_true")
+    review_rc_parser.set_defaults(handler=review_request_changes)
+
+    review_status_parser = review_subparsers.add_parser("status", parents=[review_common])
+    _review_plan_id(review_status_parser)
+    review_status_parser.add_argument("--json", action="store_true")
+    review_status_parser.set_defaults(handler=review_status)
+
+    review_assets_parser = review_subparsers.add_parser("assets", parents=[review_common])
+    review_assets_parser.add_argument("--install", action="store_true")
+    review_assets_parser.add_argument("--from", dest="from_path", default="")
+    review_assets_parser.add_argument("--json", action="store_true")
+    review_assets_parser.set_defaults(handler=review_assets, _plan_id_required=False)
+
     skill = subparsers.add_parser(
         "skill", help="skills the agents write for the agents that come after them"
     )
@@ -5152,6 +5578,7 @@ GROGU_COMMANDS = frozenset(
         "banner",
         "task",
         "plan",
+        "review",
         "design",
         "session",
         "worktree",
@@ -5192,10 +5619,33 @@ def _role_claim_is_honest(parsed: argparse.Namespace) -> bool:
     return False
 
 
+def _normalize_review_args(arguments: list[str]) -> list[str]:
+    """`grogu review <plan-id>` means `grogu review open <plan-id>`.
+
+    A bare plan id in the first slot is not a subcommand name, so argparse would
+    reject it. Insert the implicit `open` so both spellings work, exactly as
+    `grogu review open` and `grogu review` are documented to be the same thing.
+    """
+    known = {
+        "open", "list", "comment", "reply", "resolve",
+        "request-changes", "status", "assets",
+    }
+    if arguments and arguments[0] == "review":
+        if len(arguments) == 1:
+            return ["review", "open"]
+        first = arguments[1]
+        if first not in known and not first.startswith("-"):
+            return ["review", "open", *arguments[1:]]
+        if first in ("-h", "--help"):
+            return arguments
+    return arguments
+
+
 def main(arguments: list[str]) -> int:
     if arguments[:2] == ["banner", "status-line"]:
         sys.stdout.write(grogu_banner.status_line_frame() + "\n")
         return 0
+    arguments = _normalize_review_args(arguments)
     is_grogu_command = bool(arguments) and (
         arguments[0] in GROGU_COMMANDS
         or (len(arguments) == 1 and arguments[0] in {"--version", "-h", "--help"})
@@ -5224,6 +5674,12 @@ def main(arguments: list[str]) -> int:
     except grogu_plans.PlanError as error:
         print(f"grogu: {error}", file=sys.stderr)
         return 3
+    except grogu_review.ReviewError as error:
+        print(f"grogu: {error}", file=sys.stderr)
+        return 3
+    except grogu_review_server.ReviewServerError as error:
+        print(f"grogu: {error}", file=sys.stderr)
+        return 2
     except grogu_tasks.TaskError as error:
         print(f"grogu: {error}", file=sys.stderr)
         return 2

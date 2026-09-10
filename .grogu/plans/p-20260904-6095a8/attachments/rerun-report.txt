@@ -1,0 +1,61 @@
+Design re-review — p-20260904-6095a8, Interactive plan review workspace
+
+Playwright 1.55.0 / Chromium 1187, headless, fresh automation-owned context and
+temporary profile per run, viewport 1280x800 unless stated. Subjects are three
+throwaway fixture plans in scratch git repositories; no capture contains the
+user's own plan text, a session token or a cookie.
+
+RESULT PER SCENARIO
+
+FAIL  D1   a written stage whose progress is `pending` renders its body
+                measured on a stage with written=true, markdown=792 bytes, state="pending":
+                the page shows the state block "Not written yet" / "The architect writes the
+                implementation plan before this stage can be reviewed.", 0 mapped spans, empty
+                stage meta and an empty rail. Passes only once the stage is marked complete
+                (heading "Interactive plan review workspace - design", 1436 mapped spans).
+                Evidence R22-written-pending-stage.png, d1-probe.json.
+FAIL  D2b  the unwritten panel names the tab's own stage
+                on the testing tab it reads "The architect writes the implementation plan
+                before this stage can be reviewed." Evidence d1-probe.json.
+PASS  E1a  a text selection creates a thread from the browser
+                {"cards":1,"marks":1,"composerGone":true,"failure":null} posts=["200 POST /api/threads"]
+PASS  E1b  a degraded-mode node chip creates a thread
+                composer header "node · Parse the plan"
+PASS  E1c  a degraded-mode edge chip creates a thread
+                composer header "edge · Anchor comments → Review round (\"stored\")"
+PASS  E5   an edge card header names node labels, not Mermaid ids
+                ["\"This stage exists to exercise \"","node · Parse the plan","edge · Anchor comments → Review round (\"stored\")"]
+PASS  E1d  every stored anchor carries body_digest and a revision
+                [{"id":"c1","kind":"text","hasDigest":true,"revision":1,"state":"anchored"},{"id":"c2","kind":"mermaid","hasDigest":true,"revision":1,"state":"anchored"},{"id":"c3","kind":"mermaid","hasDigest":true,"revision":1,"state":"anchored"}]
+PASS  E2a  each card with a visible mark sits at that mark's vertical offset (±2px)
+                [{"id":"c1","markTop":221,"cardTop":221}]
+PASS  E2b  de-collided cards keep at least 8px between them
+                [534,8]
+PASS  E4a  a wrapped list item keeps its continuation line inside the item
+                {"i2Text":"I2. Every stage read goes through the plan store, so role isolation is enforced by exactly the code that enforces it today.A nested item, to","stray":false}
+PASS  E4b  an indented list under that item renders nested inside it
+                {"nested":true,"items":["A nested item, to check list indentation.","A second nested item."]}
+PASS  E3   the hidden revision banner occupies no vertical space
+                {"hidden":true,"display":"none","height":0}
+PASS  E7   the stage tab reads `Implementation · N` with a space either side
+                ["Design","Implementation · 3","Testing","Evaluation"]
+PASS  E6   the drawer toggle carries the open count as `Comments — N`
+                {"text":"Comments — 3","visible":true}
+PASS  D3   focus order is skip link, Request changes, Approve, then the stage tabs
+                ["skip-link|Skip to the plan","request-changes-button|Request changes","approve-button|Approve","tab|Design","PRE|No comments yet\n\nSelec"]
+FAIL  D4   the round chip carries `changes requested` in the fixed segment order
+                {"before":"round 1 · 6 open","after":"round 1 · 6 open"}
+FAIL  D5   the waiting Request-changes button uses the round string, not the nothing-open string
+                {"chip":"round 1 · 6 open","line":"Round 1 is with the architect. Add a comment to open round 2.","lineHidden":false,"rcDisabled":true,"rcTitle":"No open comments to send.","rcDescribed":null}
+FAIL  D2   the sealed panel names the tab's own stage and the effective role
+                {"Testing":{"heading":"Sealed","body":"The testing plan is written for the tester and is not readable by the engineer. An implementation written against its own tests only proves the tests were satisfiable."},"Evaluation":{"heading":"Sealed","body":"The testing plan is written for the tester and is not readable by the engineer. An implementation written against its own tests only proves the tests were satisfiable."}}
+PASS  E8   the orphaned card names the revision it orphaned at
+                {"meta":"implementation · revision 2 · 1.9 KB","header":"Orphaned — 1","explain":"The plan was rewritten and this text is no longer in it. Your comments are kept with the words you quoted, and nothing was deleted.","card":{"state":"orphaned","revision":"orphaned since revision 2","quote":"\"individually commentable\"","expanded":true,"border":"2px rgb(138, 75, 0)"},"chip":"round 1 · 1 open · 1 orphaned"}
+
+RAIL ORDER (fixture with one orphaned thread pinned at the top)
+
+  dom order    ['c7', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6']
+  visual order ['c7', 'c1', 'c4', 'c5', 'c6', 'c2', 'c3']
+  gaps         [24, 8, 8, 8, 85, 8]  (every gap >= 8px)
+
+14 of 19 scenarios pass; the five failures are all design clauses added in design revision 3 and are listed as defects d5-d8 on the plan.

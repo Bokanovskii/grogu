@@ -1,0 +1,10 @@
+engineer evaluation tab: {"heading":"Sealed","body":"The testing plan is written for the tester and is not readable by the engineer. An implementation written against its own tests only proves the tests were satisfiable."}
+shot 63-engineer-evaluation-sealed.png
+composer after submit: {"failure":"Could not save. Your text is still here.","retry":true,"textKept":"A worked example would settle this.","cards":6}
+shot 70-composer-save-failure.png
+after request-changes: {"chip":"round 1 · 5 open · 1 orphaned","lineHidden":false,"line":"Round 1 is with the architect. Add a comment to open round 2.","rcDisabled":true,"rcTitle":"No open comments to send.","error":""}
+shot 71-round-sent.png
+approve dialog after round: {"heading":"Approve with 5 open comments?","body":"These comments stay open and nobody is required to answer them. Request changes instead if you want them addressed first.","confirm":"Approve anyway"}
+shot 72-approve-dialog.png
+tab order: ["tab|Implementation·5","mark-moved|A local, browser served ","MARK|role isolation is","btn-text copy-button|Copy","chip chip-threaded|Parse the plan","chip|Render HTML","chip|Anchor comments","chip|Review round","chip|Parse the plan → Render ","chip|Render HTML → Anchor com"]
+dialog backdrop: "rgba(0, 0, 0, 0.32)"

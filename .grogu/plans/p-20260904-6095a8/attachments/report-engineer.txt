@@ -1,0 +1,11 @@
+header: {"role":"reading as engineer","roleHidden":false,"approveHidden":true,"approveDisplay":"none","refusal":"Approval is the user's. This workspace is reading as the engineer, so it can read and comment only.","refusalHidden":false,"requestHidden":false}
+shot 60-engineer-header.png
+tabs: [{"t":"Design","disabled":false,"sel":"true"},{"t":"Implementation·5","disabled":false,"sel":"false"},{"t":"Testing","disabled":false,"sel":"false"},{"t":"Evaluation","disabled":false,"sel":"false"}]
+sealed panel: {"heading":"Sealed","body":"The testing plan is written for the tester and is not readable by the engineer. An implementation written against its own tests only proves the tests were satisfiable."}
+shot 61-sealed-stage.png
+sealed leak (expect false): false
+payload readable stages: ["design","implementation"]
+approve visible to engineer: false
+direct POST /api/approve: {"status":409,"body":"{\"error\": \"the engineer may not approve a plan on the user's behalf; approval is the user's alone, and --as-user does not lift that. Present the plan and stop\"}"}
+shot 62-engineer-approve-refusal.png
+api calls: ["200 http://127.0.0.1:8751/api/plan","200 http://127.0.0.1:8751/api/plan","200 http://127.0.0.1:8751/api/plan","409 http://127.0.0.1:8751/api/approve"]

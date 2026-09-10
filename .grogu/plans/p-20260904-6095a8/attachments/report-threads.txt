@@ -1,0 +1,32 @@
+tabs: [{"text":"Design","selected":"false","disabled":false},{"text":"Implementation·5","selected":"true","disabled":false},{"text":"Testing","selected":"false","disabled":false},{"text":"Evaluation","selected":"false","disabled":false}]
+round chip: "round 1 · 5 open"
+stage meta: "implementation · revision 1 · 1.9 KB"
+marks: [{"text":"individually commentable","role":"button","tabindex":"0","label":"comment on \"individually commentable\"","shadow":"rgb(96, 146, 219) 0px -2px 0px 0px inset","bg":"rgba(0, 0, 0, 0)","threads":"c2"},{"text":"role isolation is","role":"button","tabindex":"0","label":"comment on \"role isolation is\"","shadow":"rgb(96, 146, 219) 0px -2px 0px 0px inset","bg":"rgba(0, 0, 0, 0)","threads":"c3"}]
+cards: [{"label":"Comment c1","state":null,"quote":"\"Anchor comments\"","comment":"This node does two things.","meta":"charlie · 7m ago","top":158,"width":280},{"label":"Comment c2","state":null,"quote":"\"individually commentable\"","comment":"Say what happens when a node is renamed.","meta":"charlie · just now","top":236,"width":280},{"label":"Comment c3","state":null,"quote":"\"role isolation is\"","comment":"Name the method that enforces this.","meta":"charlie · just now","top":314,"width":280},{"label":"Comment c4","state":null,"quote":"node · Parse the plan","comment":"This node does two things; split it.","meta":"charlie · just now","top":392,"width":280},{"label":"Comment c5","state":null,"quote":"edge · Anchor → Review (\"stored\")","comment":"Is this edge conditional on a stored anchor?","meta":"charlie · just now","top":470,"width":280}]
+mark/card alignment: [{"id":"c2","markTop":330,"cardTop":236},{"id":"c3","markTop":618,"cardTop":314}]
+shot 20-threads-rail.png
+focused: {"markBg":"rgb(226, 235, 248)","markShadow":"rgb(11, 87, 199) 0px -2px 0px 0px inset","cardBorder":"2px rgb(11, 87, 199)","actions":["Reply","Resolve"]}
+shot 21-thread-focused.png
+diagram: {"notice":"Mermaid is not installed, so this diagram is shown as source. Every node and edge below is still commentable.grogu review assets --installCopy","code":"grogu review assets --installCopy","copyButton":"Copy","rows":[{"label":"Nodes","chips":[{"t":"Parse the plan","threaded":true,"label":null},{"t":"Render HTML","threaded":false,"label":null},{"t":"Anchor comments","threaded":false,"label":null},{"t":"Review round","threaded":false,"label":null}]},{"label":"Edges","chips":[{"t":"Parse the plan → Render HTML","threaded":false,"label":null},{"t":"Render HTML → Anchor comments","threaded":false,"label":null},{"t":"Anchor comments → Review round","threaded":true,"label":null},{"t":"Render HTML → Review round","threaded":false,"label":null}]}]}
+shot 22-diagram-degraded-threaded.png
+after jj: "Comment c4"
+shot 23-keyboard-j.png
+after r: {"replyOpen":true,"focusedIsTextarea":"textarea"}
+shot 24-reply-open.png
+focus ring: {"el":"approve-button","outline":"2px solid rgb(11, 87, 199)","offset":"2px"}
+shot 25-focus-ring.png
+request-changes dialog: {"open":true,"heading":"Request changes","summary":"5 open comments go to the architect as one steering note. The plan moves to needs_review and work stays blocked until the architect rewrites it.","label":"Covering note (optional)","placeholder":"What the architect should understand before reading the comments","confirm":"Request changes","cancel":"Cancel","width":480}
+shot 26-request-changes-dialog.png
+approve dialog: {"open":true,"heading":"Approve with 5 open comments?","body":"These comments stay open and nobody is required to answer them. Request changes instead if you want them addressed first.","body2":"Approval releases the engineer and the tester to build p-20260904-6c2abf.","confirm":"Approve anyway","width":480}
+shot 27-approve-open-threads.png
+keyboard dialog: {"open":true,"rows":["j = next comment","k = previous comment","o = next orphaned comment","Enter = open the focused comment, or comment on the focused diagram target","c = comment on the selected text","r = reply to the open comment","e = resolve the open comment","[ = previous stage","] = next stage","1 2 3 4 = design, implementation, testing, evaluation","? = this list","Esc = close this list, a dialog, or the composer"],"note":"Approve and Request changes have no shortcut. Reach them with Tab."}
+shot 28-keyboard-help.png
+shot 29-dark-threads.png
+1100: {"toggleHidden":true,"toggleText":"Comments","railW":320,"railDisplay":"block"}
+shot 30-responsive-1100.png
+1100 drawer open: {"railW":320}
+shot 31-responsive-1100-drawer.png
+820: {"selectVisible":"flex","selectLabel":"Stage","tablist":"none","railW":820,"docW":788,"hScroll":false}
+shot 32-responsive-820.png
+reduced motion: {"transition":"0.001s","scroll":"auto"}
+console errors: []

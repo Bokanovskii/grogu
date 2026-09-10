@@ -1,0 +1,8 @@
+flowchart LR
+  Parse[Parse the plan] --> Render[Render HTML]
+  Render --> Anchor[Anchor comments]
+  Parse -->|retry| Parse
+  subgraph Server
+    Render
+    Anchor
+  end

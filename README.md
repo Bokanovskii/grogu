@@ -369,6 +369,18 @@ reason it was declined for, because a fresh context has no memory of being told
 no. `grogu skill contest` is how an agent argues with that reason instead of
 re-proposing under a new name.
 
+`grogu review <plan-id>` is how the user reads and comments on a plan. It opens
+the plan as a document in a local, loopback-only browser workspace where you
+select a passage — or a node or edge of a diagram — and comment on it, then
+either request changes or approve. Comments live beside the plan in a
+git-ignored `review.json`, never in the plan Markdown; **Request changes** sends
+one steering note to the architect and blocks the gate, and **Approve** is the
+user's alone (the workspace reads as `reviewer` and an agent-launched one can
+read and comment but never approve). The whole surface has a headless mirror —
+`grogu review list`, `comment`, `reply`, `resolve`, `request-changes` and
+`status` — so the architect reads a review round without a browser. Nothing
+leaves the machine at review time. See [docs/review.md](docs/review.md).
+
 `grogu guard` is the egress check. Grogu reads private repositories, mail and
 messages, and publishes to public ones, so the risk is not that it leaks
 deliberately but that private context follows it out through an ordinary
