@@ -22,7 +22,13 @@ export function dagreLayout(
   direction: "TB" | "LR",
 ): Arranged {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: direction, nodesep: 40, ranksep: 64, marginx: 24, marginy: 24 });
+  g.setGraph({
+    rankdir: direction,
+    nodesep: 32,
+    ranksep: 56,
+    marginx: 20,
+    marginy: 20,
+  });
   g.setDefaultEdgeLabel(() => ({}));
 
   const sortedNodes = [...nodes].sort((a, b) => a.id.localeCompare(b.id));

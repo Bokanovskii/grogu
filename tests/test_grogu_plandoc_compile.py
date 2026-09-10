@@ -772,6 +772,17 @@ class CompilerEquivalenceTests(unittest.TestCase):
         with self.assertRaisesRegex(compiler.CompileError, "payload digest"):
             compiler.read_cache(directory, "r0007", projection_spec)
 
+    def test_missing_projection_cache_returns_none_before_guarded_read(self):
+        directory = ROOT / "tests" / f".plandoc-cache-{uuid.uuid4().hex}"
+        directory.mkdir()
+        self.addCleanup(shutil.rmtree, directory, True)
+        with mock.patch.object(
+            revision,
+            "safe_read",
+            side_effect=AssertionError("cold cache invoked guarded read"),
+        ):
+            self.assertIsNone(compiler.read_cache(directory, "r0007", spec()))
+
 
 class MarkdownImporterTests(unittest.TestCase):
     def test_legacy_sections_and_nested_markdown_are_not_dropped(self):

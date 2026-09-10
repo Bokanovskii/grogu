@@ -528,9 +528,14 @@ code, pre, kbd { font-family: var(--font-mono); }
 .deps-wrap { width: 100%; height: 100%; }
 .deps-toolbar { display: flex; align-items: center; gap: var(--space-2); background: var(--bg-elev-2); border: 1px solid var(--neutral-300); border-radius: var(--radius-3); padding: var(--space-1) var(--space-2); }
 .deps-view-note { font-size: var(--text-xs); color: var(--neutral-500); }
-.dep-node { display: flex; align-items: center; gap: var(--space-1); background: var(--bg); border: 1px solid var(--neutral-300); border-radius: var(--radius-3); padding: var(--space-2); font-size: var(--text-sm); width: 200px; }
+.dep-node { position: relative; display: flex; align-items: center; gap: var(--space-1); background: var(--bg-elev-1); border: 1px solid var(--neutral-300); border-radius: var(--radius-3); padding: var(--space-2); font-size: var(--text-sm); width: 200px; box-shadow: var(--elev-1); }
+.dep-handle { width: 1px; height: 1px; min-width: 1px; min-height: 1px; border: 0; opacity: 0; pointer-events: none; }
 .dep-node-glyph { color: var(--neutral-500); }
 .dep-node-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deps-wrap .react-flow__edge-path { stroke: var(--neutral-500); stroke-width: 1.5; }
+.deps-wrap .react-flow__edge-text { fill: var(--neutral-700); font-weight: 500; }
+.deps-wrap .react-flow__edge-textbg { fill: var(--bg); fill-opacity: 0.92; }
+.deps-wrap .edge-highlight .react-flow__edge-path { stroke: var(--accent); stroke-width: 2.5; }
 .dep-shade-self { border-color: var(--accent); background: var(--accent-soft); }
 .dep-shade-direct { border-color: var(--accent); }
 .dep-shade-transitive { opacity: 0.5; }

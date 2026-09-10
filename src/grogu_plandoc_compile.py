@@ -416,6 +416,13 @@ def read_cache(
     path = cache_path(package, revision, spec, format=format)
     import grogu_plandoc_revision
 
+    # A cold cache has no revision/projection directory yet. On POSIX the
+    # guarded read naturally reaches open() and raises FileNotFoundError, but
+    # Windows validates every parent with CreateFile first and correctly
+    # refuses a nonexistent directory. Treat absence as the expected cold
+    # path before invoking either platform's hardened reader.
+    if not path.exists():
+        return None
     try:
         raw = grogu_plandoc_revision.safe_read(path)
     except FileNotFoundError:

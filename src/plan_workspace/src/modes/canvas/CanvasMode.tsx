@@ -48,10 +48,19 @@ function CanvasInner() {
   const [grid, setGrid] = useState(true);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>([]);
   const draggingRef = useRef(false);
+  const hydratingSelectionRef = useRef(false);
   const connectFrom = useRef<string | null>(null);
   const [newNodeMenu, setNewNodeMenu] = useState<{ x: number; y: number; fromId: string; kinds: NodeKind[]; flow: { x: number; y: number } } | null>(null);
 
-  const selectedIds = useMemo(() => new Set(state.selection.map((s) => s.id)), [state.selection]);
+  const selectedIds = useMemo(
+    () =>
+      new Set(
+        state.selection
+          .filter((selection) => Boolean(state.nodes[selection.id]?.geometry))
+          .map((selection) => selection.id),
+      ),
+    [state.nodes, state.selection],
+  );
   const flowEdges: Edge[] = useMemo(
     () => toFlowEdges(state.edges, state.nodes, selectedIds),
     [state.edges, state.nodes, selectedIds],
@@ -61,7 +70,12 @@ function CanvasInner() {
   // unless a drag is in flight (which would clobber live positions).
   useEffect(() => {
     if (draggingRef.current) return;
+    hydratingSelectionRef.current = true;
     setNodes(toFlowNodes(state.nodes, selectedIds));
+    const frame = window.requestAnimationFrame(() => {
+      hydratingSelectionRef.current = false;
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [state.revision, state.nodes, selectedIds, setNodes]);
 
   const onConnect = useCallback<OnConnect>(
@@ -107,6 +121,7 @@ function CanvasInner() {
   // Map xyflow selection back into the shared store (drives inspector + crumb).
   const syncSelection = useCallback(
     (params: { nodes: Node[]; edges: Edge[] }) => {
+      if (hydratingSelectionRef.current) return;
       const items = [
         ...params.nodes.map((n) => ({
           id: n.id,

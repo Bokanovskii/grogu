@@ -65,6 +65,20 @@ test.describe("boot and shell", () => {
     await expect(page.getByText("Applied auto-layout.")).toHaveCount(0);
   });
 
+  test("switching to Canvas with a document node selected does not crash", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await openApp(page);
+    const nodeWithoutGeometry = page.locator(".doc-node").filter({
+      has: page.locator(".doc-node-kind", { hasText: "Directive" }),
+    }).first();
+    await nodeWithoutGeometry.click();
+    await page.keyboard.press("Meta+2");
+    await page.waitForTimeout(100);
+    expect(pageErrors).toEqual([]);
+    await expect(page.locator(".canvas-wrap")).toBeVisible();
+  });
+
   test("command palette opens and filters", async ({ page }) => {
     await openApp(page);
     await page.keyboard.press("Meta+k");
@@ -110,6 +124,16 @@ test.describe("dependencies mode", () => {
     await page.keyboard.press("Meta+3");
     await expect(page.locator(".cycles-drawer")).toBeVisible();
     await expect(page.locator(".cycle-item").first()).toBeVisible();
+    await expect(page.locator(".react-flow__edge-path").first()).toHaveAttribute(
+      "d",
+      /^M /,
+    );
+    await expect(page.locator(".react-flow__edge-text").first()).toBeVisible();
+    await expect(page.locator(".react-flow__minimap")).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "Left-right" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
   });
 });
 

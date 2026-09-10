@@ -12,7 +12,14 @@ export function ContextualToolbar() {
   const actions = useActions();
   const ops = useCanvasOps();
 
-  const nodeIds = state.selection.filter((s) => s.type !== "edge" && s.type !== "mark").map((s) => s.id);
+  const nodeIds = state.selection
+    .filter(
+      (selection) =>
+        selection.type !== "edge" &&
+        selection.type !== "mark" &&
+        Boolean(state.nodes[selection.id]?.geometry),
+    )
+    .map((selection) => selection.id);
   if (nodeIds.length === 0) return null;
   const primary = nodeIds[0]!;
   const multi = nodeIds.length > 1;

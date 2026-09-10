@@ -2,8 +2,10 @@ import { useMemo, useState } from "react";
 import {
   Background,
   BackgroundVariant,
-  MiniMap,
+  Handle,
+  MarkerType,
   Panel,
+  Position,
   ReactFlow,
   ReactFlowProvider,
   type Edge,
@@ -21,13 +23,34 @@ import { computeImpact, findCycles } from "./graphAlgo";
 const DEP_EDGE_KINDS: EdgeKind[] = ["depends_on", "blocks", "refines", "contains", "validates"];
 const ALL_DISPLAY_KINDS: EdgeKind[] = [...DEP_EDGE_KINDS, "diagram_edge"];
 
-function DepNode({ data }: { data: { label: string; kind: NodeKind; shade: string; cycle: boolean } }) {
+function DepNode({
+  data,
+}: {
+  data: {
+    label: string;
+    kind: NodeKind;
+    shade: string;
+    cycle: boolean;
+    direction: "TB" | "LR";
+  };
+}) {
+  const horizontal = data.direction === "LR";
   return (
     <div className={`dep-node dep-shade-${data.shade}${data.cycle ? " dep-cycle" : ""}`}>
+      <Handle
+        type="target"
+        position={horizontal ? Position.Left : Position.Top}
+        className="dep-handle"
+      />
       <span className="dep-node-glyph" aria-hidden="true">
         {NODE_GLYPH[data.kind]}
       </span>
       <span className="dep-node-label">{data.label}</span>
+      <Handle
+        type="source"
+        position={horizontal ? Position.Right : Position.Bottom}
+        className="dep-handle"
+      />
     </div>
   );
 }
@@ -70,7 +93,13 @@ function DependenciesGraph({
         id: n.id,
         type: "dep",
         position: arranged.positions[n.id] ?? { x: 0, y: 0 },
-        data: { label: n.title || n.id, kind: n.kind, shade, cycle: cycleNodes.has(n.id) },
+        data: {
+          label: n.title || n.id,
+          kind: n.kind,
+          shade,
+          cycle: cycleNodes.has(n.id),
+          direction,
+        },
         selected: state.selection.some((s) => s.id === n.id),
         draggable: false,
         connectable: false,
@@ -81,7 +110,16 @@ function DependenciesGraph({
       source: e.from,
       target: e.to,
       type: e.kind === "diagram_edge" ? "straight" : "smoothstep",
-      className: `edge-kind-${e.kind}${cycleNodes.has(e.from) && cycleNodes.has(e.to) ? " edge-cycle" : ""}`,
+      label: e.kind.replaceAll("_", " "),
+      labelStyle: { fontSize: 10 },
+      labelBgPadding: [4, 2],
+      labelBgBorderRadius: 3,
+      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+      className: `edge-kind-${e.kind}${
+        selectedId && (e.from === selectedId || e.to === selectedId)
+          ? " edge-highlight"
+          : ""
+      }${cycleNodes.has(e.from) && cycleNodes.has(e.to) ? " edge-cycle" : ""}`,
     }));
     return { nodes: flowNodes, edges: flowEdges };
   }, [state.nodes, state.edges, kindSet, direction, selectedId, state.selection]);
@@ -100,8 +138,12 @@ function DependenciesGraph({
         maxZoom={4}
         aria-label="Dependency graph"
       >
-        <Background variant={BackgroundVariant.Dots} gap={16} />
-        <MiniMap position="bottom-right" ariaLabel="Dependencies minimap" />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={24}
+          size={1}
+          color="var(--canvas-grid)"
+        />
         <Panel position="top-left">
           <div className="deps-toolbar">
             <SegmentedControl
@@ -109,8 +151,8 @@ function DependenciesGraph({
               value={direction}
               onChange={setDirection}
               options={[
-                { value: "TB", label: "Top-down" },
                 { value: "LR", label: "Left-right" },
+                { value: "TB", label: "Top-down" },
               ]}
             />
             <span className="deps-view-note">Auto-arranged view · not saved</span>
@@ -125,7 +167,7 @@ export function DependenciesMode() {
   const state = useApp();
   const actions = useActions();
   const status = readableStage(state.stages, state.stage);
-  const [direction, setDirection] = useState<"TB" | "LR">("TB");
+  const [direction, setDirection] = useState<"TB" | "LR">("LR");
   const [edgeKinds, setEdgeKinds] = useState<EdgeKind[]>(ALL_DISPLAY_KINDS);
   const [roleContext, setRoleContext] = useState<Role | "">(state.role || "");
 
