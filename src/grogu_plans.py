@@ -2081,7 +2081,14 @@ class PlanStore:
                 )
             return self._save(manifest, "stage_added", stage=stage)
 
-    def reset_stage(self, plan_id: str, stage: str, *, role: str = "") -> dict:
+    def reset_stage(
+        self,
+        plan_id: str,
+        stage: str,
+        *,
+        role: str = "",
+        as_user: bool = False,
+    ) -> dict:
         """Un-write a stage, because there was no way back from a bad write.
 
         An architect probing the design validator wrote the template stub into
@@ -2090,7 +2097,12 @@ class PlanStore:
         command is worse than any bug it was chasing.
         """
         role = role or current_role() or ARCHITECT
-        identified = self.claim_agent_role(plan_id, role)
+        if as_user and current_role():
+            raise PlanError(
+                f"--as-user is for the user; this session is running as the "
+                f"{current_role()}"
+            )
+        identified = "" if as_user else self.claim_agent_role(plan_id, role)
         if role != ARCHITECT:
             raise PlanError(f"role {role!r} may not reset a stage; that is the architect's")
         if stage not in STAGES:
@@ -2104,10 +2116,26 @@ class PlanStore:
             if manifest.get("status") == COMPLETE:
                 raise PlanError(f"plan {plan_id} is finalized; supersede it instead")
             active = manifest.setdefault("stage_writers", {}).get(stage)
-            if active and identified and active.get("agent") != identified:
-                raise PlanError(
-                    f"agent {identified!r} may not reset the {stage} stage owned "
-                    f"by {active.get('agent')!r}"
+            if active and not as_user:
+                if not identified:
+                    raise PlanError(
+                        f"the {stage} stage has an active writer "
+                        f"({active.get('agent')!r}); an unidentified caller may "
+                        "not reset and discard that writer's work"
+                    )
+                if active.get("agent") != identified:
+                    raise PlanError(
+                        f"agent {identified!r} may not reset the {stage} stage owned "
+                        f"by {active.get('agent')!r}"
+                    )
+            outgoing = self.stage_path(plan_id, stage)
+            if outgoing.exists():
+                stored = outgoing.read_text(encoding="utf8")
+                plaintext = (
+                    unseal(stored) if outgoing.suffix == ".sealed" else stored
+                )
+                self._keep_revision(
+                    plan_id, stage, stored, manifest, plain_bytes=len(plaintext)
                 )
             for path in (self.plan_dir(plan_id) / f"{stage}.md",
                          self.plan_dir(plan_id) / f"{stage}.sealed"):
@@ -2118,6 +2146,23 @@ class PlanStore:
             target.write_text(
                 seal(body) if stage in SEALED_STAGES else body, encoding="utf8"
             )
+            manifest.setdefault("stage_versions", {})[stage] = {
+                "stage": stage,
+                "digest": body_digest(body),
+                "revision": len(
+                    [
+                        item
+                        for item in manifest.get("revisions", [])
+                        if item.get("stage") == stage
+                    ]
+                )
+                + 1,
+                "bytes": len(body),
+                "at": now(),
+                "actor": actor(),
+                "role": role,
+                "agent": identified,
+            }
             manifest.setdefault("stage_written", {})[stage] = False
             manifest.setdefault("stage_state", {})[stage] = PENDING
             active = manifest["stage_writers"].pop(stage, None)
@@ -2569,15 +2614,20 @@ class PlanStore:
                 )
             active = manifest.setdefault("stage_writers", {}).get(stage)
             agent = identified if active else explicit_agent
+            revoked_agents = {
+                item.get("agent")
+                for item in manifest.get("stage_writer_history", [])
+                if item.get("stage") == stage
+                and item.get("revoked_at")
+                and not item.get("reset")
+            }
             if agent:
+                if agent in revoked_agents:
+                    raise PlanError(
+                        f"agent {agent!r} was revoked as the {stage} writer "
+                        "and may not take the stage back after a replacement assumed it"
+                    )
                 if active and active.get("agent") != agent:
-                    revoked_agents = {
-                        item.get("agent")
-                        for item in manifest.get("stage_writer_history", [])
-                        if item.get("stage") == stage
-                        and item.get("revoked_at")
-                        and not item.get("reset")
-                    }
                     if replace and agent not in revoked_agents:
                         revoked = dict(active)
                         revoked.update(
@@ -2959,12 +3009,16 @@ class PlanStore:
                             not claimed_agent
                             and item.get("role") == role
                             and (
+                                not item.get("workstream")
+                                or
                                 not workstream
                                 or item.get("workstream") == workstream
                             )
                         )
                     )
                 ]
+                if not claimed_agent and not role:
+                    relevant = list(governance["agents"].values())
                 blockers = [
                     blocker
                     for item in relevant
@@ -4265,14 +4319,18 @@ class PlanStore:
                 .setdefault(name, {})
             )
             requested_role = role.strip()
+            existing_role = entry.get("role", "")
             if (
                 requested_role
-                and name == identified
-                and acting_role
-                and requested_role != acting_role
+                and existing_role
+                and requested_role != existing_role
+                and (
+                    acting_role not in (ARCHITECT, SUPERVISOR)
+                    or name == identified
+                )
             ):
                 raise PlanError(
-                    f"agent {name!r} is bound to the {acting_role} role and "
+                    f"agent {name!r} is governed as the {existing_role} role and "
                     f"cannot relabel its governance as {requested_role}"
                 )
             declared_role = (
