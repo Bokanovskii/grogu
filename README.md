@@ -51,28 +51,9 @@ either can't complete (e.g. offline, or `python3` is older).
 `python_meets_minimum`/`mcp_available`. A non-zero exit means the Copilot CLI
 or the instruction files are missing.
 
-Setup prints green checks and red crosses for core and optional capabilities.
-iMessage is optional and requires macOS Full Disk Access for the terminal
-running Grogu. Gmail is optional, disabled by default, and requires
-`GROGU_GMAIL_ENABLED=1` plus an OAuth access token. Missing messaging access
-does not prevent Grogu from running; setup prints the exact fix and the
-follow-up status command.
-
-To configure Gmail, enable the Gmail API in a Google Cloud project, create a
-desktop OAuth client, authorize the scopes printed by `grogu gmail status`,
-and obtain a user access token. OAuth Playground can perform the interactive
-authorization: <https://developers.google.com/oauthplayground>. Export the
-short-lived access token only in the shell that runs Grogu:
-
-```sh
-export GROGU_GMAIL_ENABLED=1
-export GROGU_GMAIL_ACCESS_TOKEN='YOUR_OAUTH_ACCESS_TOKEN'
-grogu gmail status
-```
-
-Grogu does not store or print the token. Access tokens expire; obtain a fresh
-one when needed. Gmail remains optional, and all other Grogu commands work
-without it.
+Setup checks only the cross-platform harness. Personal services, operating
+system APIs, credentials, and their setup checks belong to capability
+repositories configured by each user after Grogu is installed.
 
 ## Launching
 
@@ -119,7 +100,7 @@ Grogu touches four places, and nothing else.
 
 | Location | Owner | Lifetime |
 | --- | --- | --- |
-| `~/.grogu/` (or `$GROGU_HOME`) | Grogu | traces, the project catalog, and personal memory (`memory/`), per user |
+| `~/.grogu/` (or `$GROGU_HOME`) | Grogu | traces, the project catalog, personal memory (`memory/`), and capability repository paths (`capabilities.json`), per user |
 | `~/.copilot/settings.json` | Copilot | Grogu adds `banner`, `companyAnnouncements` and — only if you have none — `statusLine`, and restores them on exit |
 | `<repo>/.grogu/tasks/` | the repository | committed task records, shared through Git |
 | `<repo>/.grogu/state/` | the machine | leases, inbox, lock file; ignored by Git, and self-ignoring in any repository |
@@ -152,92 +133,34 @@ session-scoped Copilot plugin using `--plugin-dir`. The plugin manifest exposes
 `.github/skills` without registering a personal skill directory or changing the
 user's persistent Copilot configuration.
 
-## Messaging skills
+## Capability repositories
 
-The opt-in `imessage`, `stim`, and `gmail` skills provide read/search assistance
-and draft-first outbound workflows. They are isolated from ordinary launches.
-iMessage requires macOS and Full Disk Access. Gmail is disabled by default and
-uses an access token supplied through the environment; credentials are never
-stored by Grogu.
-
-`grogu imessage search` prefers a locally configured
-seaglass MCP server when one is present in `~/.copilot/mcp-config.json`
-(semantic/ranked retrieval over the whole message history), and transparently
-falls back to a plain SQL substring scan otherwise, or if the seaglass call
-itself fails for any reason. Pass `--no-seaglass` to force the substring scan
-even when seaglass is configured. `grogu imessage status` reports whether
-seaglass is available via a `seaglass` boolean field.
-
-For outbound drafts, `--recipient` may be a phone number, Apple ID, or contact
-name. Contact names are resolved through seaglass to one direct Messages
-conversation and the draft stores its concrete handle; ambiguous names, group
-chats, and unresolved names are rejected before confirmation. A successful
-`send` means Messages accepted the submission, not that Apple has confirmed
-delivery. Add `--attachment <path>` more than once to preserve attachment
-order. Drafting copies each readable file into an immutable private snapshot
-beneath `$GROGU_HOME`, records its canonical source path, filename, byte count,
-and SHA-256, and prints that exact identity for review. It does not upload
-files, create Messages staging, open Messages, or submit anything.
-
-Approving a Grogu software plan is not message confirmation. After reviewing
-the exact resolved recipient, complete body, and ordered attachment identities,
-the only send authorization is
-`grogu imessage send <draft-id> --confirm`. Confirmed sends revalidate both the
-source and snapshot, then copy only the verified snapshot into a fresh,
-user-only directory under `GROGU_IMESSAGE_STAGING_ROOT` (default:
-`~/Library/Messages/.grogu-send-staging`). The staging base, attempt, and index
-directories use mode `0700`; files use mode `0600`. An existing configured base
-with group or other permissions is rejected rather than modified. Messages
-receives the body first, waits 0.5 seconds, then receives each attachment in
-review order with 0.5 seconds between attachment submissions. These are
-separate operations, and a successful command still does not confirm delivery.
-After submission starts, Grogu retains that attempt's staged files because
-Messages may read aliases asynchronously; it does not delete them
-automatically. Remove an old attempt directory only after checking Messages and
-deciding the attachment no longer needs it. Per-attempt staging paths stay out
-of draft review and command output. Any recipient, body, attachment set, order,
-path, filename, size, digest, or content change requires a replacement draft,
-exact re-review, and fresh confirmation. Changing only the staging
-configuration does not alter the reviewed payload.
-
-`stim` is a reusable skill layered on the existing `grogu imessage` commands;
-it does not add a `grogu stim` subcommand. Its finite workflow is: explicitly
-opt in through one compact review of the selected local context, exact
-model/provider, and schedule settings; derive a local draft pool; review every
-exact recipient/body pair; explicitly enable a bounded macOS-local schedule;
-and retain an immediate `launchctl` disable path. Values already supplied in
-the request are not asked again. Grok is used only when it is explicitly
-configured and selected through Copilot's normal model selection. The workflow
-never enables `auto`, silently substitutes a provider, falls back to another
-model, or routes to Azure.
-
-All conversation context, prompts, generated pools, draft ids, schedule state,
-and logs remain outside the repository under
-`$GROGU_HOME/stim/<workflow-id>/` with user-only permissions. A schedule is
-limited to one recipient, at most seven reviewed drafts, no more than five
-sends in a rolling 24-hour period, at least 60 minutes between sends, and at
-most 30 days. It skips missed windows rather than catching up. None of the
-private inputs or local artifacts belong in telemetry, plans, commits, issues,
-or pull requests.
+Grogu ships only harness skills. Personal services and platform-specific
+features live in their own repositories as normal Copilot plugins, with their
+own commands, dependencies, permissions, safety contracts, and release cycles.
+Each user chooses a personal set of those repositories:
 
 ```sh
-grogu imessage status
-grogu imessage search "<query>" --limit 10
-grogu imessage draft --recipient "<recipient>" --message "<body>" \
-  [--attachment "<path>"]...
-grogu imessage send <draft-id> --confirm
-
-GROGU_GMAIL_ENABLED=1 grogu gmail status
-GROGU_GMAIL_ENABLED=1 grogu gmail search "<query>"
-grogu gmail draft --to "<recipient>" --subject "<subject>" --message "<body>"
-GROGU_GMAIL_ENABLED=1 grogu gmail send <draft-id> --confirm
+git clone https://github.com/Bokanovskii/seaglass.git
+grogu capability add /path/to/seaglass
+grogu capability list
+grogu capability remove /path/to/seaglass
 ```
 
-Sending requires explicit confirmation after showing the exact resolved
-recipient, complete body, and ordered attachment identities. Any edit requires
-a replacement draft, exact re-review, and fresh confirmation. Message content,
-recipient identifiers, attachment details, and credentials are excluded from
-repository files and telemetry.
+`add` requires a local repository with a valid `plugin.json`, resolves its
+canonical path, and records only that path in
+`$GROGU_HOME/capabilities.json`. Every normal Grogu launch passes the Grogu
+harness plugin and each configured capability repository to Copilot with
+separate `--plugin-dir` arguments. Explicit `--plugin-dir` arguments remain
+untouched. `--plain` still launches Copilot without Grogu or capability
+plugins.
+
+Grogu never clones, updates, executes setup for, or stores credentials on
+behalf of a capability repository. A missing repository or malformed manifest
+stops the launch with a concrete error instead of silently dropping capabilities.
+Remove the path or repair the repository, then launch again. This keeps the
+harness platform agnostic while allowing projects such as Seaglass to own
+iMessage behavior and another repository to own Gmail behavior.
 
 ## Remote sessions
 
@@ -263,9 +186,9 @@ so Grogu can start a separate remote session without replacing the current one.
 
 * **Instructions** live in `.github/AGENTS.md`; they are added to Copilot's
   instruction directories, not substituted for the user's own.
-* **Skills** live in `.github/skills/<name>/SKILL.md`. Add a directory, add a
-  skill; `plugin.json` exposes the directory to every Grogu launch, including
-  launches outside this source repository, without a personal installation.
+* **Harness skills** live in `.github/skills/<name>/SKILL.md`; `plugin.json`
+  exposes them to every Grogu launch. Personal or platform-specific skills
+  belong in a user-selected capability repository instead.
 * **Agents** live in `.github/agents/<role>.md`. The architect, designer,
   engineer and tester roles are defined there, and `grogu plan brief` uses the same files as
   the base of each role's prompt.
@@ -585,7 +508,7 @@ preferences, goals, events, facts, and interests — under
 grogu personal remember --type person --name "Jamie" --summary "Sister, lives in Denver"
 grogu personal recall --query denver --limit 20
 grogu personal suggest --type event --name "jamie-birthday" \
-  --summary "Mentioned Jamie's birthday is in March" --source gmail --confidence 0.5
+  --summary "Mentioned Jamie's birthday is in March" --source mail-plugin --confidence 0.5
 grogu personal review
 grogu personal confirm <candidate-id>
 ```
@@ -711,8 +634,7 @@ run leaves the working tree clean.
 MIT. See [LICENSE](LICENSE).
 
 Grogu keeps everything about you outside the repository. Your design taste, your
-plans' steering history, the skill proposals agents write, and the activity log
-behind `grogu watch` all live under `$GROGU_HOME` (`~/.grogu` by default), never
-in a checkout and never in a commit. The iMessage and Gmail adapters are opt-in
-and read nothing until you turn them on. Someone who clones this gets the
-harness and none of your history.
+plans' steering history, capability repository paths, the skill proposals agents
+write, and the activity log behind `grogu watch` all live under `$GROGU_HOME`
+(`~/.grogu` by default), never in a checkout and never in a commit. Someone who
+clones this gets the harness and none of your history or personal capabilities.

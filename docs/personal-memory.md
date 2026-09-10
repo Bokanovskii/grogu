@@ -24,13 +24,13 @@ Two write paths exist, and only one persists immediately:
 
 * **`remember`** is explicit: the user or an agent acting on the user's
   explicit instruction records a confirmed fact directly into the graph.
-* **`suggest`** is passive: something observed in conversation, email, or
-  another integration is queued as a *candidate* in a separate pending file.
+* **`suggest`** is passive: something observed through a user-selected
+  capability is queued as a *candidate* in a separate pending file.
   A candidate is never merged into the confirmed graph on its own. Use
   `review` to see pending candidates, `confirm` to persist one (with
   provenance recording it as a confirmed suggestion), or `reject` to discard
-  it. This is the mechanism that keeps Gmail/iMessage-derived context
-  (see the integration issues) consent-gated rather than silently inferred.
+  it. This keeps capability-derived context consent-gated rather than silently
+  inferred.
 
 ## Commands
 
@@ -44,7 +44,7 @@ grogu personal recall --query denver --limit 20
 grogu personal recall --node person:jamie --depth 1
 
 grogu personal suggest --type event --name "jamie-birthday" \
-  --summary "Mentioned Jamie's birthday is in March" --source gmail --confidence 0.5
+  --summary "Mentioned Jamie's birthday is in March" --source mail-plugin --confidence 0.5
 grogu personal review
 grogu personal confirm <candidate-id>
 grogu personal reject <candidate-id>
@@ -63,8 +63,8 @@ than an unbounded dump of everything known about the user.
 * Passive capture always lands in the pending queue first; nothing is
   persisted without an explicit `confirm`.
 * Provenance on every node and candidate records where a fact came from
-  (`user`, or an integration name such as `gmail`/`imessage`), so confirmed
-  memory can be audited and pruned.
+  (`user`, or a capability plugin name), so confirmed memory can be audited
+  and pruned.
 * `GROGU_PERSONAL_MEMORY_DIR` is exported to Copilot sessions the same way
   `GROGU_MEMORY_DIR` is, so an agent can locate the store without embedding
   personal data in prompts or traces.
