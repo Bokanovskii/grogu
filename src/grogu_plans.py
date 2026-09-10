@@ -7139,7 +7139,23 @@ class PlanDocumentStore:
         revision: str = "",
         stages=None,
         record: bool = False,
-        claim: bool = True,
+    ) -> dict:
+        return self._load(
+            role=role,
+            revision=revision,
+            stages=stages,
+            record=record,
+            claim=True,
+        )
+
+    def _load(
+        self,
+        *,
+        role: str,
+        revision: str = "",
+        stages=None,
+        record: bool = False,
+        claim: bool,
     ) -> dict:
         effective = self._claim(role) if claim else self._role(role)
         allowed = ROLE_READABLE_STAGES.get(effective, frozenset())
@@ -7679,6 +7695,30 @@ class PlanDocumentStore:
         dry_run: bool = False,
         extra_artifacts: Optional[dict[str, bytes]] = None,
         proposal_guard: str = "",
+    ) -> dict:
+        return self._patch(
+            role=role,
+            base=base,
+            operations=operations,
+            intent=intent,
+            origin=origin,
+            dry_run=dry_run,
+            extra_artifacts=extra_artifacts,
+            proposal_guard=proposal_guard,
+            claim=True,
+        )
+
+    def _patch(
+        self,
+        *,
+        role: str,
+        base: str,
+        operations,
+        intent: str = "",
+        origin: str = "cli",
+        dry_run: bool = False,
+        extra_artifacts: Optional[dict[str, bytes]] = None,
+        proposal_guard: str = "",
         claim: bool = True,
     ) -> dict:
         effective = self._claim(role) if claim else self._role(role)
@@ -7709,7 +7749,7 @@ class PlanDocumentStore:
                     "/counters/<prefix> with a non-negative integer"
                 )
             counter_updates[match.group(1)] = value
-        before = self.load(role=effective, record=False, claim=claim)
+        before = self._load(role=effective, record=False, claim=claim)
         current = before["revision"]
         if base and base != current:
             error = grogu_plandoc_patch.StaleRevision(base, current)
@@ -8160,7 +8200,9 @@ class PlanDocumentStore:
                 "Pass --replace if you mean it; the compiled text you replace "
                 "is kept either way."
             )
-        before = self.load(role=effective, record=False, claim=not dry_run)
+        before = self._load(
+            role=effective, record=False, claim=not dry_run
+        )
         working = copy.deepcopy(before)
         removed_nodes = {
             node_id
@@ -8215,7 +8257,7 @@ class PlanDocumentStore:
         working = grogu_plandoc_schema.validate_document(working)
         operations = grogu_plandoc_patch.diff(before, working)
         if operations:
-            result = self.patch(
+            result = self._patch(
                 role=effective,
                 base=before["revision"],
                 operations=operations,
