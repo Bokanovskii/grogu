@@ -70,6 +70,11 @@ def actor() -> str:
     return os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
 
 
+def _public_actor(value: object) -> str:
+    text = str(value or "")
+    return text.split("@", 1)[0] if "@" in text else text
+
+
 def agent() -> str:
     """Stable Grogu agent name for provenance, when one is available."""
     return os.environ.get("GROGU_AGENT", "").strip()
@@ -253,6 +258,12 @@ class TaskStore:
             migrated["agent"] = migrated.get("agent") or ""
             migrated["session_id"] = migrated.get("session_id") or ""
             migrated["session_pid"] = _coerce_int(migrated.get("session_pid"), 0)
+            text = migrated.get("text")
+            if isinstance(text, str) and legacy_actor:
+                if migrated.get("event") == "claim" and text.startswith("taken over from "):
+                    migrated["text"] = f"taken over from {_public_actor(text.removeprefix('taken over from '))}"
+                elif migrated.get("event") == "lease-expired":
+                    migrated["text"] = _public_actor(text)
             migrated.pop("host", None)
             log.append(migrated)
         normalized["log"] = log
@@ -486,6 +497,10 @@ class TaskStore:
         entry["agent"] = agent()
         entry["session_id"] = session_id()
         entry["session_pid"] = session_pid()
+        if event == "claim" and text.startswith("taken over from "):
+            text = f"taken over from {_public_actor(text.removeprefix('taken over from '))}"
+        elif event == "lease-expired":
+            text = _public_actor(text)
         if text:
             entry["text"] = text
         task.setdefault("log", []).append(entry)
@@ -619,7 +634,7 @@ class TaskStore:
             )
             self._write_json(self.lease_path(task_id), lease)
             if existing and not mine:
-                self._log(task, "claim", f"taken over from {existing.get('owner')}")
+                self._log(task, "claim", f"taken over from {_public_actor(existing.get('owner'))}")
             else:
                 self._log(task, "claim")
             self._set_identity_fields(task, "assignee", lease)
@@ -693,7 +708,7 @@ class TaskStore:
                     if task["status"] == ACTIVE:
                         task["status"] = OPEN
                         self._clear_assignment_fields(task)
-                    self._log(task, "lease-expired", str(lease.get("owner", "")))
+                    self._log(task, "lease-expired", _public_actor(lease.get("owner", "")))
                     if self._cancel_if_closed_parent(task):
                         self._cleanup_subordinates(task_id)
                     self._write_task(task)

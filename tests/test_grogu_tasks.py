@@ -61,6 +61,18 @@ class GroguTaskStoreTests(unittest.TestCase):
                             "by": "charlie@charlies-mbp.lan",  # grogu-allow-secret legacy host-bearing actor
                             "event": "created",
                             "host": "legacy-host",
+                        },
+                        {
+                            "at": "2026-01-01T00:10:00+00:00",
+                            "by": "charlie@charlies-mbp.lan",  # grogu-allow-secret legacy host-bearing actor
+                            "event": "claim",
+                            "text": "taken over from charlie@charlies-mbp.lan",  # grogu-allow-secret legacy host-bearing actor
+                        },
+                        {
+                            "at": "2026-01-01T00:20:00+00:00",
+                            "by": "charlie@charlies-mbp.lan",  # grogu-allow-secret legacy host-bearing actor
+                            "event": "lease-expired",
+                            "text": "charlie@charlies-mbp.lan",  # grogu-allow-secret legacy host-bearing actor
                         }
                     ],
                 },
@@ -84,6 +96,8 @@ class GroguTaskStoreTests(unittest.TestCase):
         self.assertIn("agent", view["log"][0])
         self.assertIn("session_id", view["log"][0])
         self.assertNotIn("host", view["log"][0])
+        self.assertEqual(view["log"][1]["text"], "taken over from charlie")
+        self.assertEqual(view["log"][2]["text"], "charlie")
 
         self.store.update("t-legacy", note="touched")
         raw = json.loads(self.store.task_path("t-legacy").read_text(encoding="utf8"))
@@ -93,6 +107,19 @@ class GroguTaskStoreTests(unittest.TestCase):
         self.assertNotIn("created_by_host", raw)
         self.assertNotIn("assignee_host", raw)
         self.assertNotIn("host", raw["log"][0])
+
+    def test_explicit_actor_hostname_is_sanitized(self):
+        with mock.patch.dict(
+            os.environ,
+            {"GROGU_ACTOR": "charlie@private-mac.local"},  # grogu-allow-secret legacy host-bearing actor
+            clear=False,
+        ):
+            task = self.store.create("Explicit actor task")
+
+        raw = json.loads(self.store.task_path(task["id"]).read_text(encoding="utf8"))
+        self.assertEqual(raw["created_by"], "charlie")
+        self.assertEqual(raw["created_by_owner"], "charlie")
+        self.assertNotIn("@", raw["created_by"])
 
     def test_claim_records_agent_and_groups_by_agent_session(self):
         task_a = self.store.create("Task A")
