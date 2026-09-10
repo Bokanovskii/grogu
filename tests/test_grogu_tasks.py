@@ -256,6 +256,32 @@ class GroguTaskStoreTests(unittest.TestCase):
 
         self.assertEqual(reopened["status"], grogu_tasks.CANCELLED)
 
+    def test_claim_cannot_reopen_child_of_closed_parent(self):
+        with identity_env(agent="parent-agent", session_id="parent-session"):
+            parent = self.store.create("Parent task")
+            child = self.store.create("Child task", parent_task_id=parent["id"])
+
+        self.store.release(parent["id"], status=grogu_tasks.DONE, note="closed")
+
+        with self.assertRaises(grogu_tasks.TaskError):
+            with identity_env(agent="parent-agent", session_id="parent-session"):
+                self.store.claim(child["id"])
+        self.assertEqual(self.store.view(child["id"])["status"], grogu_tasks.CANCELLED)
+
+    def test_recursive_cleanup_crosses_closed_user_intermediates(self):
+        with identity_env(agent="", session_id=""):
+            parent = self.store.create("Parent task")
+            child = self.store.create("User child", parent_task_id=parent["id"])
+        with identity_env(agent="grand-agent", session_id="grand-session"):
+            grandchild = self.store.create(
+                "Grogu grandchild", parent_task_id=child["id"]
+            )
+
+        self.store.release(child["id"], status=grogu_tasks.DONE, note="child closed")
+        self.store.release(parent["id"], status=grogu_tasks.DONE, note="parent closed")
+
+        self.assertEqual(self.store.view(grandchild["id"])["status"], grogu_tasks.CANCELLED)
+
 
 if __name__ == "__main__":
     unittest.main()

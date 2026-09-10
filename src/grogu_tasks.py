@@ -66,7 +66,7 @@ def actor() -> str:
     """
     explicit = os.environ.get("GROGU_ACTOR")
     if explicit:
-        return explicit
+        return explicit.split("@", 1)[0]
     return os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
 
 
@@ -308,10 +308,10 @@ class TaskStore:
                 continue
             if child.get("parent_task_id") != parent_id:
                 continue
-            if not self._is_grogu_owned(child):
-                continue
             if child["status"] in CLOSED_STATUSES:
                 self._cleanup_subordinates(child["id"])
+                continue
+            if not self._is_grogu_owned(child):
                 continue
             lease = self.lease(child["id"])
             if lease and self.lease_is_live(lease):
@@ -592,6 +592,10 @@ class TaskStore:
             task = self.load(task_id)
             if task["status"] in CLOSED_STATUSES:
                 raise TaskError(f"task {task_id} is {task['status']}")
+            if self._cancel_if_closed_parent(task):
+                self.lease_path(task_id).unlink(missing_ok=True)
+                self._write_task(task)
+                raise TaskError(f"task {task_id} has a closed parent")
             existing = self.lease(task_id)
             mine = self.lease_is_mine(existing)
             if existing and self.lease_is_live(existing) and not mine and not force:
