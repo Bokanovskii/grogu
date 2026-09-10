@@ -6834,13 +6834,34 @@ class PlanDocumentStore:
                 f"patch has {len(operations)} operations; maximum is "
                 f"{self.MAX_PATCH_OPS}"
             )
+        graph_operations = []
+        counter_updates: dict[str, int] = {}
+        for operation in operations:
+            path = str(operation.get("path", ""))
+            if not path.startswith("/counters/"):
+                graph_operations.append(operation)
+                continue
+            match = re.fullmatch(r"/counters/([a-z][a-z0-9_-]*)", path)
+            value = operation.get("value")
+            if (
+                match is None
+                or operation.get("op") not in {"add", "replace"}
+                or isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                raise PlanError(
+                    "counter updates must add or replace "
+                    "/counters/<prefix> with a non-negative integer"
+                )
+            counter_updates[match.group(1)] = value
         before = self.load(role=effective, record=False)
         current = before["revision"]
         if base and base != current:
             error = grogu_plandoc_patch.StaleRevision(base, current)
             error.ops_since = self.ops_since(base, role=effective)
             raise error
-        added, removed = self._reserved_ids(operations)
+        added, removed = self._reserved_ids(graph_operations)
         manifest = self.plans.load(self.plan_id)
         visible_ids = set(before.get("nodes", {})) | set(
             before.get("edges", {})
@@ -6865,7 +6886,7 @@ class PlanDocumentStore:
         # refuse an unreadable target before a parser can walk its value.
         grogu_plandoc_patch.assert_patch_authorized(
             before,
-            operations,
+            graph_operations,
             readable,
             authorized_new_ids=added,
             authorized_remove_ids=removed,
@@ -6873,7 +6894,7 @@ class PlanDocumentStore:
         try:
             applied = grogu_plandoc_patch.apply_patch(
                 before,
-                operations,
+                graph_operations,
                 base=base or current,
                 current_revision=current,
                 readable_stages=readable,
@@ -6885,11 +6906,22 @@ class PlanDocumentStore:
         next_seq = int(current[1:]) + 1
         revision = grogu_plandoc_revision.revision_id(next_seq)
         after = self._stamp_revision(before, applied, revision)
+        observed_counters = self._counter_state(after)
+        regressed = [
+            prefix
+            for prefix, value in counter_updates.items()
+            if value < observed_counters.get(prefix, 0)
+        ]
+        if regressed:
+            raise PlanError(
+                "counter updates cannot move behind existing ids: "
+                + ", ".join(sorted(regressed))
+            )
         # Re-run authorization over the validated result so a move or nested
         # replacement cannot smuggle a selector across the seal.
         grogu_plandoc_patch.assert_patch_authorized(
             after,
-            operations,
+            graph_operations,
             readable,
             authorized_new_ids=added,
             authorized_remove_ids=removed,
@@ -7087,7 +7119,7 @@ class PlanDocumentStore:
                 ops=operations,
             )
             visibility = self._operation_visibility(
-                before, after, operations
+                before, after, graph_operations
             )
             recovery = self._recovery_artifacts(
                 revision,
@@ -7125,10 +7157,12 @@ class PlanDocumentStore:
                 ],
             )
             plandoc_manifest = latest_manifest.setdefault("plandoc", {})
-            plandoc_manifest["counters"] = self._merge_counters(
+            merged_counters = self._merge_counters(
                 plandoc_manifest.get("counters", {}),
-                self._counter_state(after),
+                observed_counters,
             )
+            merged_counters.update(counter_updates)
+            plandoc_manifest["counters"] = merged_counters
             stage_written = latest_manifest.setdefault("stage_written", {})
             for stage in affected_stages:
                 stage_written[stage] = any(

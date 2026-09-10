@@ -515,6 +515,8 @@ code, pre, kbd { font-family: var(--font-mono); }
 .annotation-layer { position: absolute; inset: 0; z-index: 5; }
 .canvas-wrap.tool-select .annotation-layer, .canvas-wrap.tool-hand .annotation-layer, .canvas-wrap.tool-connector .annotation-layer, .canvas-wrap.tool-comment .annotation-layer { display: none; }
 .annotation-preview { position: absolute; inset: 0; pointer-events: none; }
+.canvas-wrap.is-modifier-pan .react-flow__pane { cursor: grab; }
+.canvas-wrap.is-modifier-pan .react-flow__pane:active { cursor: grabbing; }
 
 .new-node-menu { position: fixed; z-index: 85; background: var(--bg-elev-2); border: 1px solid var(--neutral-300); border-radius: var(--radius-4); box-shadow: var(--elev-2); padding: var(--space-1); min-width: 160px; }
 .nnm-title { font-size: var(--text-xs); color: var(--neutral-500); padding: var(--space-1) var(--space-2); }
@@ -528,10 +530,17 @@ code, pre, kbd { font-family: var(--font-mono); }
 .deps-wrap { width: 100%; height: 100%; }
 .deps-toolbar { display: flex; align-items: center; gap: var(--space-2); background: var(--bg-elev-2); border: 1px solid var(--neutral-300); border-radius: var(--radius-3); padding: var(--space-1) var(--space-2); }
 .deps-view-note { font-size: var(--text-xs); color: var(--neutral-500); }
-.dep-node { position: relative; display: flex; align-items: center; gap: var(--space-1); background: var(--bg-elev-1); border: 1px solid var(--neutral-300); border-radius: var(--radius-3); padding: var(--space-2); font-size: var(--text-sm); width: 200px; box-shadow: var(--elev-1); }
+.dep-node { position: relative; display: flex; align-items: center; gap: var(--space-1); background: var(--bg-elev-1); border: 1px solid var(--neutral-300); border-radius: var(--radius-3); padding: var(--space-2); font-size: var(--text-sm); width: 220px; min-height: 52px; box-shadow: var(--elev-1); }
+.dep-node.is-expanded { align-items: flex-start; width: 340px; min-height: 144px; }
 .dep-handle { width: 1px; height: 1px; min-width: 1px; min-height: 1px; border: 0; opacity: 0; pointer-events: none; }
 .dep-node-glyph { color: var(--neutral-500); }
+.dep-node-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: var(--space-1); }
 .dep-node-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dep-node.is-expanded .dep-node-label { overflow: visible; white-space: normal; font-weight: 600; }
+.dep-node-meta { color: var(--neutral-500); font-family: var(--font-mono); font-size: var(--text-xs); }
+.dep-node-body { color: var(--neutral-700); font-size: var(--text-xs); line-height: var(--lh-xs); }
+.dep-node-expand { flex: 0 0 auto; width: 22px; height: 22px; border: 1px solid var(--neutral-300); border-radius: var(--radius-2); background: transparent; color: var(--neutral-700); cursor: pointer; }
+.dep-node-expand:hover { border-color: var(--accent); color: var(--accent); }
 .deps-wrap .react-flow__edge-path { stroke: var(--neutral-500); stroke-width: 1.5; }
 .deps-wrap .react-flow__edge-text { fill: var(--neutral-700); font-weight: 500; }
 .deps-wrap .react-flow__edge-textbg { fill: var(--bg); fill-opacity: 0.92; }

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   Background,
   BackgroundVariant,
@@ -44,11 +51,17 @@ function CanvasInner() {
   const ops = useCanvasOps();
   const rf = useReactFlow();
   const [tool, setTool] = useState<CanvasTool>("select");
-  const [snap, setSnap] = useState(true);
-  const [grid, setGrid] = useState(true);
+  const [modifierPan, setModifierPan] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>([]);
   const draggingRef = useRef(false);
   const hydratingSelectionRef = useRef(false);
+  const modifierPanRef = useRef(false);
+  const modifierPanGesture = useRef<{
+    pointerId: number;
+    x: number;
+    y: number;
+    viewport: { x: number; y: number; zoom: number };
+  } | null>(null);
   const connectFrom = useRef<string | null>(null);
   const [newNodeMenu, setNewNodeMenu] = useState<{ x: number; y: number; fromId: string; kinds: NodeKind[]; flow: { x: number; y: number } } | null>(null);
 
@@ -185,8 +198,6 @@ function CanvasInner() {
       if (e.key === "+" || e.key === "=") return void rf.zoomIn();
       if (e.key === "-") return void rf.zoomOut();
       if (e.key === "!" || (e.shiftKey && e.key === "1")) return void rf.fitView({ duration: 200, padding: 0.2 });
-      if (e.key === ".") return setGrid((g) => !g);
-      if (e.key === ",") return setSnap((s) => !s);
       const t = TOOLS.find((x) => x.chord.toLowerCase() === k);
       if (t) setTool(t.tool);
       if (k === "c") {
@@ -198,10 +209,82 @@ function CanvasInner() {
     return () => window.removeEventListener("keydown", onKey);
   }, [ops, rf, state.selection, actions]);
 
+  useEffect(() => {
+    const updateModifier = (event: KeyboardEvent) => {
+      if (event.key === "Meta" || event.key === "Control") {
+        const active = event.type === "keydown";
+        modifierPanRef.current = active;
+        setModifierPan(active);
+      }
+    };
+    const clearModifier = () => {
+      modifierPanRef.current = false;
+      modifierPanGesture.current = null;
+      setModifierPan(false);
+    };
+    window.addEventListener("keydown", updateModifier);
+    window.addEventListener("keyup", updateModifier);
+    window.addEventListener("blur", clearModifier);
+    return () => {
+      window.removeEventListener("keydown", updateModifier);
+      window.removeEventListener("keyup", updateModifier);
+      window.removeEventListener("blur", clearModifier);
+    };
+  }, []);
+
+  const startModifierPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (
+      event.button !== 0 ||
+      !(event.metaKey || event.ctrlKey || modifierPanRef.current)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    modifierPanGesture.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      viewport: rf.getViewport(),
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setModifierPan(true);
+  };
+
+  const moveModifierPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const gesture = modifierPanGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void rf.setViewport({
+      x: gesture.viewport.x + event.clientX - gesture.x,
+      y: gesture.viewport.y + event.clientY - gesture.y,
+      zoom: gesture.viewport.zoom,
+    });
+  };
+
+  const endModifierPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const gesture = modifierPanGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    modifierPanGesture.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setModifierPan(event.metaKey || event.ctrlKey || modifierPanRef.current);
+  };
+
   const nodeCount = Object.values(state.nodes).filter((n) => n.geometry).length;
 
   return (
-    <div className={`canvas-wrap tool-${tool}`}>
+    <div
+      className={`canvas-wrap tool-${tool}${modifierPan ? " is-modifier-pan" : ""}`}
+      onPointerDownCapture={startModifierPan}
+      onPointerMoveCapture={moveModifierPan}
+      onPointerUpCapture={endModifierPan}
+      onPointerCancelCapture={endModifierPan}
+    >
       <ReactFlow
         nodes={nodes}
         edges={flowEdges}
@@ -215,9 +298,9 @@ function CanvasInner() {
         onConnectStart={onConnectStart}
         onConnectEnd={onConnectEnd}
         onSelectionChange={syncSelection}
-        snapToGrid={snap}
+        snapToGrid
         snapGrid={[8, 8]}
-        selectionOnDrag={tool === "select"}
+        selectionOnDrag={tool === "select" && !modifierPan}
         panOnDrag={tool === "hand" ? [0, 1, 2] : [1, 2]}
         panActivationKeyCode="Space"
         deleteKeyCode={null}
@@ -229,14 +312,12 @@ function CanvasInner() {
         }}
         aria-label="Canvas"
       >
-        {grid ? (
-          <Background
-            variant={BackgroundVariant.Dots}
-            gap={[24, 24]}
-            size={1}
-            color="var(--canvas-grid)"
-          />
-        ) : null}
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={[24, 24]}
+          size={1}
+          color="var(--canvas-grid)"
+        />
         <ContextualToolbar />
         <Panel position="top-left">
           <div className="tool-palette" role="toolbar" aria-label="Canvas tools">
@@ -253,27 +334,29 @@ function CanvasInner() {
                 <span aria-hidden="true">{t.glyph}</span>
               </button>
             ))}
+            <button type="button" className="tool-btn tool-tidy" title="Auto-layout" onClick={() => void ops.autoLayout("TB")}>
+              Tidy
+            </button>
             <span className="tool-divider" />
             <button
               type="button"
-              className={`tool-btn${snap ? " is-active" : ""}`}
-              aria-pressed={snap}
-              title="Snapping (,)"
-              onClick={() => setSnap((s) => !s)}
+              className="tool-btn"
+              title="Undo (⌘Z)"
+              aria-label="Undo"
+              disabled={!actions.canUndo()}
+              onClick={() => void actions.undo()}
             >
-              <span aria-hidden="true">⌗</span>
+              <span aria-hidden="true">↶</span>
             </button>
             <button
               type="button"
-              className={`tool-btn${grid ? " is-active" : ""}`}
-              aria-pressed={grid}
-              title="Grid (.)"
-              onClick={() => setGrid((g) => !g)}
+              className="tool-btn"
+              title="Redo (⌘⇧Z)"
+              aria-label="Redo"
+              disabled={!actions.canRedo()}
+              onClick={() => void actions.redo()}
             >
-              <span aria-hidden="true">▦</span>
-            </button>
-            <button type="button" className="tool-btn tool-tidy" title="Auto-layout" onClick={() => void ops.autoLayout("TB")}>
-              Tidy
+              <span aria-hidden="true">↷</span>
             </button>
           </div>
         </Panel>

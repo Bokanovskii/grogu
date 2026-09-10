@@ -13,13 +13,16 @@ export interface Arranged {
   height: number;
 }
 
-const NODE_W = 200;
+const NODE_W = 220;
 const NODE_H = 72;
+const EXPANDED_W = 340;
+const EXPANDED_H = 164;
 
 export function dagreLayout(
   nodes: PlanNode[],
   edges: PlanEdge[],
   direction: "TB" | "LR",
+  expandedIds: ReadonlySet<string> = new Set(),
 ): Arranged {
   const g = new dagre.graphlib.Graph();
   g.setGraph({
@@ -34,7 +37,10 @@ export function dagreLayout(
   const sortedNodes = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const ids = new Set(sortedNodes.map((n) => n.id));
   for (const n of sortedNodes) {
-    g.setNode(n.id, { width: NODE_W, height: NODE_H });
+    g.setNode(n.id, {
+      width: expandedIds.has(n.id) ? EXPANDED_W : NODE_W,
+      height: expandedIds.has(n.id) ? EXPANDED_H : NODE_H,
+    });
   }
   const sortedEdges = [...edges]
     .filter((e) => ids.has(e.from) && ids.has(e.to))
@@ -48,8 +54,13 @@ export function dagreLayout(
   const positions: Record<string, { x: number; y: number }> = {};
   for (const n of sortedNodes) {
     const gn = g.node(n.id);
+    const width = expandedIds.has(n.id) ? EXPANDED_W : NODE_W;
+    const height = expandedIds.has(n.id) ? EXPANDED_H : NODE_H;
     // dagre returns centre coordinates; convert to top-left for xyflow.
-    positions[n.id] = { x: Math.round(gn.x - NODE_W / 2), y: Math.round(gn.y - NODE_H / 2) };
+    positions[n.id] = {
+      x: Math.round(gn.x - width / 2),
+      y: Math.round(gn.y - height / 2),
+    };
   }
   const graph = g.graph();
   return { positions, width: graph.width ?? 0, height: graph.height ?? 0 };

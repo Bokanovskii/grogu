@@ -81,6 +81,29 @@ class PlanPackageIntegrationTests(unittest.TestCase):
             self.store.load(plan_id)["stage_written"]["testing"]
         )
 
+    def test_client_counter_updates_are_atomic_with_new_objects(self):
+        plan_id, documents = self.package()
+        document = documents.load(role="reviewer")
+        region = grogu_plandoc.make_node(
+            "reg-1",
+            "region",
+            "Review region",
+            stage="design",
+            attrs={"shape": "rectangle", "anchor_state": "resolved"},
+            geometry={"x": 40, "y": 80, "w": 240, "h": 120, "z": 2},
+            revision=document["revision"],
+        )
+        documents.patch(
+            role="reviewer",
+            base=document["revision"],
+            operations=[
+                {"op": "add", "path": "/counters/reg", "value": 1},
+                {"op": "add", "path": "/nodes/reg-1", "value": region},
+            ],
+        )
+        manifest = self.store.load(plan_id)
+        self.assertEqual(manifest["plandoc"]["counters"]["reg"], 1)
+
     def test_local_only_upgrade_is_additive(self):
         marker = self.root / ".grogu" / "plans" / ".gitignore"
         marker.parent.mkdir(parents=True)

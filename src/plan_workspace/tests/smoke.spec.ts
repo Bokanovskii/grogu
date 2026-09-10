@@ -65,6 +65,35 @@ test.describe("boot and shell", () => {
     await expect(page.getByText("Applied auto-layout.")).toHaveCount(0);
   });
 
+  test("a successful Tidy creates one undoable revision", async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press("Meta+2");
+    await page.getByRole("button", { name: "Tidy" }).click();
+    await expect(page.getByText("Applied auto-layout.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Undo" })).toBeEnabled();
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.locator(".status-save")).toContainText("Saved · r");
+    await expect(page.getByRole("button", { name: "Redo" })).toBeEnabled();
+  });
+
+  test("Control-drag grabs and pans the canvas without switching tools", async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press("Meta+2");
+    const pane = page.locator(".react-flow__pane");
+    const viewport = page.locator(".react-flow__viewport");
+    const before = await viewport.getAttribute("style");
+    const box = await pane.boundingBox();
+    expect(box).not.toBeNull();
+    await page.keyboard.down("Control");
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box!.x + box!.width / 2 + 80, box!.y + box!.height / 2 + 48);
+    await page.mouse.up();
+    await page.keyboard.up("Control");
+    await expect(viewport).not.toHaveAttribute("style", before ?? "");
+    await expect(page.locator(".tool-select")).toBeVisible();
+  });
+
   test("switching to Canvas with a document node selected does not crash", async ({ page }) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -134,6 +163,10 @@ test.describe("dependencies mode", () => {
       "aria-selected",
       "true",
     );
+    const firstNode = page.locator(".dep-node").first();
+    await firstNode.getByRole("button", { name: /^Expand / }).click();
+    await expect(firstNode).toHaveClass(/is-expanded/);
+    await expect(firstNode.locator(".dep-node-body")).toBeVisible();
   });
 });
 

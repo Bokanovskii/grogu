@@ -32,11 +32,19 @@ function DepNode({
     shade: string;
     cycle: boolean;
     direction: "TB" | "LR";
+    body: string;
+    id: string;
+    expanded: boolean;
+    onToggle: (id: string) => void;
   };
 }) {
   const horizontal = data.direction === "LR";
   return (
-    <div className={`dep-node dep-shade-${data.shade}${data.cycle ? " dep-cycle" : ""}`}>
+    <div
+      className={`dep-node${data.expanded ? " is-expanded" : ""} dep-shade-${data.shade}${
+        data.cycle ? " dep-cycle" : ""
+      }`}
+    >
       <Handle
         type="target"
         position={horizontal ? Position.Left : Position.Top}
@@ -45,7 +53,29 @@ function DepNode({
       <span className="dep-node-glyph" aria-hidden="true">
         {NODE_GLYPH[data.kind]}
       </span>
-      <span className="dep-node-label">{data.label}</span>
+      <span className="dep-node-copy">
+        <span className="dep-node-label">{data.label}</span>
+        {data.expanded ? (
+          <>
+            <span className="dep-node-meta">
+              {data.id} · {NODE_LABEL[data.kind]}
+            </span>
+            {data.body ? <span className="dep-node-body">{data.body}</span> : null}
+          </>
+        ) : null}
+      </span>
+      <button
+        type="button"
+        className="dep-node-expand"
+        aria-label={`${data.expanded ? "Collapse" : "Expand"} ${data.label}`}
+        aria-expanded={data.expanded}
+        onClick={(event) => {
+          event.stopPropagation();
+          data.onToggle(data.id);
+        }}
+      >
+        {data.expanded ? "−" : "+"}
+      </button>
       <Handle
         type="source"
         position={horizontal ? Position.Right : Position.Bottom}
@@ -69,6 +99,7 @@ function DependenciesGraph({
   const state = useApp();
   const actions = useActions();
   const selectedId = state.selection[0]?.id;
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const kindSet = useMemo(() => new Set(edgeKinds), [edgeKinds]);
 
   const { nodes, edges } = useMemo(() => {
@@ -79,7 +110,7 @@ function DependenciesGraph({
       nodeIds.add(e.to);
     }
     const planNodes = Object.values(state.nodes).filter((n) => nodeIds.has(n.id) && n.kind !== "thread");
-    const arranged = dagreLayout(planNodes, displayEdges, direction);
+    const arranged = dagreLayout(planNodes, displayEdges, direction, expandedIds);
     const impact = selectedId ? computeImpact(selectedId, displayEdges, kindSet) : null;
     const cyc = findCycles(displayEdges, kindSet);
     const cycleNodes = new Set(cyc.flat());
@@ -99,6 +130,16 @@ function DependenciesGraph({
           shade,
           cycle: cycleNodes.has(n.id),
           direction,
+          body: n.body,
+          id: n.id,
+          expanded: expandedIds.has(n.id),
+          onToggle: (id: string) =>
+            setExpandedIds((current) => {
+              const next = new Set(current);
+              if (next.has(id)) next.delete(id);
+              else next.add(id);
+              return next;
+            }),
         },
         selected: state.selection.some((s) => s.id === n.id),
         draggable: false,
@@ -122,7 +163,15 @@ function DependenciesGraph({
       }${cycleNodes.has(e.from) && cycleNodes.has(e.to) ? " edge-cycle" : ""}`,
     }));
     return { nodes: flowNodes, edges: flowEdges };
-  }, [state.nodes, state.edges, kindSet, direction, selectedId, state.selection]);
+  }, [
+    state.nodes,
+    state.edges,
+    kindSet,
+    direction,
+    selectedId,
+    state.selection,
+    expandedIds,
+  ]);
 
   return (
     <div className="deps-wrap">
@@ -133,6 +182,14 @@ function DependenciesGraph({
         nodesDraggable={false}
         nodesConnectable={false}
         onNodeClick={(_e, n) => actions.select(n.id, "node")}
+        onNodeDoubleClick={(_e, node) =>
+          setExpandedIds((current) => {
+            const next = new Set(current);
+            if (next.has(node.id)) next.delete(node.id);
+            else next.add(node.id);
+            return next;
+          })
+        }
         fitView
         minZoom={0.1}
         maxZoom={4}
