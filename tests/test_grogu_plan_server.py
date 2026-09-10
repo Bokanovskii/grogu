@@ -931,6 +931,14 @@ class SecuredPlanServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         payload = json.loads(body)
         self.assertRegex(payload["request"]["seq"], r"^f-[0-9]+$")
+        refreshed = self.documents.threads(role="engineer")
+        revision_request = next(
+            item for item in refreshed if item["id"] == thread["id"]
+        )["revision_request"]
+        self.assertEqual(
+            revision_request["id"], payload["request"]["seq"]
+        )
+        self.assertEqual(revision_request["state"], "delivered")
         manifest = self.store.load(self.plan_id)
         note = manifest["steering"][-1]
         self.assertEqual(note["role"], "architect")

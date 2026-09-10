@@ -24,6 +24,7 @@ export function AskGrogu({ threadId }: { threadId: string }) {
     setStatus("sending");
     try {
       const res = await api.reviseThread(threadId, instruction.trim());
+      await actions.refreshDoc();
       actions.toast(`Revision request ${res.request.seq} sent to the architect.`, "success", {
         label: "View ledger",
         event: "noop",

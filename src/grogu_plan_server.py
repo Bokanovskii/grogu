@@ -915,6 +915,36 @@ class _Handler(BaseHTTPRequestHandler):
                 text=f"Revision request for {thread_id}: {instruction}",
                 binding=True,
             )
+            current = documents.load(
+                role=self.context.role,
+                record=False,
+            )
+            try:
+                documents.patch(
+                    role=self.context.role,
+                    base=current["revision"],
+                    operations=[
+                        {
+                            "op": "add",
+                            "path": (
+                                f"/nodes/{thread_id}/attrs/revision_request"
+                            ),
+                            "value": {
+                                "id": request["seq"],
+                                "state": request["record"]["state"],
+                                "instruction": instruction,
+                                "at": request["record"]["at"],
+                            },
+                        }
+                    ],
+                    intent=f"record revision request {request['seq']}",
+                    origin="revision-request",
+                )
+            except Exception:
+                documents.withdraw_feedback(
+                    request["seq"], role=self.context.role
+                )
+                raise
             self.context.events.publish(
                 "feedback", {"id": request["seq"], "thread": thread_id}
             )

@@ -245,6 +245,8 @@ test.describe("boot and shell", () => {
     await page.getByRole("button", { name: "Send request" }).click();
     await expect(page.getByText(/Revision request f-[^ ]+ sent to the architect/)).toBeVisible();
     await expect(page.locator(".proposal-modal")).toHaveCount(0);
+    await expect(card.getByText("Revision requested")).toBeVisible();
+    await expect(card.getByText(/Waiting for architect/)).toBeVisible();
   });
 });
 

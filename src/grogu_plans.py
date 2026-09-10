@@ -7775,6 +7775,9 @@ class PlanDocumentStore:
             "round": attrs.get("round", 1),
             "comments": comments,
             "promoted_directive": attrs.get("promoted_directive", ""),
+            "revision_request": copy.deepcopy(
+                attrs.get("revision_request")
+            ),
             "stage": node.get("stage", ""),
             "created_at": attrs.get("created_at", ""),
             "resolved_at": attrs.get("resolved_at", ""),

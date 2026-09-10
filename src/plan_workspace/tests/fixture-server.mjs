@@ -526,6 +526,13 @@ async function handle(req, res) {
         true,
       );
       state.feedback.push(request);
+      ext.revision_request = {
+        id: request.id,
+        state: request.state,
+        instruction: body.instruction ?? "",
+        at: request.at,
+      };
+      t.attrs.revision_request = ext.revision_request;
       broadcast("feedback", { id: request.id, thread: tid });
       return json(res, 200, {
         request: {

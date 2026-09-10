@@ -17,6 +17,9 @@ export interface ThreadView {
   totalMembers: number | undefined;
   lastExactRev: string | undefined;
   promotedDirective: string | undefined;
+  revisionRequest:
+    | { id: string; state: string; instruction: string; at: number }
+    | undefined;
   order: number;
 }
 
@@ -55,6 +58,8 @@ export function threadOf(node: PlanNode): ThreadView {
     totalMembers: ext.total_members != null ? Number(ext.total_members) : undefined,
     lastExactRev: (ext.anchor_last_exact as string) ?? undefined,
     promotedDirective: (ext.promoted_directive as string) ?? undefined,
+    revisionRequest: (attrs["revision_request"] ??
+      ext.revision_request) as ThreadView["revisionRequest"],
     order: node.order,
   };
 }

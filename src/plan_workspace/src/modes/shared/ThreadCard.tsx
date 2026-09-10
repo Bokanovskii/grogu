@@ -5,6 +5,7 @@ import { ago } from "../../lib/format";
 import { Markdown } from "../../lib/markdown";
 import { THREAD_KIND_META, type ThreadView } from "./threads";
 import { Menu } from "../../shell/Menu";
+import { useControl } from "../../state/control";
 
 // One comment thread card. Kind is signalled by a chip and a 2px left-border
 // glyph column, never colour alone. Moved and Orphaned states show their chips
@@ -20,11 +21,27 @@ export function ThreadCard({
 }) {
   const state = useApp();
   const actions = useActions();
+  const control = useControl();
   const [reply, setReply] = useState("");
   const meta = THREAD_KIND_META[thread.kind];
   const isArchitect = state.role === "architect";
   const orphaned = thread.anchorState === "orphaned" || thread.status === "orphaned";
   const moved = thread.anchorState === "shifted";
+  const revisionReceipt = thread.revisionRequest
+    ? control.feedback.find(
+        (feedback) => feedback.id === thread.revisionRequest?.id,
+      )
+    : undefined;
+  const revisionState =
+    revisionReceipt?.state ?? thread.revisionRequest?.state ?? "";
+  const revisionStateLabel: Record<string, string> = {
+    sent: "Sent",
+    routed: "Routed",
+    delivered: "Waiting for architect",
+    acknowledged: "Architect acknowledged",
+    undeliverable: "Could not reach an architect",
+    withdrawn: "Withdrawn",
+  };
 
   async function post() {
     if (!reply.trim()) return;
@@ -123,6 +140,15 @@ export function ThreadCard({
         {thread.promotedDirective ? (
           <div className="thread-promoted">
             <span className="chip chip-accent">↗ {thread.promotedDirective}</span>
+          </div>
+        ) : null}
+        {thread.revisionRequest ? (
+          <div className="thread-revision-request">
+            <span className="chip chip-accent">Revision requested</span>
+            <span>
+              {revisionStateLabel[revisionState] ?? revisionState} ·{" "}
+              {thread.revisionRequest.id}
+            </span>
           </div>
         ) : null}
 
