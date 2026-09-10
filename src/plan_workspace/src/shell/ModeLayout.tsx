@@ -8,10 +8,14 @@ import { useActions, useApp } from "../state/store";
 function ResizeGutter({
   side,
   width,
+  min,
+  max,
   onResize,
 }: {
   side: "left" | "right";
   width: number;
+  min: number;
+  max: number;
   onResize: (w: number) => void;
 }) {
   const startX = useRef(0);
@@ -41,8 +45,8 @@ function ResizeGutter({
       aria-orientation="vertical"
       aria-label={`Resize ${side} panel`}
       aria-valuenow={Math.round(width)}
-      aria-valuemin={side === "left" ? 240 : 320}
-      aria-valuemax={side === "left" ? 400 : 520}
+      aria-valuemin={min}
+      aria-valuemax={max}
       onPointerDown={onDown}
       tabIndex={0}
       onKeyDown={(e) => {
@@ -58,21 +62,27 @@ export function ModeLayout({
   leftTitle,
   right,
   rightTitle,
+  compact = false,
   children,
 }: {
   left: React.ReactNode;
   leftTitle: string;
   right: React.ReactNode;
   rightTitle: string;
+  compact?: boolean;
   children: React.ReactNode;
 }) {
   const { panels } = useApp();
   const actions = useActions();
-  const clampLeft = (w: number) => Math.max(240, Math.min(400, w));
-  const clampRight = (w: number) => Math.max(320, Math.min(520, w));
+  const leftRange = compact ? { min: 216, max: 256 } : { min: 240, max: 400 };
+  const rightRange = compact ? { min: 216, max: 288 } : { min: 320, max: 520 };
+  const clampLeft = (w: number) => Math.max(leftRange.min, Math.min(leftRange.max, w));
+  const clampRight = (w: number) => Math.max(rightRange.min, Math.min(rightRange.max, w));
+  const leftWidth = clampLeft(panels.leftWidth);
+  const rightWidth = clampRight(panels.rightWidth);
 
   return (
-    <div className="mode-layout">
+    <div className={`mode-layout${compact ? " mode-layout-compact" : ""}`}>
       {panels.leftCollapsed ? (
         <div className="panel-rail panel-rail-left">
           <button
@@ -90,7 +100,7 @@ export function ModeLayout({
         <>
           <section
             className="panel-left"
-            style={{ width: panels.leftWidth }}
+            style={{ width: leftWidth }}
             aria-label={leftTitle}
           >
             <div className="panel-head">
@@ -109,7 +119,9 @@ export function ModeLayout({
           </section>
           <ResizeGutter
             side="left"
-            width={panels.leftWidth}
+            width={leftWidth}
+            min={leftRange.min}
+            max={leftRange.max}
             onResize={(w) => actions.patchPanels({ leftWidth: clampLeft(w) })}
           />
         </>
@@ -136,12 +148,14 @@ export function ModeLayout({
         <>
           <ResizeGutter
             side="right"
-            width={panels.rightWidth}
+            width={rightWidth}
+            min={rightRange.min}
+            max={rightRange.max}
             onResize={(w) => actions.patchPanels({ rightWidth: clampRight(w) })}
           />
           <section
             className="panel-right"
-            style={{ width: panels.rightWidth }}
+            style={{ width: rightWidth }}
             aria-label={rightTitle}
           >
             <div className="panel-head">

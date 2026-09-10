@@ -1987,6 +1987,14 @@ class PlanStore:
     ) -> dict:
         with self.locked():
             plan_id = self._new_id()
+            repository_steering = self._repo_steering()
+            repository_steering_seq = max(
+                [
+                    int(note.get("seq", 0))
+                    for note in repository_steering.get("notes", [])
+                ]
+                or [0]
+            )
             stages = (
                 ([DESIGN] if design else [])
                 + [IMPLEMENTATION, TESTING]
@@ -2019,6 +2027,7 @@ class PlanStore:
                 "defects": [],
                 "steering": [],
                 "steering_acked": {role: 0 for role in ROLES},
+                "repository_steering_folded_seq": repository_steering_seq,
                 "access_log": [],
                 "stage_versions": {},
                 "stage_writers": {},
@@ -2795,6 +2804,13 @@ class PlanStore:
                 manifest["steering_folded_at"] = now()
                 manifest["steering_folded_seq"] = max(
                     [note.get("seq", 0) for note in manifest.get("steering", [])] or [0]
+                )
+                manifest["repository_steering_folded_seq"] = max(
+                    [
+                        int(note.get("seq", 0))
+                        for note in self._repo_steering().get("notes", [])
+                    ]
+                    or [0]
                 )
                 if manifest.get("status") == NEEDS_REVIEW:
                     if manifest.get("review_required"):
@@ -4938,15 +4954,26 @@ class PlanStore:
         # "when the architect last folded steering in" — a note the architect
         # has already answered must stop blocking, or one repository-wide note
         # freezes every plan in the repository forever.
-        watermark = max(
-            manifest.get("created_at", ""), manifest.get("steering_folded_at", "")
-        )
         unread = self.steering(role="all", plan_id=plan_id, unread=False)
-        binding_repo = [
-            note
-            for note in unread.get("repository", [])
-            if note.get("requires_replan") and note.get("at", "") > watermark
-        ]
+        repository_watermark = manifest.get("repository_steering_folded_seq")
+        if repository_watermark is None:
+            timestamp_watermark = max(
+                manifest.get("created_at", ""),
+                manifest.get("steering_folded_at", ""),
+            )
+            binding_repo = [
+                note
+                for note in unread.get("repository", [])
+                if note.get("requires_replan")
+                and note.get("at", "") > timestamp_watermark
+            ]
+        else:
+            binding_repo = [
+                note
+                for note in unread.get("repository", [])
+                if note.get("requires_replan")
+                and int(note.get("seq", 0)) > int(repository_watermark)
+            ]
         if binding_repo:
             # Quote them. A banner is shown once, and this is the moment the
             # note actually bites, so an agent that has lost it from context
