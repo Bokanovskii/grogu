@@ -35,13 +35,17 @@ grogu plan doc register <plan-id> \
   --agent <GROGU_AGENT> \
   --session-role engineer \
   --workstream integration \
+  --parent-run-id <supervisor-run> \
+  --root-session-id <root-session> \
   --events "$COPILOT_HOME/session-state/<session>/events.jsonl"
 ```
 
 Registration binds repository, plan, run, agent, role, workstream, session, and
-event-agent identity. Correlation never uses display-name similarity or
-timestamps. Registration changes are reconciled on each collector sample, so a
-new registration appears without restarting the workspace server.
+event-agent identity. Optional parent-run and root-session identities produce
+the spawn tree; the browser receives only one-way opaque session keys.
+Correlation never uses display-name similarity or timestamps. Registration
+changes are reconciled on each collector sample, so a new registration appears
+without restarting the workspace server.
 
 Registration records are machine-local under `.grogu/state/`; they are not
 committed. An unregistered event stream is never opened as an agent source.
@@ -63,9 +67,22 @@ Each registered agent row keeps these facts separate:
   not proof that an agent read it.
 
 Registration and recent Grogu commands are not evidence that a process is
-running. Command recency changes neither lifecycle nor activity. A disconnected
-source does not turn a previously observed lifecycle into `Finished`, and a
-quiet readable source remains connected.
+running. Command recency may establish recent command activity, but it never
+changes lifecycle or elapsed runtime. A disconnected source does not turn a
+previously observed lifecycle into `Finished`, and a quiet readable source
+remains connected.
+
+## Session and spawn topology
+
+The topology lists every registered agent in the selected repository scope.
+Each row shows its opaque session key, explicit parent, lifecycle, activity,
+plan/workstream, and last safe action. Parent-child edges exist only when the
+child registration names the exact parent run. Missing parent evidence is shown
+as `parent unavailable`; Grogu never guesses lineage from names or timestamps.
+
+Selecting a topology row opens the same allowlisted timeline as **Watch**. The
+flat table remains available for sorting and filtering; the topology answers
+which supervisor or agent spawned each subagent.
 
 Elapsed time always names its evidence. A lifecycle-start span requires an
 observed run start. A first-observed span is an observation lower bound, not
@@ -96,6 +113,12 @@ registered normalized event reports a run transition, lifecycle is `Unknown`
 and runtime coverage is unavailable. The Control room does not inspect OS
 processes, personal session history, command arguments, or tool results to fill
 that gap.
+
+The workspace also has no verified process handle for an arbitrary registered
+agent, so it does not present a fake Stop button. Feedback and binding steering
+are durable control-plane actions, not process interrupts. Immediate
+cancellation requires a separately verified launcher-owned process handle; an
+unknown external PID is never killed from the browser.
 
 ## Privacy boundary
 

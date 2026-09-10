@@ -171,11 +171,54 @@ class SnapshotShape(unittest.TestCase):
                 "agents",
                 "uncorrelated",
                 "waiting_on_you",
+                "topology",
                 "recent_events",
                 "events_status",
             },
         )
         self.assertEqual(snapshot["schema_version"], 1)
+
+    def test_snapshot_uses_only_explicit_parent_run_lineage(self):
+        room = cr.ControlRoom(
+            now=_FakeClock(), watch_home=Path(self._watch_home.name)
+        )
+        parent = cr.Registration(
+            run_id="run-parent",
+            repository="/tmp/repo",
+            plan="p-1",
+            agent="parent",
+            role="architect",
+            workstream="planning",
+            session_id="private-parent-session",
+            agent_id="parent-agent",
+            registered_at="2026-09-10T20:00:00Z",
+            root_session_id="private-root-session",
+        )
+        child = cr.Registration(
+            run_id="run-child",
+            repository="/tmp/repo",
+            plan="p-1",
+            agent="child",
+            role="engineer",
+            workstream="backend",
+            session_id="private-child-session",
+            agent_id="child-agent",
+            registered_at="2026-09-10T20:01:00Z",
+            parent_run_id="run-parent",
+            root_session_id="private-root-session",
+        )
+        room.register(parent)
+        room.register(child)
+        snapshot = room.snapshot()
+        self.assertEqual(snapshot["topology"]["coverage"], "complete")
+        self.assertEqual(len(snapshot["topology"]["nodes"]), 2)
+        self.assertEqual(len(snapshot["topology"]["edges"]), 1)
+        edge = snapshot["topology"]["edges"][0]
+        self.assertEqual(edge["from"], parent.agent_key)
+        self.assertEqual(edge["to"], child.agent_key)
+        serialized = json.dumps(snapshot)
+        self.assertNotIn("private-child-session", serialized)
+        self.assertNotIn("private-root-session", serialized)
 
 
 class PrivacyOverAdversarialFixture(unittest.TestCase):

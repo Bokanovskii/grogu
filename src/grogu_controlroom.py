@@ -212,6 +212,11 @@ def _repository_public_id(value: object) -> str:
         return ""
     return "repo-" + hashlib.sha256(key.encode("utf8")).hexdigest()[:16]
 
+def _session_public_id(value: object) -> Optional[str]:
+    if not isinstance(value, str) or not value:
+        return None
+    return "session-" + hashlib.sha256(value.encode("utf8")).hexdigest()[:16]
+
 
 def load_registration(mapping: dict) -> Registration:
     """Coerce a mapping to a :class:`Registration`.
@@ -524,6 +529,61 @@ class ControlRoom:
                     or command_event["at"] > row["last_action"]["at"]
                 ):
                     row["last_action"] = command_event
+        registrations_by_run = {
+            item.run_id: item for item in self._registrations.values()
+        }
+        registrations_by_key = {
+            item.agent_key: item for item in self._registrations.values()
+        }
+        run_to_key = {
+            item.run_id: item.agent_key for item in self._registrations.values()
+        }
+        for row in agent_rows:
+            registration = registrations_by_key.get(row["agent_key"])
+            if registration is None:
+                continue
+            parent_key = run_to_key.get(registration.parent_run_id)
+            row["session_key"] = _session_public_id(registration.session_id)
+            row["root_session_key"] = _session_public_id(
+                registration.root_session_id or registration.session_id
+            )
+            row["parent_agent_key"] = parent_key
+            row["lineage_status"] = (
+                "root"
+                if not registration.parent_run_id
+                else (
+                    "recorded"
+                    if registration.parent_run_id in registrations_by_run
+                    else "parent_unavailable"
+                )
+            )
+        topology_nodes = [
+            {
+                "agent_key": row["agent_key"],
+                "session_key": row.get("session_key"),
+                "root_session_key": row.get("root_session_key"),
+                "parent_agent_key": row.get("parent_agent_key"),
+                "lineage_status": row.get("lineage_status", "unavailable"),
+            }
+            for row in agent_rows
+        ]
+        topology_edges = [
+            {
+                "id": "spawn-"
+                + hashlib.sha256(
+                    (
+                        str(row["parent_agent_key"])
+                        + "\0"
+                        + row["agent_key"]
+                    ).encode("utf8")
+                ).hexdigest()[:20],
+                "kind": "spawned",
+                "from": row["parent_agent_key"],
+                "to": row["agent_key"],
+            }
+            for row in agent_rows
+            if row.get("parent_agent_key")
+        ]
         # Anything from source 1 that had no registration is uncorrelated.
         for key, row in sorted(watch_by_agent.items(), key=lambda item: str(item[0]))[
             :MAX_UNREGISTERED_SESSIONS
@@ -586,6 +646,19 @@ class ControlRoom:
             "agents": agent_rows,
             "uncorrelated": uncorrelated,
             "waiting_on_you": waiting,
+            "topology": {
+                "coverage": (
+                    "complete"
+                    if topology_nodes
+                    and all(
+                        item["lineage_status"] in {"root", "recorded"}
+                        for item in topology_nodes
+                    )
+                    else ("partial" if topology_nodes else "unavailable")
+                ),
+                "nodes": topology_nodes,
+                "edges": topology_edges,
+            },
             "source_coverage": [
                 registration_coverage,
                 {

@@ -195,6 +195,53 @@
       },
       "additionalProperties": false
     },
+    "topologyNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_key",
+        "session_key",
+        "root_session_key",
+        "parent_agent_key",
+        "lineage_status"
+      ],
+      "properties": {
+        "agent_key": {"type": "string", "minLength": 1, "maxLength": 512},
+        "session_key": {"type": ["string", "null"], "pattern": "^session-[0-9a-f]{16}$"},
+        "root_session_key": {"type": ["string", "null"], "pattern": "^session-[0-9a-f]{16}$"},
+        "parent_agent_key": {"type": ["string", "null"], "maxLength": 512},
+        "lineage_status": {
+          "enum": ["root", "recorded", "parent_unavailable", "unavailable"]
+        }
+      }
+    },
+    "topologyEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "from", "to"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^spawn-[0-9a-f]{20}$"},
+        "kind": {"const": "spawned"},
+        "from": {"type": "string", "minLength": 1, "maxLength": 512},
+        "to": {"type": "string", "minLength": 1, "maxLength": 512}
+      }
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coverage", "nodes", "edges"],
+      "properties": {
+        "coverage": {"$ref": "#/$defs/coverageState"},
+        "nodes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/topologyNode"}
+        },
+        "edges": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/topologyEdge"}
+        }
+      }
+    },
     "toolCounters": {
       "type": "object",
       "description": "Bounded counters. Never a body, never an argument, never a result.",
@@ -411,6 +458,12 @@
         "agent_key": {"$ref": "#/$defs/identifier"},
         "agent": {"$ref": "#/$defs/identifier"},
         "run_id": {"$ref": "#/$defs/identifier"},
+        "session_key": {"type": ["string", "null"], "pattern": "^session-[0-9a-f]{16}$"},
+        "root_session_key": {"type": ["string", "null"], "pattern": "^session-[0-9a-f]{16}$"},
+        "parent_agent_key": {"type": ["string", "null"], "maxLength": 512},
+        "lineage_status": {
+          "enum": ["root", "recorded", "parent_unavailable", "unavailable"]
+        },
         "role": {"type": "string"},
         "roles": {
           "type": "array",
@@ -506,6 +559,7 @@
         "agents",
         "uncorrelated",
         "waiting_on_you",
+        "topology",
         "source_coverage",
         "recent_events",
         "events_status"
@@ -548,6 +602,7 @@
           "description": "Asks the user is the one to answer. Composed by the reader from observed facts; never a model summary.",
           "items": {"type": "string"}
         },
+        "topology": {"$ref": "#/$defs/topology"},
         "source_coverage": {
           "type": "array",
           "items": {"$ref": "#/$defs/sourceCoverage"}
