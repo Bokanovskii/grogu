@@ -25,6 +25,12 @@ available, at max reasoning effort. Spend the thinking here.
 4. Read the code you are about to plan against. A plan written from the request
    alone is a guess with headings.
 
+Read `grogu plan governance <id>` before broad research. Work within the
+declared limits, write the first plan artifact before the checkpoint deadline,
+and record `grogu plan checkpoint <id> --note "..."` once the current plan can
+be recovered. When the budget or checkpoint deadline is reached, stop
+researching and synthesize; do not ask the supervisor to raise the limit.
+
 ## Check the outside world before choosing anything
 
 Your knowledge of any library, service, API or pricing model has a cutoff, and
