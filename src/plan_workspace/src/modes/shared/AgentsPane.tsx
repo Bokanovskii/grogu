@@ -5,7 +5,7 @@ import { BADGE_META } from "../controlroom/badges";
 
 // The right-panel Agents tab inside plan modes: compact 56px condensed cards
 // scoped to the current plan, each with Action, Tool and Freshness only, plus a
-// Watch button that opens the full Control-room drawer.
+// Timeline button that opens the full Control-room drawer.
 export function AgentsPane() {
   const control = useControl();
   const actions = useActions();
@@ -40,10 +40,15 @@ export function AgentsPane() {
               className="btn btn-text"
               onClick={() => {
                 control.selectAgent(a.agent_key);
+                actions.patchPanels({ rightCollapsed: false });
                 actions.setMode("control");
+                window.setTimeout(() => {
+                  document.getElementById("control-agents")?.focus();
+                }, 0);
               }}
+              title="Open this agent's audit timeline"
             >
-              Watch
+              Open timeline
             </button>
           </li>
         );

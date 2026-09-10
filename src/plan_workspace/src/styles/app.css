@@ -325,6 +325,9 @@ code, pre, kbd { font-family: var(--font-mono); }
 
 /* Audit drawer */
 .audit-drawer { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.audit-drawer.has-selection { box-shadow: inset 3px 0 0 var(--accent); }
+.audit-drawer:focus { outline: none; }
+.audit-drawer:focus-visible { box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 2px var(--accent-soft); }
 .audit-header { padding: var(--space-3); border-bottom: 1px solid var(--neutral-100); display: flex; flex-direction: column; gap: var(--space-2); }
 .audit-title { font-size: var(--text-md); }
 .audit-toggle { display: flex; align-items: center; gap: var(--space-1); font-size: var(--text-xs); color: var(--neutral-700); }

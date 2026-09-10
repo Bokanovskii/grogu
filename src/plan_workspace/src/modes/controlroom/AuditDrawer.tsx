@@ -84,7 +84,11 @@ export function AuditDrawer({ now }: { now: number }) {
   }
 
   return (
-    <div className="audit-drawer" id="control-agents">
+    <div
+      className={`audit-drawer${control.selectedAgent ? " has-selection" : ""}`}
+      id="control-agents"
+      tabIndex={-1}
+    >
       <div className="audit-header">
         <h3 className="audit-title">{agent ? `${agent.role} · ${agent.workstream || agent.agent}` : "Audit timeline"}</h3>
         <SegmentedControl
@@ -133,16 +137,34 @@ export function AuditDrawer({ now }: { now: number }) {
       </div>
 
       <div className="audit-body" tabIndex={0} role="region" aria-label="Timeline events">
-        {!agent ? (
+        {control.drillLoading ? (
+          <div className="audit-empty" aria-live="polite">
+            <p className="audit-empty-title">Loading timeline…</p>
+            <p>Reading this agent’s observable activity.</p>
+          </div>
+        ) : control.drillError ? (
+          <div className="audit-empty" role="alert">
+            <p className="audit-empty-title">Timeline unavailable.</p>
+            <p>{control.drillError}</p>
+            <button
+              type="button"
+              className="btn btn-text"
+              onClick={() => control.selectAgent(control.selectedAgent)}
+            >
+              Try again
+            </button>
+          </div>
+        ) : !agent ? (
           <p className="audit-empty">
-            Select an agent to watch its observable events.
+            Select an agent to open its observable event timeline.
           </p>
         ) : events.length === 0 ? (
           <div className="audit-empty">
-            <p className="audit-empty-title">No events yet.</p>
+            <p className="audit-empty-title">No detailed events recorded.</p>
             <p>
-              Timeline shows observable events. Grogu never records prompts, chain-of-thought, or raw
-              tool arguments.
+              This timeline is open and will update automatically. The Live badge can come from
+              recent Grogu command activity; detailed tool activity appears only when the session
+              event source records it.
             </p>
           </div>
         ) : (

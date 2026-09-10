@@ -124,8 +124,13 @@ export const AgentCard = forwardRef<HTMLDivElement, Props>(function AgentCard(
       </div>
 
       <div className="agent-row agent-row-6 agent-actions">
-        <button type="button" className="btn btn-text" onClick={onWatch}>
-          Watch
+        <button
+          type="button"
+          className="btn btn-text"
+          onClick={onWatch}
+          title="Open this agent's audit timeline"
+        >
+          Open timeline
         </button>
         <button type="button" className="btn btn-text" onClick={onFeedback}>
           Send feedback

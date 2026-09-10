@@ -120,6 +120,57 @@ test.describe("boot and shell", () => {
     );
   });
 
+  test("Open timeline expands, focuses, and loads the audit panel", async ({ page }) => {
+    await openApp(page);
+    await page.locator(".mode-tab-control").click();
+    await page.getByRole("button", { name: "Collapse Audit timeline panel" }).click();
+    await expect(page.getByRole("button", { name: "Expand Audit timeline panel" })).toBeVisible();
+    await page.route(/\/api\/control\/[^/?]+$/, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await route.continue();
+    });
+    await page.locator(".agent-card").first().getByRole("button", { name: "Open timeline" }).click();
+    await expect(page.locator(".panel-right")).toBeVisible();
+    await expect(page.getByText("Loading timeline…")).toBeVisible();
+    await expect(page.locator(".audit-title")).not.toHaveText("Audit timeline");
+    await expect(page.locator("#control-agents")).toBeFocused();
+  });
+
+  test("Open timeline reports an unavailable drill-down", async ({ page }) => {
+    await openApp(page);
+    await page.locator(".mode-tab-control").click();
+    await page.route(/\/api\/control\/[^/?]+$/, async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "unavailable",
+          message: "The registered activity source could not be read.",
+        }),
+      });
+    });
+    await page.locator(".agent-card").first().getByRole("button", { name: "Open timeline" }).click();
+    await expect(page.getByText("Timeline unavailable.")).toBeVisible();
+    await expect(page.getByText("The registered activity source could not be read.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+  });
+
+  test("an empty timeline explains why a Live agent can have no events", async ({ page }) => {
+    await openApp(page);
+    await page.locator(".mode-tab-control").click();
+    await page.route(/\/api\/control\/[^/?]+$/, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({
+        response,
+        json: { ...body, activity: [] },
+      });
+    });
+    await page.locator(".agent-card").first().getByRole("button", { name: "Open timeline" }).click();
+    await expect(page.getByText("No detailed events recorded.")).toBeVisible();
+    await expect(page.getByText(/Live badge can come from recent Grogu command activity/)).toBeVisible();
+  });
+
   test("feedback scopes name concrete audiences without redundant actions", async ({ page }) => {
     await openApp(page);
     await page.locator(".mode-tab-control").click();
