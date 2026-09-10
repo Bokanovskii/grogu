@@ -573,6 +573,9 @@ class TaskStore:
                     self._cleanup_subordinates(task_id)
             if note:
                 self._log(task, "note", note)
+            if self._cancel_if_closed_parent(task):
+                self.lease_path(task_id).unlink(missing_ok=True)
+                self._cleanup_subordinates(task_id)
             self._write_task(task)
             return task
 

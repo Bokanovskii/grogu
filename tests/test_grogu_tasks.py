@@ -230,6 +230,16 @@ class GroguTaskStoreTests(unittest.TestCase):
             with identity_env(agent="parent-agent", session_id="parent-session"):
                 self.store.create("Late child", parent_task_id=parent["id"])
 
+    def test_update_cannot_reopen_child_of_closed_parent(self):
+        with identity_env(agent="parent-agent", session_id="parent-session"):
+            parent = self.store.create("Parent task")
+            child = self.store.create("Child task", parent_task_id=parent["id"])
+
+        self.store.release(parent["id"], status=grogu_tasks.DONE, note="closed")
+        reopened = self.store.update(child["id"], status=grogu_tasks.OPEN, note="retry")
+
+        self.assertEqual(reopened["status"], grogu_tasks.CANCELLED)
+
 
 if __name__ == "__main__":
     unittest.main()
