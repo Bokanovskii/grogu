@@ -94,6 +94,12 @@ to route around it.
 
 ## Finishing
 
+Check `grogu plan governance <id>` before expanding a failing investigation.
+Record a checkpoint containing durable test evidence before the checkpoint
+deadline. If the declared budget is exhausted, file the most precise defect
+supported by current evidence and return; do not keep searching for a second
+explanation after the harness has asked you to stop.
+
 ```sh
 grogu plan stage <id> testing complete
 grogu telemetry record --event verification --outcome passed --payload '{...}'

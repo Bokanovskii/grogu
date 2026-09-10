@@ -86,6 +86,18 @@ spawning agents for it just multiplies the cost of the same wait.
 
 ## Finishing
 
+Before a long build, broad edit, or review pass, check
+`grogu plan governance <id>`. Record a checkpoint after each independently
+recoverable commit and before the declared checkpoint deadline:
+
+```sh
+grogu plan checkpoint <id> --commit "$(git rev-parse HEAD)" --note "..."
+```
+
+If governance reports a blocker, stop new work and return the checkpoint. Do
+not continue consuming tools or credits while waiting for a queued stop
+message; the supervisor cancels the process through Copilot `/tasks`.
+
 ```sh
 grogu plan stage <id> implementation complete
 ```

@@ -3881,6 +3881,104 @@ class SupervisorRoleTests(ArchitectFrictionTests):
         self.assertIn("last seen", audit.stdout)
 
 
+class PlanGovernanceCliTests(unittest.TestCase):
+    def test_workstream_accepts_every_repeated_review(self):
+        args = grogu_cli.build_parser().parse_args(
+            [
+                "plan",
+                "workstream",
+                "p-demo",
+                "--name",
+                "api",
+                "--path",
+                "src/api/**",
+                "--review",
+                "code-review",
+                "--review",
+                "security-review",
+            ]
+        )
+        store = mock.Mock()
+        store.resolve.return_value = "p-demo"
+        store.add_workstream.return_value = {
+            "name": "api",
+            "paths": ["src/api/**"],
+            "model": "",
+            "required_reviews": ["code-review", "security-review"],
+        }
+        with (
+            mock.patch.object(grogu_cli, "plan_store", return_value=store),
+            mock.patch("sys.stdout", io.StringIO()),
+        ):
+            self.assertEqual(args.handler(args), 0)
+        self.assertEqual(
+            store.add_workstream.call_args.kwargs["required_reviews"],
+            ["code-review", "security-review"],
+        )
+
+    def test_plan_write_forwards_the_expected_base_digest(self):
+        args = grogu_cli.build_parser().parse_args(
+            [
+                "plan",
+                "write",
+                "p-demo",
+                "implementation",
+                "--body",
+                "# Implementation\n\nBuild it.\n",
+                "--base",
+                "sha256:abc",
+            ]
+        )
+        store = mock.Mock()
+        store.resolve.return_value = "p-demo"
+        store.write_stage.return_value = {
+            "warnings": [],
+            "last_write": {"digest": "sha256:def"},
+        }
+        with (
+            mock.patch.object(grogu_cli, "plan_store", return_value=store),
+            mock.patch("sys.stdout", io.StringIO()),
+        ):
+            self.assertEqual(args.handler(args), 0)
+        self.assertEqual(
+            store.write_stage.call_args.kwargs["base"], "sha256:abc"
+        )
+
+    def test_governance_commands_are_exposed(self):
+        parser = grogu_cli.build_parser()
+        cases = {
+            "writer": ["plan", "writer", "p-demo", "implementation"],
+            "agent-budget": [
+                "plan",
+                "agent-budget",
+                "p-demo",
+                "--tool-calls",
+                "40",
+            ],
+            "agent-usage": [
+                "plan",
+                "agent-usage",
+                "p-demo",
+                "--tool-calls",
+                "12",
+            ],
+            "checkpoint": ["plan", "checkpoint", "p-demo"],
+            "checkpoint-recovery": [
+                "plan",
+                "checkpoint-recovery",
+                "p-demo",
+                "c1",
+                "--status",
+                "available",
+            ],
+            "governance": ["plan", "governance", "p-demo"],
+        }
+        for command, arguments in cases.items():
+            with self.subTest(command=command):
+                parsed = parser.parse_args(arguments)
+                self.assertTrue(callable(parsed.handler))
+
+
 class WorkstreamWorktreeCliTests(unittest.TestCase):
     """Harness friction #40, end to end: `grogu plan workstream-worktree`
     is the concrete replacement for "fan out into worktrees by convention",

@@ -1881,6 +1881,11 @@ def plan_status(args: argparse.Namespace) -> int:
                 text = text[:87] + "... (`grogu plan steering --all` for the rest)"
             who = ", ".join(note.get("unread_by") or [note["role"]])
             print(f"  steering #{note['seq']} has not reached {who}: {text}")
+    governance = summary.get("governance", {})
+    for warning in governance.get("warnings", []):
+        print(f"  governance warning: {warning}")
+    for blocker in governance.get("blockers", []):
+        print(f"  governance blocker: {blocker}")
     if review_line:
         print(f"  {review_line}")
     return 0
@@ -1961,11 +1966,14 @@ def plan_write(args: argparse.Namespace) -> int:
         body,
         role=getattr(args, "role", "") or "",
         replace=getattr(args, "replace", False),
+        base=getattr(args, "base", None),
     )
     for warning in manifest.get("warnings", []):
         print(f"grogu: {warning}", file=sys.stderr)
     print(f"wrote {args.stage} plan for {plan_id} ({len(body)} bytes)")
     last = manifest.get("last_write") or {}
+    if last.get("digest"):
+        print(f"  base: {last['digest']}")
     if last.get("revision"):
         print(
             f"  replaced {last['was']} bytes, kept as revision {last['revision']}: "
@@ -2306,14 +2314,18 @@ def plan_workstream(args: argparse.Namespace) -> int:
         paths=args.path,
         depends_on=args.depends_on or [],
         model=args.model,
-        review=args.review,
+        required_reviews=args.review,
         brief=args.brief,
         replace=getattr(args, "replace", False),
     )
     detail = "".join(
         [
             f" model={stream['model']}" if stream["model"] else "",
-            f" review={stream['review']}" if stream["review"] else "",
+            (
+                f" reviews={','.join(stream['required_reviews'])}"
+                if stream.get("required_reviews")
+                else ""
+            ),
         ]
     )
     print(f"workstream {stream['name']}: {', '.join(stream['paths'])}{detail}")
@@ -2366,13 +2378,14 @@ def plan_workstreams(args: argparse.Namespace) -> int:
                 bits = [f"paths {' '.join(stream.get('paths', []))}"]
                 if stream.get("model"):
                     bits.append(f"model {stream['model']}")
-                if stream.get("review"):
+                for required in stream.get("required_reviews", []):
                     reviewed = any(
                         review.get("verdict") == "pass"
+                        and review.get("kind") == required
                         for review in stream.get("reviews", [])
                     )
                     bits.append(
-                        f"review {stream['review']}"
+                        f"review {required}"
                         + (" (done)" if reviewed else " (outstanding)")
                     )
                 print(f"    {name}: {'; '.join(bits)}")
@@ -2395,6 +2408,124 @@ def plan_workstreams(args: argparse.Namespace) -> int:
                 "one its own worktree"
             )
     return 3 if (conflicts and args.check) else 0
+
+
+def plan_writer(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    plan_id = store.resolve(args.id)
+    if not args.takeover:
+        print_json(store.stage_version(plan_id, args.stage))
+        return 0
+    writer = store.supersede_stage_writer(
+        plan_id,
+        args.stage,
+        role=getattr(args, "role", "") or "",
+        agent=args.agent or "",
+    )
+    print(
+        f"{plan_id} {args.stage}: active writer {writer['agent']}"
+        + (
+            f" (supersedes {writer['supersedes']})"
+            if writer.get("supersedes")
+            else ""
+        )
+    )
+    return 0
+
+
+def plan_agent_budget(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    result = store.configure_agent_governance(
+        store.resolve(args.id),
+        agent=args.agent or "",
+        role=args.agent_role or "",
+        workstream=args.workstream,
+        tool_calls=args.tool_calls,
+        elapsed_seconds=args.elapsed_seconds,
+        ai_credits=args.ai_credits,
+        checkpoint_tool_calls=args.checkpoint_tool_calls,
+    )
+    print_json(result) if args.json else print(
+        f"{result['agent']}: governance limits recorded"
+    )
+    return 0
+
+
+def plan_agent_usage(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    result = store.record_agent_usage(
+        store.resolve(args.id),
+        agent=args.agent or "",
+        tool_calls=args.tool_calls,
+        elapsed_seconds=args.elapsed_seconds,
+        ai_credits=args.ai_credits,
+    )
+    print_json(result) if args.json else print(
+        f"{result['agent']}: usage recorded"
+    )
+    return 0
+
+
+def plan_checkpoint(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    result = store.record_checkpoint(
+        store.resolve(args.id),
+        agent=args.agent or "",
+        commit=args.commit or "",
+        note=args.note or "",
+    )
+    print_json(result) if args.json else print(
+        f"{args.id}: checkpoint {result['id']} recorded"
+    )
+    return 0
+
+
+def plan_checkpoint_recovery(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    result = store.record_checkpoint_recovery(
+        store.resolve(args.id),
+        args.checkpoint,
+        agent=args.agent or "",
+        status=args.status,
+        note=args.note or "",
+    )
+    print_json(result) if args.json else print(
+        f"{args.id}: checkpoint {result['checkpoint']} {result['status']}"
+    )
+    return 0
+
+
+def plan_governance(args: argparse.Namespace) -> int:
+    store = plan_store(args)
+    result = store.governance_status(store.resolve(args.id))
+    if args.json:
+        print_json(result)
+        return 0
+    if not result["agents"]:
+        print("no agent governance configured")
+        return 0
+    for name, item in result["agents"].items():
+        print(
+            f"{name}  role={item['role'] or '?'}"
+            f" workstream={item['workstream'] or '-'}"
+        )
+        if item["usage"]:
+            print(
+                "  usage: "
+                + ", ".join(
+                    f"{key}={value}" for key, value in item["usage"].items()
+                )
+            )
+        for warning in item["warnings"]:
+            print(f"  warning: {warning}")
+        for blocker in item["blockers"]:
+            print(f"  blocker: {blocker}")
+        if item["checkpoint_due"]:
+            print(
+                "  cancel/recover: use Copilot `/tasks`; "
+                "restore the latest checkpoint"
+            )
+    return 0
 
 
 def plan_workstream_worktree(args: argparse.Namespace) -> int:
@@ -5420,6 +5551,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="rewrite a stage that is already complete, reopening it",
     )
+    plan_write_parser.add_argument(
+        "--base",
+        help=(
+            "expected plaintext stage digest from `grogu plan writer`; "
+            "refuse if another writer changed the stage"
+        ),
+    )
     plan_write_parser.set_defaults(handler=plan_write)
 
     plan_show_parser = plan_subparsers.add_parser(
@@ -5640,8 +5778,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_workstream_parser.add_argument(
         "--review",
+        action="append",
         choices=list(grogu_plans.REVIEW_KINDS),
-        help="a review this workstream must pass before testing",
+        help="a required review kind; repeat for multiple reviews",
     )
     plan_workstream_parser.add_argument(
         "--brief", help="what this engineer should know that the others need not"
@@ -5658,6 +5797,82 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_workstreams_parser.add_argument("--json", action="store_true")
     plan_workstreams_parser.set_defaults(handler=plan_workstreams)
+
+    plan_writer_parser = plan_subparsers.add_parser(
+        "writer",
+        help="inspect or take over the active writer for a plan stage",
+        parents=[plan_common, role_common],
+    )
+    _plan_id_argument(plan_writer_parser)
+    plan_writer_parser.add_argument("stage", choices=grogu_plans.STAGES)
+    plan_writer_parser.add_argument("--takeover", action="store_true")
+    plan_writer_parser.add_argument("--agent", default="")
+    plan_writer_parser.set_defaults(handler=plan_writer)
+
+    plan_budget_parser = plan_subparsers.add_parser(
+        "agent-budget",
+        help="declare observable limits and checkpoint cadence for an agent",
+        parents=[plan_common],
+    )
+    _plan_id_argument(plan_budget_parser)
+    plan_budget_parser.add_argument("--agent", default="")
+    plan_budget_parser.add_argument("--agent-role", choices=grogu_plans.ROLES)
+    plan_budget_parser.add_argument("--workstream")
+    plan_budget_parser.add_argument("--tool-calls", type=int)
+    plan_budget_parser.add_argument("--elapsed-seconds", type=float)
+    plan_budget_parser.add_argument("--ai-credits", type=float)
+    plan_budget_parser.add_argument("--checkpoint-tool-calls", type=int)
+    plan_budget_parser.add_argument("--json", action="store_true")
+    plan_budget_parser.set_defaults(handler=plan_agent_budget)
+
+    plan_usage_parser = plan_subparsers.add_parser(
+        "agent-usage",
+        help="record observable agent usage counters",
+        parents=[plan_common],
+    )
+    _plan_id_argument(plan_usage_parser)
+    plan_usage_parser.add_argument("--agent", default="")
+    plan_usage_parser.add_argument("--tool-calls", type=int)
+    plan_usage_parser.add_argument("--elapsed-seconds", type=float)
+    plan_usage_parser.add_argument("--ai-credits", type=float)
+    plan_usage_parser.add_argument("--json", action="store_true")
+    plan_usage_parser.set_defaults(handler=plan_agent_usage)
+
+    plan_checkpoint_parser = plan_subparsers.add_parser(
+        "checkpoint",
+        help="record a recoverable agent checkpoint",
+        parents=[plan_common],
+    )
+    _plan_id_argument(plan_checkpoint_parser)
+    plan_checkpoint_parser.add_argument("--agent", default="")
+    plan_checkpoint_parser.add_argument("--commit", default="")
+    plan_checkpoint_parser.add_argument("--note")
+    plan_checkpoint_parser.add_argument("--json", action="store_true")
+    plan_checkpoint_parser.set_defaults(handler=plan_checkpoint)
+
+    plan_recovery_parser = plan_subparsers.add_parser(
+        "checkpoint-recovery",
+        help="record whether a checkpoint can be or was restored",
+        parents=[plan_common],
+    )
+    _plan_id_argument(plan_recovery_parser)
+    plan_recovery_parser.add_argument("checkpoint")
+    plan_recovery_parser.add_argument("--agent", default="")
+    plan_recovery_parser.add_argument(
+        "--status", required=True, choices=["available", "restored", "failed"]
+    )
+    plan_recovery_parser.add_argument("--note")
+    plan_recovery_parser.add_argument("--json", action="store_true")
+    plan_recovery_parser.set_defaults(handler=plan_checkpoint_recovery)
+
+    plan_governance_parser = plan_subparsers.add_parser(
+        "governance",
+        help="show agent budgets, usage, checkpoints and recovery blockers",
+        parents=[plan_common],
+    )
+    _plan_id_argument(plan_governance_parser)
+    plan_governance_parser.add_argument("--json", action="store_true")
+    plan_governance_parser.set_defaults(handler=plan_governance)
 
     plan_workstream_worktree_parser = plan_subparsers.add_parser(
         "workstream-worktree",
