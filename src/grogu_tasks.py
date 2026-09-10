@@ -310,6 +310,9 @@ class TaskStore:
                 continue
             if not self._is_grogu_owned(child):
                 continue
+            if child["status"] in CLOSED_STATUSES:
+                self._cleanup_subordinates(child["id"])
+                continue
             lease = self.lease(child["id"])
             if lease and self.lease_is_live(lease):
                 continue

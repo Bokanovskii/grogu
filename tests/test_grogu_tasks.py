@@ -221,6 +221,22 @@ class GroguTaskStoreTests(unittest.TestCase):
             self.store.view(grandchild["id"])["status"], grogu_tasks.CANCELLED
         )
 
+    def test_recursion_cleans_descendants_below_an_already_closed_child(self):
+        with identity_env(agent="parent-agent", session_id="parent-session"):
+            parent = self.store.create("Parent task")
+            child = self.store.create("Child task", parent_task_id=parent["id"])
+            grandchild = self.store.create("Grandchild task", parent_task_id=child["id"])
+            self.store.claim(grandchild["id"], ttl=3600)
+
+        self.store.release(child["id"], status=grogu_tasks.DONE, note="child closed")
+        lease = self.store.lease(grandchild["id"])
+        lease["expires_at"] = "2026-01-01T00:00:00+00:00"
+        self.store._write_json(self.store.lease_path(grandchild["id"]), lease)
+
+        self.store.release(parent["id"], status=grogu_tasks.DONE, note="parent closed")
+
+        self.assertEqual(self.store.view(grandchild["id"])["status"], grogu_tasks.CANCELLED)
+
     def test_creating_under_closed_parent_is_rejected(self):
         with identity_env(agent="parent-agent", session_id="parent-session"):
             parent = self.store.create("Parent task")
