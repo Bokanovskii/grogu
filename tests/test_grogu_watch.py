@@ -259,27 +259,21 @@ class ParallelAgentTests(unittest.TestCase):
 
 
 class OneAgentOneRowTests(unittest.TestCase):
-    """What the board looked like the first time it had a real day behind it.
-
-    Six agents on one plan rendered as fifteen rows, because role and plan were
-    part of an agent's identity and both change during its life. The board is
-    read at a glance or not at all.
-    """
+    """Rows preserve registered repository and plan boundaries."""
 
     def setUp(self):
         self.home = tempfile.TemporaryDirectory()
         self.addCleanup(self.home.cleanup)
         os.environ["GROGU_HOME"] = self.home.name
 
-    def test_picking_up_a_plan_does_not_fork_the_agent_into_two(self):
+    def test_activity_without_a_plan_is_not_attributed_to_a_plan_run(self):
         grogu_watch.record(command="plan status", role="engineer", plan="", cwd="/w/a",
-                           agent="ingest")
+                           repository="/repo", agent="ingest")
         grogu_watch.record(command="plan brief", role="engineer", plan="p-1", cwd="/w/a",
-                           agent="ingest")
+                           repository="/repo", agent="ingest")
         rows = grogu_watch.sessions()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["plan"], "p-1")
-        self.assertEqual(rows[0]["calls"], 2)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["plan"] for row in rows}, {"", "p-1"})
 
     def test_a_named_agent_that_ran_as_two_roles_is_one_row_that_says_so(self):
         # This is the user borrowing an agent's shell, or an agent claiming an
@@ -337,7 +331,7 @@ class HostileAgentNameTests(unittest.TestCase):
         # both claiming to be the same agent.
         for where in ("/w/a", "/w/b"):
             grogu_watch.record(command="plan gate", role="engineer", plan="p-1",
-                               cwd=where, agent="ingest")
+                               repository="/repo", cwd=where, agent="ingest")
         self.assertEqual(len(grogu_watch.sessions()), 1)
 
     def test_a_newline_in_a_name_cannot_invent_a_row(self):

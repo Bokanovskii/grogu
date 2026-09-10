@@ -104,6 +104,98 @@ class PlanPackageIntegrationTests(unittest.TestCase):
         manifest = self.store.load(plan_id)
         self.assertEqual(manifest["plandoc"]["counters"]["reg"], 1)
 
+    def test_top_level_add_cannot_replace_an_existing_object(self):
+        _plan_id, documents = self.package()
+        document = documents.load(role="reviewer")
+        original = grogu_plandoc.make_node(
+            "task-1",
+            "task",
+            "Original task",
+            stage="implementation",
+            revision=document["revision"],
+        )
+        documents.patch(
+            role="reviewer",
+            base=document["revision"],
+            operations=[
+                {"op": "add", "path": "/nodes/task-1", "value": original}
+            ],
+        )
+        replacement = dict(original)
+        replacement["title"] = "Replacement task"
+        with self.assertRaisesRegex(grogu_plans.PlanError, "already in use"):
+            documents.patch(
+                role="reviewer",
+                base=documents.head(),
+                operations=[
+                    {
+                        "op": "add",
+                        "path": "/nodes/task-1",
+                        "value": replacement,
+                    }
+                ],
+            )
+        self.assertEqual(
+            documents.load(role="reviewer")["nodes"]["task-1"]["title"],
+            "Original task",
+        )
+
+    def test_removed_dependency_marks_consequential_impact_destructive(self):
+        _plan_id, documents = self.package()
+        document = documents.load(role="reviewer")
+        dependency = grogu_plandoc.make_node(
+            "task-1",
+            "task",
+            "Dependency",
+            stage="implementation",
+            revision=document["revision"],
+        )
+        dependent = grogu_plandoc.make_node(
+            "task-2",
+            "task",
+            "Dependent",
+            stage="implementation",
+            revision=document["revision"],
+        )
+        edge = grogu_plandoc.make_edge(
+            "edge-1",
+            "depends_on",
+            "task-2",
+            "task-1",
+            revision=document["revision"],
+        )
+        documents.patch(
+            role="reviewer",
+            base=document["revision"],
+            operations=[
+                {"op": "add", "path": "/nodes/task-1", "value": dependency},
+                {"op": "add", "path": "/nodes/task-2", "value": dependent},
+            ],
+        )
+        documents.patch(
+            role="reviewer",
+            base=documents.head(),
+            operations=[
+                {"op": "add", "path": "/edges/edge-1", "value": edge},
+            ],
+        )
+        proposal = documents.propose(
+            role="reviewer",
+            base=documents.head(),
+            operations=[
+                {"op": "remove", "path": "/edges/edge-1"},
+                {"op": "remove", "path": "/nodes/task-1"},
+            ],
+            why="Remove the dependency",
+        )
+        preview = documents.proposal_preview(
+            proposal["id"], role="reviewer"
+        )
+        impacted = {
+            item["id"]: item for item in preview["impact"]["transitive"]
+        }
+        self.assertTrue(impacted["task-2"]["destructive"])
+
     def test_local_only_upgrade_is_additive(self):
         marker = self.root / ".grogu" / "plans" / ".gitignore"
         marker.parent.mkdir(parents=True)

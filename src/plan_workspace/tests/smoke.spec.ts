@@ -2,6 +2,97 @@ import { test, expect } from "@playwright/test";
 import { openApp } from "./helpers";
 
 test.describe("boot and shell", () => {
+  test("restored edits wait for consent and Discard clears persisted state", async ({ page }) => {
+    await openApp(page);
+    const doc = await page.evaluate(async () => {
+      const response = await fetch("/api/doc?scope=all");
+      return await response.json();
+    });
+    const key = `grogu.plan-workspace.queue.${doc.plan}`;
+    await page.evaluate(
+      ({ storageKey, base }) => {
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify([
+            {
+              id: "q-restored",
+              ops: [
+                {
+                  op: "replace",
+                  path: "/nodes/goal-1/title",
+                  value: "Restored title",
+                },
+              ],
+              base,
+              intent: "restore title",
+              origin: "workspace",
+              at: Date.now(),
+            },
+          ]),
+        );
+      },
+      { storageKey: key, base: doc.revision },
+    );
+    const requests: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "POST" && request.url().endsWith("/api/patch")) {
+        requests.push(request.postData() ?? "");
+      }
+    });
+    const session = await page.request.get("/__new_session");
+    const { url } = await session.json();
+    await page.goto(url);
+    await expect(page.getByText("Restore unsaved edits?")).toBeVisible();
+    await page.waitForTimeout(300);
+    expect(requests).toEqual([]);
+    await page.getByRole("button", { name: "Discard" }).click();
+    expect(await page.evaluate((storageKey) => localStorage.getItem(storageKey), key)).toBeNull();
+    expect(requests).toEqual([]);
+  });
+
+  test("restored edits submit against the revision originally observed", async ({ page }) => {
+    await openApp(page);
+    const plan = await page.evaluate(async () => {
+      const response = await fetch("/api/doc?scope=all");
+      return (await response.json()).plan as string;
+    });
+    const key = `grogu.plan-workspace.queue.${plan}`;
+    await page.evaluate((storageKey) => {
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify([
+          {
+            id: "q-stale",
+            ops: [
+              {
+                op: "replace",
+                path: "/nodes/goal-1/title",
+                value: "Restored stale title",
+              },
+            ],
+            base: "r0000",
+            intent: "restore stale title",
+            origin: "workspace",
+            at: Date.now(),
+          },
+        ]),
+      );
+    }, key);
+    const bases: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "POST" && request.url().endsWith("/api/patch")) {
+        const body = request.postDataJSON() as { base?: string };
+        if (body.base) bases.push(body.base);
+      }
+    });
+    const session = await page.request.get("/__new_session");
+    const { url } = await session.json();
+    await page.goto(url);
+    await page.getByRole("button", { name: "Apply" }).click();
+    await expect.poll(() => bases.length).toBeGreaterThan(0);
+    expect(bases[0]).toBe("r0000");
+  });
+
   test("boots into a plan-scoped mode with the shell chrome", async ({ page }) => {
     await openApp(page);
     await expect(page.locator(".shell-header")).toBeVisible();
@@ -243,7 +334,11 @@ test.describe("boot and shell", () => {
       "Split this work into two migration steps.",
     );
     await page.getByRole("button", { name: "Send request" }).click();
-    await expect(page.getByText(/Revision request f-[^ ]+ sent to the architect/)).toBeVisible();
+    await expect(
+      page.getByText(
+        /Revision request f-[^ ]+ recorded; implementation waits for architect acknowledgement/,
+      ),
+    ).toBeVisible();
     await expect(page.locator(".proposal-modal")).toHaveCount(0);
     await expect(card.getByText("Revision requested")).toBeVisible();
     await expect(card.getByText(/Waiting for architect/)).toBeVisible();

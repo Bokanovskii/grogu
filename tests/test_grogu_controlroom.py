@@ -344,6 +344,7 @@ class PossiblyStuckHeuristic(unittest.TestCase):
             state = room._ensure_state(registration.agent_key)
             base = clock.value
             state.last_observed_at = base
+            room._last_healthy_sample[registration.run_id] = base
             state.failure_log = [
                 {"at_epoch": base - 30, "code": "http_429", "tool_name": "gh api"},
                 {"at_epoch": base - 20, "code": "http_429", "tool_name": "gh api"},
@@ -377,6 +378,7 @@ class PossiblyStuckHeuristic(unittest.TestCase):
             state = room._ensure_state(registration.agent_key)
             base = clock.value
             state.last_observed_at = base
+            room._last_healthy_sample[registration.run_id] = base
             state.failure_log = [
                 {"at_epoch": base - 30, "code": "http_429", "tool_name": "gh api"},
                 {"at_epoch": base - 20, "code": "http_429", "tool_name": "gh api"},
@@ -416,6 +418,7 @@ class PossiblyStuckHeuristic(unittest.TestCase):
             state = room._ensure_state(registration.agent_key)
             base = clock.value
             state.last_observed_at = base
+            room._last_healthy_sample[registration.run_id] = base
             state.failure_log = [
                 {"at_epoch": base - 30, "code": "http_429", "tool_name": "gh api"},
                 {"at_epoch": base - 20, "code": "http_429", "tool_name": "gh api"},
@@ -431,6 +434,37 @@ class PossiblyStuckHeuristic(unittest.TestCase):
             row = _find_row(snapshot, registration.agent_key)
             self.assertEqual(row["connection"], "stale")
             self.assertEqual(row["activity"], "possibly_stuck")
+
+    def test_readable_source_without_new_events_does_not_stay_live(self):
+        clock = _FakeClock(initial=_epoch("2026-09-05T09:00:02Z"))
+        room = self._make_room(now=clock)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "session-state" / "s-idle"
+            root.mkdir(parents=True)
+            path = root / "events.jsonl"
+            path.write_text(
+                '{"type":"subagent.started","id":"e-1",'
+                '"timestamp":"2026-09-05T09:00:01Z",'
+                '"agentId":"agent-ada","data":{"toolCallId":"tc",'
+                '"agentType":"general-purpose"}}\n',
+                encoding="utf8",
+            )
+            registration = cr.Registration(
+                run_id="run-idle", repository="/tmp/repo", plan="p-1",
+                agent="idle", role="engineer", workstream="w",
+                session_id="s-idle", agent_id="", registered_at="",
+                events_path=str(path),
+            )
+            room.register(registration)
+            self.assertEqual(
+                _find_row(room.snapshot(), registration.agent_key)["connection"],
+                "live",
+            )
+            clock.advance(cr.CONNECTION_DISCONNECTED_SECONDS + 1)
+            self.assertEqual(
+                _find_row(room.snapshot(), registration.agent_key)["connection"],
+                "disconnected",
+            )
 
     def test_a_source_one_only_registration_can_still_be_labelled_active(self):
         # A source-1-only registration has no source 2 to make the observer
@@ -949,6 +983,42 @@ class WatchKeyingByPlanAndAgent(unittest.TestCase):
         row = _find_row(snapshot, registration.agent_key)
         self.assertEqual(row["grogu_commands"]["calls"], 1)
         self.assertEqual(row["grogu_commands"]["failures"], 1)
+
+    def test_same_agent_and_plan_in_another_repository_stays_uncorrelated(self):
+        home = Path(self._watch_home.name)
+        grogu_watch.record(
+            command="plan gate",
+            role="engineer",
+            agent="ada",
+            plan="p-x",
+            repository="/tmp/repo-a",
+            cwd="/tmp/repo-a",
+            home=home,
+        )
+        grogu_watch.record(
+            command="plan write",
+            role="engineer",
+            agent="ada",
+            plan="p-x",
+            repository="/tmp/repo-b",
+            cwd="/tmp/repo-b",
+            home=home,
+        )
+        room = cr.ControlRoom(now=_FakeClock(), watch_home=home)
+        registration = cr.Registration(
+            run_id="run-1", repository="/tmp/repo-a", plan="p-x",
+            agent="ada", role="engineer", workstream="w",
+            session_id="", agent_id="", registered_at="",
+        )
+        room.register(registration)
+        snapshot = room.snapshot()
+        row = _find_row(snapshot, registration.agent_key)
+        self.assertEqual(row["grogu_commands"]["calls"], 1)
+        self.assertEqual(len(snapshot["uncorrelated"]), 1)
+        self.assertEqual(
+            snapshot["uncorrelated"][0]["repository"],
+            "/tmp/repo-b",
+        )
 
 
 class SampleThrottleIsEnforced(unittest.TestCase):

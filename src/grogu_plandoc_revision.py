@@ -881,7 +881,10 @@ def recover_head(
     try:
         head = read_head(package)
         current = read_revision(package, head)
-        if is_complete is None or is_complete(copy_document(current)):
+        if (
+            current["revision"] == newest
+            and (is_complete is None or is_complete(copy_document(current)))
+        ):
             return head
     except RevisionError:
         pass

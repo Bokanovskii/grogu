@@ -1409,14 +1409,27 @@ def _record_activity(parsed: argparse.Namespace) -> None:
             or getattr(parsed, "command", "") in USER_SURFACE_COMMANDS
         )
         agent = os.environ.get("GROGU_AGENT", "").strip()
+        activity_store = None
+        repository = str(Path(cwd).resolve())
+        try:
+            activity_store = grogu_plans.PlanStore(
+                Path(parsed.repo).expanduser()
+                if getattr(parsed, "repo", None)
+                else None
+            )
+            repository = str(activity_store.root)
+        except (grogu_plans.PlanError, OSError):
+            pass
         if user_shaped and not grogu_plans.current_role():
             role = ""
             agent = ""
         else:
             try:
-                bound = grogu_plans.PlanStore(
-                    Path(parsed.repo).expanduser() if getattr(parsed, "repo", None) else None
-                ).session_binding()
+                bound = (
+                    activity_store.session_binding()
+                    if activity_store is not None
+                    else {}
+                )
                 if not role:
                     role, plan = bound.get("role", ""), plan or bound.get("plan", "")
                 agent = agent or bound.get("agent", "")
@@ -1427,7 +1440,7 @@ def _record_activity(parsed: argparse.Namespace) -> None:
             role=role,
             agent=agent,
             plan=plan,
-            repository=Path(cwd).name,
+            repository=repository,
             cwd=cwd,
             exit_code=0,
         )
@@ -2993,7 +3006,7 @@ def _doc_role(args: argparse.Namespace) -> str:
 def _doc_store(
     args: argparse.Namespace,
     *,
-    auto_migrate: bool = True,
+    auto_migrate: bool = False,
 ) -> tuple[grogu_plans.PlanStore, grogu_plans.PlanDocumentStore]:
     store = plan_store(args)
     plan_id = store.resolve(args.id)

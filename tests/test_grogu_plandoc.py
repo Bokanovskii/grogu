@@ -184,6 +184,18 @@ class PlanDocumentSchemaTests(unittest.TestCase):
             "orphaned",
         )
 
+    def test_thread_selectors_cannot_cross_partition_boundaries(self):
+        graph = fixture("graph.json")
+        graph["nodes"]["thr-1"]["attrs"]["selector"] = {
+            "type": "text",
+            "node": "crit-2",
+            "quote": {"exact": "SEALED_FIXTURE_TEXT", "prefix": "", "suffix": ""},
+            "position": {"start": 0, "end": 19},
+            "body_digest": "sha256:" + "0" * 64,
+        }
+        with self.assertRaisesRegex(schema.SchemaError, "partition boundary"):
+            schema.validate_document(graph)
+
     def test_floats_are_rejected_anywhere_in_graph(self):
         graph = fixture("graph.json")
         graph["nodes"]["task-1"]["attrs"]["ratio"] = 0.5
@@ -305,6 +317,24 @@ class GraphCoreTests(unittest.TestCase):
         self.assertNotIn("crit-2", visible["nodes"])
         self.assertNotIn("SEALED_FIXTURE_TEXT", canon.dumps(visible))
         self.assertEqual(visible["provenance"]["sealed_relationships"], 1)
+
+    def test_visible_loader_omits_threads_whose_selectors_are_not_visible(self):
+        graph = fixture("graph.json")
+        partitions = plandoc.split_partitions(graph)
+        partitions["open"]["nodes"]["thr-1"]["attrs"]["selector"] = {
+            "type": "text",
+            "node": "crit-2",
+            "quote": {
+                "exact": "SEALED_FIXTURE_TEXT",
+                "prefix": "sealed-prefix",
+                "suffix": "sealed-suffix",
+            },
+            "position": {"start": 0, "end": 19},
+            "body_digest": "sha256:" + "0" * 64,
+        }
+        visible = plandoc.load_visible(lambda name: partitions[name], "engineer")
+        self.assertNotIn("thr-1", visible["nodes"])
+        self.assertNotIn("SEALED_FIXTURE_TEXT", canon.dumps(visible))
 
     def test_tester_open_partition_is_filtered_to_readable_design_nodes(self):
         graph = fixture("graph.json")

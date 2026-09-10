@@ -2859,22 +2859,14 @@ class PlanStore:
         with self.locked():
             if plan_id:
                 manifest = self.load(plan_id)
-                notes = manifest.setdefault("steering", [])
-                note = {
-                    "seq": len(notes) + 1,
-                    "at": now(),
-                    "actor": actor(),
-                    "role": role,
-                    "from": author,
-                    "relayed_by": relayed_by,
-                    "text": text.strip(),
-                    "requires_replan": bool(requires_replan),
-                }
-                notes.append(note)
-                if requires_replan:
-                    # Steering that invalidates the plan must stop the pipeline,
-                    # not race it.
-                    manifest["status"] = NEEDS_REVIEW
+                note = self._append_plan_steering_unlocked(
+                    manifest,
+                    text=text,
+                    role=role,
+                    requires_replan=requires_replan,
+                    author=author,
+                    relayed_by=relayed_by,
+                )
                 self._save(
                     manifest,
                     "steering",
@@ -2897,6 +2889,32 @@ class PlanStore:
             payload["notes"].append(note)
             self._write_json(self.steering_path, payload)
             return note
+
+    @staticmethod
+    def _append_plan_steering_unlocked(
+        manifest: dict,
+        *,
+        text: str,
+        role: str,
+        requires_replan: bool,
+        author: str,
+        relayed_by: str = "",
+    ) -> dict:
+        notes = manifest.setdefault("steering", [])
+        note = {
+            "seq": len(notes) + 1,
+            "at": now(),
+            "actor": actor(),
+            "role": role,
+            "from": author,
+            "relayed_by": relayed_by,
+            "text": text.strip(),
+            "requires_replan": bool(requires_replan),
+        }
+        notes.append(note)
+        if requires_replan:
+            manifest["status"] = NEEDS_REVIEW
+        return note
 
     def retract_steering(self, seq: int, *, plan_id: str = "") -> dict:
         """Take back a note, because append-only means noise only grows.
@@ -6904,11 +6922,7 @@ class PlanDocumentStore:
             before.get("edges", {})
         )
         hidden_collisions = sorted(
-            (
-                added
-                & self._all_manifest_object_ids(manifest)
-                - visible_ids
-            ),
+            added & self._all_manifest_object_ids(manifest),
             key=grogu_plandoc_canon.id_sort_key,
         )
         if hidden_collisions:
@@ -8411,24 +8425,41 @@ class PlanDocumentStore:
 
     def _impact_dto(self, before: dict, after: dict, operations) -> dict:
         changed = self._changed_ids(operations)
-        selected = next(
-            (item for item in changed if item in before.get("nodes", {})),
-            next((item for item in changed if item in after.get("nodes", {})), ""),
-        )
-        raw = (
-            grogu_plandoc.impact(
-                before,
-                {"type": "node", "id": selected},
-                proposed=after,
-            )
-            if selected
-            else {
-                "direct": [],
-                "transitive": [],
-                "cycles": [],
-                "compiled_delta": grogu_plandoc.compiled_delta(before, after),
-            }
-        )
+        removed = {
+            identifier
+            for operation in operations
+            if operation.get("op") == "remove"
+            for identifier in self._changed_ids([operation])
+        }
+        direct_ids: set[str] = set()
+        transitive_by_id: dict[str, dict] = {}
+        destructive_ids: set[str] = set()
+        cycles: set[tuple[str, ...]] = set()
+        for identifier in changed:
+            source = before if (
+                identifier in before.get("nodes", {})
+                or identifier in before.get("edges", {})
+            ) else after
+            if identifier in source.get("nodes", {}):
+                selector = {"type": "node", "id": identifier}
+            elif identifier in source.get("edges", {}):
+                selector = {"type": "edge", "id": identifier}
+            else:
+                continue
+            raw = grogu_plandoc.impact(source, selector)
+            direct_ids.update(raw.get("direct", []))
+            for entry in raw.get("transitive", []):
+                current = transitive_by_id.get(entry["id"])
+                if current is None or int(entry.get("distance", 0)) < int(
+                    current.get("distance", 0)
+                ):
+                    transitive_by_id[entry["id"]] = entry
+            cycles.update(tuple(cycle) for cycle in raw.get("cycles", []))
+            if identifier in removed:
+                destructive_ids.update(raw.get("direct", []))
+                destructive_ids.update(
+                    entry["id"] for entry in raw.get("transitive", [])
+                )
 
         def item(identifier: str, *, reason: str = "") -> dict:
             value = after["nodes"].get(identifier) or before["nodes"].get(
@@ -8440,20 +8471,31 @@ class PlanDocumentStore:
                 "kind": value.get("kind", "task"),
                 "title": value.get("title", identifier),
                 "reason": reason,
-                "destructive": False,
+                "destructive": identifier in destructive_ids,
             }
 
         return {
-            "direct": [item(identifier) for identifier in raw.get("direct", [])],
+            "direct": [
+                item(identifier)
+                for identifier in sorted(
+                    direct_ids, key=grogu_plandoc_canon.id_sort_key
+                )
+            ],
             "transitive": [
                 item(
                     entry["id"],
                     reason=" → ".join(entry.get("path", [])),
                 )
-                for entry in raw.get("transitive", [])
+                for entry in sorted(
+                    transitive_by_id.values(),
+                    key=lambda value: (
+                        int(value.get("distance", 0)),
+                        grogu_plandoc_canon.id_sort_key(value["id"]),
+                    ),
+                )
             ],
-            "cycles": raw.get("cycles", []),
-            "compiled_delta": raw.get("compiled_delta", []),
+            "cycles": [list(cycle) for cycle in sorted(cycles)],
+            "compiled_delta": grogu_plandoc.compiled_delta(before, after),
         }
 
     def impact(

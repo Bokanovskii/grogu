@@ -65,12 +65,13 @@ export function RestoreQueue() {
       </ModalHeader>
       <ModalBody>
         <p>
-          {state.queue.length} edit{state.queue.length === 1 ? "" : "s"} were queued locally when the
-          last session ended. They still apply to {state.queue[0]?.base ?? state.base}.
+          {state.restoreQueue.length} edit{state.restoreQueue.length === 1 ? "" : "s"} were queued
+          locally when the last session ended. They still apply to{" "}
+          {state.restoreQueue[0]?.base ?? state.base}.
         </p>
         {showing ? (
           <ul className="restore-list">
-            {state.queue.map((q) => (
+            {state.restoreQueue.map((q) => (
               <li key={q.id}>
                 <code>{q.intent}</code> — {q.ops.length} op{q.ops.length === 1 ? "" : "s"}
               </li>
@@ -86,8 +87,7 @@ export function RestoreQueue() {
           type="button"
           className="btn btn-text"
           onClick={() => {
-            // Discard: clear the queue.
-            for (const q of state.queue) actions.dismissToast(q.id);
+            actions.discardRestoredQueue();
             actions.closeOverlay();
             actions.toast("Discarded queued edits.", "info");
           }}
@@ -98,7 +98,7 @@ export function RestoreQueue() {
           type="button"
           className="btn btn-primary"
           onClick={() => {
-            void actions.flushQueue();
+            actions.applyRestoredQueue();
             actions.closeOverlay();
           }}
         >

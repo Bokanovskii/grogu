@@ -1288,52 +1288,52 @@ class ReviewStore:
     def request_changes(self, plan_id, *, note="", role="") -> dict:
         effective_role = role or grogu_plans.current_role() or grogu_plans.REVIEWER
         if self._document(plan_id) is not None:
-            state = self._document_state(plan_id, role=effective_role)
-            review_round = (
-                state["rounds"][-1]
-                if state["rounds"]
-                and state["rounds"][-1].get("state") == ROUND_OPEN
-                else None
-            )
-            if review_round is None:
-                raise ReviewError("there is no open review round")
-            open_threads = [
-                thread
-                for thread in state["threads"]
-                if thread.get("status") == OPEN
-                and thread.get("id") in review_round.get("thread_ids", [])
-            ]
-            if not open_threads:
-                raise ReviewError(
-                    "there are no open comments to request changes for"
+            with self._mutex, self.plans.locked():
+                state = self._document_state(plan_id, role=effective_role)
+                if (
+                    state["rounds"]
+                    and state["rounds"][-1].get("state") == ROUND_REQUESTED
+                    and state["rounds"][-1].get("steering_seq")
+                ):
+                    return copy.deepcopy(state["rounds"][-1])
+                review_round = (
+                    state["rounds"][-1]
+                    if state["rounds"]
+                    and state["rounds"][-1].get("state") == ROUND_OPEN
+                    else None
                 )
-            lines = []
-            if note.strip():
-                lines.extend([note.strip(), ""])
-            lines.extend(
-                [
-                    f"Review round {review_round['number']} — "
-                    f"{len(open_threads)} open comment(s). Read them with",
-                    f"`grogu review list {plan_id} --json`.",
-                    "",
+                if review_round is None:
+                    raise ReviewError("there is no open review round")
+                open_threads = [
+                    thread
+                    for thread in state["threads"]
+                    if thread.get("status") == OPEN
+                    and thread.get("id") in review_round.get("thread_ids", [])
                 ]
-            )
-            for thread in open_threads:
-                comment = thread.get("comments", [{}])[-1].get("body", "")
+                if not open_threads:
+                    raise ReviewError(
+                        "there are no open comments to request changes for"
+                    )
+                lines = []
+                if note.strip():
+                    lines.extend([note.strip(), ""])
                 lines.extend(
                     [
-                        f"[{thread['id']} {thread['stage']}]",
-                        "  " + str(comment).replace("\n", "\n  "),
+                        f"Review round {review_round['number']} — "
+                        f"{len(open_threads)} open comment(s). Read them with",
+                        f"`grogu review list {plan_id} --json`.",
                         "",
                     ]
                 )
-            steering = self.plans.steer(
-                "\n".join(lines).rstrip(),
-                plan_id=plan_id,
-                role=grogu_plans.ARCHITECT,
-                requires_replan=True,
-            )
-            with self.plans.locked():
+                for thread in open_threads:
+                    comment = thread.get("comments", [{}])[-1].get("body", "")
+                    lines.extend(
+                        [
+                            f"[{thread['id']} {thread['stage']}]",
+                            "  " + str(comment).replace("\n", "\n  "),
+                            "",
+                        ]
+                    )
                 manifest = self.plans.load(plan_id)
                 rounds = manifest.setdefault("review_rounds", [])
                 current = next(
@@ -1344,8 +1344,15 @@ class ReviewStore:
                     ),
                     None,
                 )
-                if current is None:
+                if current is None or current.get("state") != ROUND_OPEN:
                     raise ReviewError("review round changed while requesting changes")
+                steering = self.plans._append_plan_steering_unlocked(
+                    manifest,
+                    text="\n".join(lines).rstrip(),
+                    role=grogu_plans.ARCHITECT,
+                    requires_replan=True,
+                    author=grogu_plans.current_role() or "user",
+                )
                 current["state"] = ROUND_REQUESTED
                 current["requested_at"] = _now()
                 current["note"] = note
@@ -1354,8 +1361,12 @@ class ReviewStore:
                     for thread in open_threads
                 ]
                 current["steering_seq"] = int(steering.get("seq", 0))
-                self.plans._write_json(
-                    self.plans.manifest_path(plan_id), manifest
+                self.plans._save(
+                    manifest,
+                    "steering",
+                    role=grogu_plans.ARCHITECT,
+                    seq=current["steering_seq"],
+                    requires_replan=True,
                 )
                 return copy.deepcopy(current)
         with self._mutex:

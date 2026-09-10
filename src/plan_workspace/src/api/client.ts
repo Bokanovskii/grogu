@@ -57,6 +57,7 @@ function readCsrfToken(): string {
 }
 
 const BASE = "/api";
+const REQUEST_TIMEOUT_MS = 30_000;
 
 async function request<T>(
   path: string,
@@ -68,6 +69,14 @@ async function request<T>(
   if (method !== "GET" && method !== "HEAD") {
     headers["X-Grogu-Token"] = readCsrfToken();
   }
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort();
+  opts.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
   let resp: Response;
   try {
     resp = await fetch(BASE + path, {
@@ -75,11 +84,18 @@ async function request<T>(
       headers,
       credentials: "same-origin",
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-      ...(opts.signal ? { signal: opts.signal } : {}),
+      signal: controller.signal,
     });
   } catch (e) {
-    // Network error — surface as a distinct failure the store treats as offline.
-    throw new ApiFailure(0, { error: "network", message: String(e) });
+    throw new ApiFailure(0, {
+      error: timedOut ? "timeout" : "network",
+      message: timedOut
+        ? "The local Grogu server did not respond within 30 seconds."
+        : String(e),
+    });
+  } finally {
+    window.clearTimeout(timeout);
+    opts.signal?.removeEventListener("abort", abortFromCaller);
   }
   const text = await resp.text();
   let parsed: unknown = null;

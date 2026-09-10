@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api/client";
+import { api, ApiFailure } from "../api/client";
 import type { ImpactItem, ProposalPreview as PreviewData, Selector } from "../api/types";
 import { Modal, ModalBody, ModalFooter, ModalHeader, ModalTitle } from "../shell/Modal";
 import { useActions, useApp } from "../state/store";
@@ -25,7 +25,7 @@ export function AskGrogu({ threadId }: { threadId: string }) {
     try {
       const res = await api.reviseThread(threadId, instruction.trim());
       await actions.refreshDoc();
-      actions.toast(`Revision request ${res.request.seq} sent to the architect.`, "success", {
+      actions.toast(`Revision request ${res.request.seq} recorded; implementation waits for architect acknowledgement.`, "success", {
         label: "View ledger",
         event: "noop",
       });
@@ -111,9 +111,13 @@ export function ProposalPreview({ proposalId }: { proposalId: string }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setData(null);
+    setError("");
     api
       .proposalPreview(proposalId)
       .then((d) => {
@@ -123,11 +127,18 @@ export function ProposalPreview({ proposalId }: { proposalId: string }) {
         const auto = new Set(d.impact.transitive.filter((t) => t.destructive).map((t) => t.id));
         setExpanded(auto);
       })
-      .catch(() => setData(null));
+      .catch((failure) => {
+        if (cancelled) return;
+        setError(
+          failure instanceof ApiFailure
+            ? failure.message
+            : "The proposal preview did not finish.",
+        );
+      });
     return () => {
       cancelled = true;
     };
-  }, [proposalId]);
+  }, [proposalId, attempt]);
 
   const destructiveUnread =
     data?.impact.transitive.filter((t) => t.destructive).some((t) => !expanded.has(t.id)) ?? false;
@@ -171,7 +182,19 @@ export function ProposalPreview({ proposalId }: { proposalId: string }) {
         ) : null}
       </ModalHeader>
       <ModalBody>
-        {!data ? (
+        {error ? (
+          <div className="compiled-error" role="alert">
+            <strong>Could not load this proposal preview.</strong>
+            <p>{error}</p>
+            <button
+              type="button"
+              className="btn btn-text"
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              Retry
+            </button>
+          </div>
+        ) : !data ? (
           <p className="inspector-muted">Loading preview…</p>
         ) : (
           <div className="proposal-cols">

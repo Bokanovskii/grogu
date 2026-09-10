@@ -185,6 +185,12 @@ _REGISTRATION_STRING_FIELDS = (
 )
 
 
+def _repository_key(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    return str(Path(value).expanduser().resolve())
+
+
 def load_registration(mapping: dict) -> Registration:
     """Coerce a mapping to a :class:`Registration`.
 
@@ -368,16 +374,15 @@ class ControlRoom:
             )
             self._cached_sample_at = current
         watch_rows = self._cached_watch_rows or []
-        # A watch row is keyed to a registration by ``(plan, agent)``. The
-        # plan+agent tuple is the identity the supervisor writes into
-        # source 1 records (via ``GROGU_AGENT`` and ``GROGU_PLAN``), and it
-        # is what the registration record also names, so this is a
-        # registered join and not an inference.
+        # Repository identity is part of the join. Agent names and plan ids are
+        # not globally unique, so omitting it can correlate an unregistered
+        # checkout's activity with a registered run.
         watch_by_agent: dict = {}
         for row in watch_rows:
+            repository_value = _repository_key(row.get("repository", ""))
             plan_value = row.get("plan", "") or ""
             agent_value = row.get("agent", "") or ""
-            key = (plan_value, agent_value)
+            key = (repository_value, plan_value, agent_value)
             watch_by_agent.setdefault(key, row)
         agent_rows: list = []
         uncorrelated: list = []
@@ -390,20 +395,31 @@ class ControlRoom:
         ):
             state = self._ensure_state(registration.agent_key)
             if do_sample:
+                previous_observed_at = state.last_observed_at
                 gaps = self._ingest_source_two(registration, state, current)
                 self._cached_gaps[registration.run_id] = gaps
-                if registration.events_path and not any(
-                    gap.kind == grogu_agentevents.GAP_SOURCE_READ_ERROR
-                    for gap in gaps
+                if (
+                    registration.events_path
+                    and state.last_observed_at > previous_observed_at
+                    and not any(
+                        gap.kind == grogu_agentevents.GAP_SOURCE_READ_ERROR
+                        for gap in gaps
+                    )
                 ):
-                    self._last_healthy_sample[registration.run_id] = current
+                    self._last_healthy_sample[registration.run_id] = (
+                        state.last_observed_at
+                    )
             gaps = self._cached_gaps.get(registration.run_id, [])
             all_gaps.extend(gaps)
             if registration.events_path:
                 source2_present = True
                 if state.tools_started or state.subagent_completed_seen:
                     source2_available = True
-            watch_key = (registration.plan or "", registration.agent or "")
+            watch_key = (
+                _repository_key(registration.repository),
+                registration.plan or "",
+                registration.agent or "",
+            )
             watch_row = watch_by_agent.pop(watch_key, None)
             self._merge_watch(state, watch_row)
             agent_rows.append(
@@ -743,7 +759,13 @@ class ControlRoom:
         if not registration.events_path:
             limits.append("tool_activity")
         current_action = None
-        if state.current_tool:
+        current_tool_is_fresh = (
+            state.current_tool
+            and state.current_tool_started_at > 0
+            and current - state.current_tool_started_at
+            <= CONNECTION_DISCONNECTED_SECONDS
+        )
+        if current_tool_is_fresh:
             current_action = {
                 "tool_name": state.current_tool,
                 "tool_call_id": state.current_tool_call or "",

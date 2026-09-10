@@ -404,8 +404,24 @@ class RevisionGenerationTests(unittest.TestCase):
                 before_head_replace=crash,
             )
         self.assertEqual(revision.read_head(self.directory), "r0001")
-        self.assertEqual(revision.recover_head(self.directory), "r0001")
         self.assertTrue((self.directory / "log" / "000002.json").exists())
+        self.assertEqual(
+            revision.recover_head(self.directory, repair=True), "r0002"
+        )
+        self.assertEqual(revision.read_head(self.directory), "r0002")
+
+        after_three = copy.deepcopy(after_two)
+        after_three["title"] = "Recovered third revision"
+        ops_three = patch.diff(after_two, after_three)
+        third = self._envelope(after_two, after_three, 3, ops_three)
+        revision.write_generation(
+            self.directory,
+            third,
+            partitions={"graph/open.json": canon.dumpb(after_three)},
+            artifacts={"implementation.md": b"compiled three\n"},
+            base="r0002",
+        )
+        self.assertEqual(revision.read_head(self.directory), "r0003")
 
     def test_missing_head_target_recovers_to_newest_complete_log(self):
         before, after_one, after_two = self._states()

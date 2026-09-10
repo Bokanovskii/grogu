@@ -716,6 +716,36 @@ class PlanDocumentReviewAdapterTests(unittest.TestCase):
         self.assertEqual(len(steering), 1)
         self.assertTrue(steering[0]["requires_replan"])
 
+        retried = self.review.request_changes(
+            self.plan, note="Address the open comment", role="reviewer"
+        )
+        self.assertEqual(retried["steering_seq"], review_round["steering_seq"])
+        self.assertEqual(len(self.store.load(self.plan)["steering"]), 1)
+
+    def test_concurrent_request_changes_is_idempotent(self):
+        self.review.add_thread(
+            self.plan,
+            stage="implementation",
+            anchor=self._anchor(),
+            body="Please revise concurrently.",
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    lambda _index: self.review.request_changes(
+                        self.plan,
+                        note="Address the open comment",
+                        role="reviewer",
+                    ),
+                    range(2),
+                )
+            )
+        self.assertEqual(
+            {result["steering_seq"] for result in results},
+            {results[0]["steering_seq"]},
+        )
+        self.assertEqual(len(self.store.load(self.plan)["steering"]), 1)
+
     def test_package_reply_and_resolve_are_append_only_revisions(self):
         service = grogu_plans.PlanDocumentStore.for_plan(
             self.store, self.plan

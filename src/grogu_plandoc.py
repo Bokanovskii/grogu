@@ -315,6 +315,21 @@ def load_visible(
         for node_id, node in (partition.get("nodes") or {}).items():
             if node.get("stage", "") in allowed_stages:
                 visible["nodes"][node_id] = copy.deepcopy(node)
+    visible_edge_ids = {
+        edge_id
+        for partition in loaded.values()
+        for edge_id, edge in (partition.get("edges") or {}).items()
+        if edge.get("from") in visible["nodes"] and edge.get("to") in visible["nodes"]
+    }
+    for node_id, node in list(visible["nodes"].items()):
+        if node.get("kind") != "thread":
+            continue
+        selector = (node.get("attrs") or {}).get("selector") or {}
+        if (
+            set(schema.selector_node_ids(selector)) - set(visible["nodes"])
+            or set(schema.selector_edge_ids(selector)) - visible_edge_ids
+        ):
+            del visible["nodes"][node_id]
     for partition in loaded.values():
         for edge_id, edge in (partition.get("edges") or {}).items():
             if edge.get("from") in visible["nodes"] and edge.get("to") in visible["nodes"]:

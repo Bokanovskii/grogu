@@ -614,6 +614,38 @@ def validate_document(value: Any, *, path: str = "$") -> dict:
         selector = validate_selector(
             node["attrs"]["selector"], path=f"{path}.nodes.{node_id}.attrs.selector"
         )
+        thread_partition = (
+            node["stage"] if node["stage"] in SEALED_STAGES else "open"
+        )
+        for target_id in selector_node_ids(selector):
+            target = result["nodes"].get(target_id)
+            if target is None:
+                continue
+            target_partition = (
+                target["stage"] if target["stage"] in SEALED_STAGES else "open"
+            )
+            if target_partition != thread_partition:
+                _error(
+                    f"{path}.nodes.{node_id}.attrs.selector",
+                    "thread selector may not cross a partition boundary",
+                )
+        for edge_id in selector_edge_ids(selector):
+            edge = result["edges"].get(edge_id)
+            if edge is None:
+                continue
+            endpoint_partitions = {
+                (
+                    result["nodes"][endpoint]["stage"]
+                    if result["nodes"][endpoint]["stage"] in SEALED_STAGES
+                    else "open"
+                )
+                for endpoint in (edge["from"], edge["to"])
+            }
+            if endpoint_partitions != {thread_partition}:
+                _error(
+                    f"{path}.nodes.{node_id}.attrs.selector",
+                    "thread selector may not cross a partition boundary",
+                )
         anchor_state = node["attrs"].get("anchor_state", "resolved")
         missing_nodes = set(selector_node_ids(selector)) - set(result["nodes"])
         missing_edges = set(selector_edge_ids(selector)) - set(result["edges"])

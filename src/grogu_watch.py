@@ -120,7 +120,7 @@ def activity(
 def sessions(
     *, window_minutes: int = DEFAULT_WINDOW_MINUTES, home: Optional[Path] = None
 ) -> list:
-    """Collapse the feed into one row per agent.
+    """Collapse the feed into one row per repository, plan, and agent.
 
     Identity is (cwd, role, plan, agent) rather than pid, because a subagent is
     a sequence of separate `grogu` processes in one working directory, and pid
@@ -131,23 +131,23 @@ def sessions(
     collapsed into a single row, so the board could not show the thing it
     exists to show, and the relay hint could not name who to relay to.
 
-    Where a name exists it is the *whole* key, because role and plan both
-    change under one agent during its life and each change forked another row:
-    six agents on one plan rendered as fifteen entries, four of them the same
-    engineer before and after it picked up the plan and once more where it had
-    run a supervisor command. The board exists to be read at a glance, and
-    counting one agent three times is worse than not listing it.
+    A named agent may legitimately appear in several repositories or plans.
+    Those contexts must remain separate so an explicitly registered run never
+    inherits activity from another checkout that reused the same agent name.
     """
     rows: dict = {}
     for entry in activity(window_minutes=window_minutes, home=home):
         name = _agent_name(entry.get("agent", ""))
+        repository = entry.get("repository", "") or entry.get("cwd", "")
         if name:
-            # The name alone, not the name plus the directory. An engineer that
-            # works in two worktrees -- which is normal, and which the fan-out
-            # encourages -- was two rows claiming to be one agent.
-            key = (name,)
+            key = (
+                repository,
+                entry.get("plan", ""),
+                name,
+            )
         else:
             key = (
+                repository,
                 entry.get("cwd", ""),
                 entry.get("role", ""),
                 entry.get("plan", ""),
@@ -160,7 +160,7 @@ def sessions(
                 "role": entry.get("role", ""),
                 "agent": name,
                 "plan": entry.get("plan", ""),
-                "repository": entry.get("repository", ""),
+                "repository": repository,
                 "calls": 0,
                 "first": entry.get("at", 0),
                 "last": 0,

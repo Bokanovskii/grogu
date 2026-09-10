@@ -112,6 +112,7 @@ export interface AppState {
   connection: Connection;
   save: SaveState;
   queue: QueuedIntent[];
+  restoreQueue: QueuedIntent[];
   pendingIds: string[];
   reconnectIn: number | null;
 
@@ -145,6 +146,7 @@ type Action =
   | { t: "connection/set"; connection: Connection; reconnectIn?: number | null }
   | { t: "save/set"; save: SaveState }
   | { t: "queue/set"; queue: QueuedIntent[]; pendingIds: string[] }
+  | { t: "restore/set"; queue: QueuedIntent[] }
   | { t: "toast/push"; toast: Toast }
   | { t: "toast/dismiss"; id: string }
   | { t: "live/set"; text: string; assertive?: boolean }
@@ -239,6 +241,8 @@ function reducer(state: AppState, a: Action): AppState {
       return { ...state, save: a.save };
     case "queue/set":
       return { ...state, queue: a.queue, pendingIds: a.pendingIds };
+    case "restore/set":
+      return { ...state, restoreQueue: a.queue };
     case "toast/push":
       return { ...state, toasts: [...state.toasts, a.toast] };
     case "toast/dismiss":
@@ -305,6 +309,7 @@ function initialState(): AppState {
     connection: "connecting",
     save: "idle",
     queue: [],
+    restoreQueue: [],
     pendingIds: [],
     reconnectIn: null,
     toasts: [],
@@ -348,6 +353,8 @@ export interface Actions {
   canUndo: () => boolean;
   canRedo: () => boolean;
   flushQueue: () => Promise<void>;
+  applyRestoredQueue: () => void;
+  discardRestoredQueue: () => void;
   refreshDoc: () => Promise<void>;
   reloadThreads: () => Promise<void>;
   reloadProposals: () => Promise<void>;
@@ -590,7 +597,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const item = s.queue[0]!;
       try {
         const res = await api.patch({
-          base: s.base,
+          base: item.base,
           ops: item.ops,
           intent: item.intent,
           origin: item.origin,
@@ -657,6 +664,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
     dispatch({ t: "connection/set", connection: "connected", reconnectIn: null });
   }, [commitGraph, live, persistQueue]);
+
+  const applyRestoredQueue = useCallback<Actions["applyRestoredQueue"]>(() => {
+    const s = stateRef.current;
+    let graph = graphOf(s);
+    const accepted: QueuedIntent[] = [];
+    for (const item of s.restoreQueue) {
+      if (!opsApply(graph, item.ops)) {
+        const firstId =
+          (item.ops[0] && "path" in item.ops[0] ? item.ops[0].path : "")
+            .match(/\/(?:nodes|edges)\/([^/]+)/)?.[1] ?? "an item";
+        dispatch({
+          t: "conflict/push",
+          card: {
+            id: uid("conflict"),
+            title: s.nodes[firstId]?.title ?? firstId,
+            ops: item.ops,
+            base: item.base,
+            serverRevision: s.revision,
+          },
+        });
+        continue;
+      }
+      graph = applyOps(graph, item.ops);
+      accepted.push(item);
+    }
+    commitGraph(graph, s.revision, s.base);
+    dispatch({ t: "restore/set", queue: [] });
+    persistQueue(s.plan, accepted);
+  }, [commitGraph, persistQueue]);
+
+  const discardRestoredQueue = useCallback<Actions["discardRestoredQueue"]>(() => {
+    const s = stateRef.current;
+    saveQueue(s.plan, []);
+    dispatch({ t: "restore/set", queue: [] });
+  }, []);
 
   const undo = useCallback<Actions["undo"]>(async () => {
     const entry = undoStack.current.pop();
@@ -748,7 +790,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // Crash recovery: restore queued edits.
       const q = loadQueue(plan);
       if (q.length) {
-        persistQueue(plan, q);
+        dispatch({ t: "restore/set", queue: q });
         dispatch({ t: "overlay/set", overlay: { kind: "restoreQueue" } });
       }
       void reloadProposals();
@@ -838,6 +880,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       canUndo: () => undoStack.current.length > 0,
       canRedo: () => redoStack.current.length > 0,
       flushQueue,
+      applyRestoredQueue,
+      discardRestoredQueue,
       refreshDoc,
       reloadThreads,
       reloadProposals,
@@ -854,6 +898,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       undo,
       redo,
       flushQueue,
+      applyRestoredQueue,
+      discardRestoredQueue,
       refreshDoc,
       reloadThreads,
       reloadProposals,
