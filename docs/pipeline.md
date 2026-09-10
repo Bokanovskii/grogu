@@ -414,6 +414,21 @@ just an anonymous shell, the one thing nothing stopped it doing. It cannot
 write or complete a stage either; if a plan is wrong it raises an amendment and
 the architect adjudicates.
 
+### Budgets, checkpoints, and cancellation
+
+Every spawned agent has a stable governance record containing declared
+tool-call, elapsed-time and AI-credit limits when those counters are observable,
+plus a checkpoint cadence. `grogu plan agent-budget`, `agent-usage`,
+`checkpoint`, `checkpoint-recovery`, and `governance` expose that record;
+`grogu watch` surfaces warnings and completion blockers.
+
+Grogu can refuse stage completion when a budget was exceeded without a current
+recoverable checkpoint. It cannot terminate a Copilot Task-tool process. The
+supervisor must use Copilot `/tasks` for immediate cancellation; `write_agent`
+is queued behind the running turn and is not a stop mechanism. After
+cancellation, salvage only the recorded checkpoint and explicitly mark its
+recovery status before resuming work.
+
 The subtler boundary is attribution. The supervisor's whole job on the steering
 channel is carrying somebody else's words, so `grogu plan steer --relayed`
 marks a note as the user's and anything else is attributed to the supervisor.

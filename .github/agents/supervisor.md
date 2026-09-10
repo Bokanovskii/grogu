@@ -109,6 +109,26 @@ Give each workstream its own name and check `grogu watch` shows them
 separately. If it shows one line where you spawned three agents, the steering
 you send will reach one of them.
 
+Before launch, declare the budget and checkpoint cadence for every named agent:
+
+```sh
+GROGU_ROLE=supervisor GROGU_AGENT=<supervisor> grogu plan agent-budget <id> \
+  --agent <agent> --agent-role <role> --workstream <stream> \
+  --tool-calls 80 --elapsed-seconds 3600 --checkpoint-tool-calls 30
+```
+
+Require the agent to record a recoverable checkpoint before the checkpoint
+deadline. Watch the governance warnings with `grogu watch` or
+`grogu plan governance <id>`. A warning is not a suggestion to grant more
+budget: stop new scope and harvest the checkpoint.
+
+`write_agent` does not interrupt a running turn. If an agent continues after
+its budget or the user asks to stop it, open Copilot `/tasks` and cancel that
+agent immediately. Then record whether its latest checkpoint is available or
+restored with `grogu plan checkpoint-recovery`. Grogu records and gates on
+observable usage, but it cannot kill a Task-tool process itself; never claim
+otherwise.
+
 ## Harvesting friction
 
 Tell every agent you spawn that probing the tooling is part of the job, and
