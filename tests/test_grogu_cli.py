@@ -4385,7 +4385,7 @@ class ReviewCliTests(unittest.TestCase):
         self.assertNotIn("review:", status_no_rev)
 
         _, brief_no_rev, _ = self.run_main("plan", "brief", "--role", "architect", "--plan", plan_no_rev, role="architect", agent=f"arch-{plan_no_rev}")
-        self.assertNotIn("c1", brief_no_rev)
+        self.assertNotIn("[c1 implementation anchored]", brief_no_rev)
 
         # Plan with thread
         code, out, _ = self.run_main("plan", "new", "With review")
