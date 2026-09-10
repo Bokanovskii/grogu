@@ -1,17 +1,9 @@
-import { useState } from "react";
-import { stageLabel, type FeedbackRecord } from "../api/types";
+import { Fragment, useState } from "react";
+import type { FeedbackRecord } from "../api/types";
 import { Modal, ModalBody } from "../shell/Modal";
 import { useActions } from "../state/store";
 import { useControl } from "../state/control";
 import { ago, clock } from "../lib/format";
-
-function stateReached(f: FeedbackRecord, target: FeedbackRecord["state"]): string {
-  const order: FeedbackRecord["state"][] = ["sent", "routed", "delivered", "acknowledged"];
-  const hit = f.history.find((h) => h.state === target);
-  if (hit) return clock(hit.at);
-  if (order.indexOf(f.state) >= order.indexOf(target) && target !== "acknowledged") return "✓";
-  return "—";
-}
 
 export function DeliveryLedger() {
   const actions = useActions();
@@ -20,81 +12,139 @@ export function DeliveryLedger() {
   const feedback = [...control.feedback].sort((a, b) => b.at - a.at);
 
   return (
-    <Modal title="Delivery ledger" onClose={actions.closeOverlay} width={860} className="ledger-modal">
+    <Modal
+      title="Delivery ledger"
+      onClose={actions.closeOverlay}
+      width={960}
+      className="ledger-modal"
+    >
       <ModalBody>
+        {control.feedbackError ? (
+          <p className="ledger-error" role="alert">
+            Delivery ledger unavailable for one or more plans. Previously loaded
+            receipts remain visible.
+          </p>
+        ) : null}
         {feedback.length === 0 ? (
           <div className="ledger-empty">
             <p className="state-panel-title">No feedback sent yet.</p>
-            <p>Feedback you send to agents and roles appears here as a durable record.</p>
+            <p>
+              Feedback sent to agents, roles, and plans appears here as a durable,
+              plan-qualified receipt.
+            </p>
           </div>
         ) : (
-          <table className="ledger-table">
-            <thead>
-              <tr>
-                <th scope="col">Id</th>
-                <th scope="col">Target</th>
-                <th scope="col">Scope</th>
-                <th scope="col">Binding</th>
-                <th scope="col">Sent</th>
-                <th scope="col">Delivered</th>
-                <th scope="col">Acknowledged</th>
-                <th scope="col">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {feedback.map((f) => (
-                <>
-                  <tr key={f.id} className={f.state === "withdrawn" ? "ledger-withdrawn" : ""}>
-                    <td>
-                      <button type="button" className="rel-link" onClick={() => setOpen((o) => (o === f.id ? null : f.id))}>
-                        {f.id}
-                      </button>
-                    </td>
-                    <td>{f.scope.label}</td>
-                    <td>{f.scope.kind}</td>
-                    <td>{f.binding ? "binding" : "advisory"}</td>
-                    <td>{ago(f.at, Date.now())}</td>
-                    <td>{stateReached(f, "delivered")}</td>
-                    <td>
-                      {f.state === "undeliverable"
-                        ? `undeliverable · ${f.reason ?? ""}`
-                        : stateReached(f, "acknowledged")}
-                    </td>
-                    <td className="ledger-actions">
-                      <button type="button" className="rel-link" onClick={() => void navigator.clipboard?.writeText(f.id)}>
-                        Copy id
-                      </button>
-                      {f.binding && f.state !== "acknowledged" && f.state !== "withdrawn" ? (
-                        <button type="button" className="rel-link" onClick={() => void control.withdrawFeedback(f.id)}>
-                          Withdraw
-                        </button>
-                      ) : null}
-                      <button type="button" className="rel-link" onClick={() => actions.setMode("control")}>
-                        Open in Control room
-                      </button>
-                    </td>
-                  </tr>
-                  {open === f.id ? (
-                    <tr key={f.id + "-detail"} className="ledger-detail-row">
-                      <td colSpan={8}>
-                        <div className="ledger-detail">
-                          <p className="ledger-body">{f.text}</p>
-                          {f.ack_event ? <p className="ledger-ack">Acknowledged: event {f.ack_event}</p> : null}
-                          {f.gate ? (
-                            <p className="ledger-gate">
-                              Gate {stageLabel(f.gate.stage)}: {f.gate.state}
-                            </p>
+          <div className="ledger-scroll">
+            <table className="ledger-table">
+              <thead>
+                <tr>
+                  <th scope="col">Receipt</th>
+                  <th scope="col">Plan</th>
+                  <th scope="col">Target</th>
+                  <th scope="col">Kind</th>
+                  <th scope="col">State</th>
+                  <th scope="col">Sent</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {feedback.map((record) => {
+                  const receipt =
+                    record.receipt_key ??
+                    `${record.plan ?? "plan unavailable"}:${record.id}`;
+                  const state = record.delivery_state ?? record.state;
+                  return (
+                    <Fragment key={receipt}>
+                      <tr className={state === "withdrawn" ? "ledger-withdrawn" : ""}>
+                        <td>
+                          <button
+                            type="button"
+                            className="rel-link ledger-receipt"
+                            onClick={() =>
+                              setOpen((current) =>
+                                current === receipt ? null : receipt,
+                              )
+                            }
+                          >
+                            {receipt}
+                          </button>
+                        </td>
+                        <td>{record.plan ?? "Unavailable"}</td>
+                        <td>{record.scope.label}</td>
+                        <td>{record.binding ? "Binding" : "Advisory"}</td>
+                        <td>{deliveryLabel(record)}</td>
+                        <td>{ago(record.at, Date.now())}</td>
+                        <td className="ledger-actions">
+                          <button
+                            type="button"
+                            className="rel-link"
+                            onClick={() =>
+                              void navigator.clipboard?.writeText(receipt)
+                            }
+                          >
+                            Copy receipt
+                          </button>
+                          {record.binding &&
+                          state !== "acknowledged" &&
+                          state !== "withdrawn" ? (
+                            <button
+                              type="button"
+                              className="rel-link ledger-withdraw"
+                              onClick={() =>
+                                void control.withdrawFeedback(record.id, record.plan)
+                              }
+                            >
+                              Withdraw
+                            </button>
                           ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  ) : null}
-                </>
-              ))}
-            </tbody>
-          </table>
+                        </td>
+                      </tr>
+                      {open === receipt ? (
+                        <tr className="ledger-detail-row">
+                          <td colSpan={7}>
+                            <div className="ledger-detail">
+                              <p className="ledger-body">{record.text}</p>
+                              <p>{consequenceLabel(record)}</p>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </ModalBody>
     </Modal>
   );
+}
+
+function deliveryLabel(record: FeedbackRecord): string {
+  const state = record.delivery_state ?? record.state;
+  if (state === "sent") return "Sent";
+  if (state === "routed") {
+    return `Routed to ${record.scope.label} on ${record.plan ?? "plan unavailable"}`;
+  }
+  if (state === "delivered") return "Delivered";
+  if (state === "acknowledged") {
+    const at = record.history.find((item) => item.state === "acknowledged")?.at;
+    return at == null ? "Acknowledged" : `Acknowledged ${clock(at)}`;
+  }
+  if (state === "undeliverable") {
+    return "Not delivered · no agent matches this scope yet";
+  }
+  return "Withdrawn";
+}
+
+function consequenceLabel(record: FeedbackRecord): string {
+  const consequence = record.consequence;
+  if (!consequence?.binding) return "Advisory · closes no gate";
+  if (consequence.requires_replan) return "Binding · requires replan";
+  const gates = consequence.gates.map((gate) => `${gate} gate`).join(", ");
+  if (consequence.release === "acknowledgement_or_withdrawal") {
+    return `Binding · ${gates || "recorded gate"} closed until acknowledgement or withdrawal`;
+  }
+  return `Binding · ${gates || "recorded gate"} consequence`;
 }

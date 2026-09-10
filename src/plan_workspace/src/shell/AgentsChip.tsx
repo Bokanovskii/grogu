@@ -5,8 +5,8 @@ export function countLiveStuck(agents: AgentRow[]): { live: number; stuck: numbe
   let live = 0;
   let stuck = 0;
   for (const a of agents) {
-    if (a.badge === "stuck") stuck += 1;
-    if (a.badge === "live" || a.badge === "idle" || a.badge === "waiting") live += 1;
+    if (a.activity === "possibly_stuck" || a.activity === "blocked") stuck += 1;
+    if (a.lifecycle === "running") live += 1;
   }
   return { live, stuck };
 }
@@ -25,7 +25,7 @@ export function AgentsChip({ onClick }: { onClick: () => void }) {
     >
       <span aria-hidden="true">⌾</span>
       <span>
-        Agents · {live} live{stuckLabel}
+        Agents · {live} running{stuckLabel}
       </span>
     </button>
   );

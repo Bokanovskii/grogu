@@ -1,9 +1,17 @@
-import React, { forwardRef } from "react";
+import { forwardRef } from "react";
 import type { AgentRow } from "../../api/types";
-import { NODE_GLYPH } from "../../lib/selection";
-import { durationMs } from "../../lib/format";
-import { BADGE_META, badgeLabel } from "./badges";
-import { FeedbackBadge } from "./FeedbackBadge";
+import {
+  ACTIVITY_META,
+  LIFECYCLE_META,
+  blockerCount,
+  coverageText,
+  elapsedText,
+  eventText,
+  freshnessText,
+  lastSafeAction,
+  ownershipText,
+  revisionText,
+} from "./presentation";
 
 interface Props {
   agent: AgentRow;
@@ -17,126 +25,112 @@ interface Props {
   onFocus: () => void;
 }
 
-// One agent card: 320×180, fixed rows in fixed order, blanks kept as "—".
-// role="group" with aria-labelledby to row 1. Everything is an observed fact
-// except an explicitly-provided authored action summary, which is tagged.
 export const AgentCard = forwardRef<HTMLDivElement, Props>(function AgentCard(
-  { agent, now, selected, tabIndex, onWatch, onFeedback, onNudge, onNavigate, onFocus },
+  {
+    agent,
+    now,
+    selected,
+    tabIndex,
+    onWatch,
+    onFeedback,
+    onNudge,
+    onNavigate,
+    onFocus,
+  },
   ref,
 ) {
-  const meta = BADGE_META[agent.badge];
-  const titleId = `agent-${agent.agent_key}-title`;
-  const summary = agent.current_action?.summary;
-  const action = agent.current_action?.tool_name
-    ? `${agent.current_action.tool_name}${agent.current_action.phase ? ` · ${agent.current_action.phase}` : ""}`
-    : "Idle";
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      onWatch();
-    } else if (e.key.toLowerCase() === "f") {
-      e.preventDefault();
-      onFeedback();
-    } else if (e.key.toLowerCase() === "w") {
-      e.preventDefault();
-      onWatch();
-    } else if (e.key.toLowerCase() === "n" && agent.badge === "stuck") {
-      e.preventDefault();
-      onNudge();
-    }
-  };
+  const lifecycle = LIFECYCLE_META[agent.lifecycle];
+  const activity = ACTIVITY_META[agent.activity];
+  const titleId = `agent-${agent.agent_key.replace(/[^a-zA-Z0-9_-]/g, "-")}-title`;
+  const nudge = agent.activity === "blocked" || agent.steering.unread > 0;
 
   return (
     <div
       ref={ref}
-      className={`agent-card badge-border-${meta.tone}${selected ? " is-selected" : ""}`}
+      className={`agent-card tone-${lifecycle.tone}${selected ? " is-selected" : ""}`}
       role="listitem"
       aria-labelledby={titleId}
+      data-control-agent-row=""
+      data-agent-key={agent.agent_key}
       tabIndex={tabIndex}
-      onKeyDown={onKeyDown}
       onFocus={onFocus}
+      onKeyDown={(event) => {
+        const key = event.key.toLowerCase();
+        if (event.key === "Enter" || key === "w") {
+          event.preventDefault();
+          onWatch();
+        } else if (key === "f") {
+          event.preventDefault();
+          onFeedback();
+        } else if (key === "n" && nudge) {
+          event.preventDefault();
+          onNudge();
+        }
+      }}
     >
-      <div className="agent-row agent-row-1" id={titleId}>
-        <span className="agent-kind-glyph" aria-hidden="true">
-          {NODE_GLYPH.task}
+      <div className="agent-card-head" id={titleId}>
+        <span>{agent.role || "—"}</span>
+        <span aria-hidden="true">·</span>
+        <span className="agent-card-name" title={agent.agent}>
+          {agent.agent}
         </span>
-        <span className="agent-role">{agent.role || "—"}</span>
-        <span className="agent-sep">·</span>
-        <span className="agent-workstream">{agent.workstream || "—"}</span>
-        <span className="agent-sep">·</span>
+      </div>
+      <div className="agent-card-context">
         <button
           type="button"
           className="agent-plan"
           title={agent.plan_title ?? agent.plan}
           onClick={onNavigate}
         >
-          {agent.plan || "—"}
+          {agent.plan}
         </button>
+        <span>· {agent.workstream || "—"}</span>
+        <span title={revisionText(agent)}>· {revisionText(agent)}</span>
       </div>
-
-      <div className="agent-row agent-row-2">
-        <span className="agent-rev">{agent.revision.current || agent.revision.last_read || "—"}</span>
-        <span className="agent-sep">•</span>
-        <span className={`agent-badge badge-text-${meta.tone}`}>
-          <span className="agent-badge-glyph" aria-hidden="true">
-            {meta.glyph}
-          </span>
-          {badgeLabel(agent, now)}
+      <div className="agent-card-states">
+        <span className={`tone-${lifecycle.tone}`}>
+          {lifecycle.label} <span aria-hidden="true">{lifecycle.glyph}</span>
         </span>
-        {agent.badge === "stuck" && agent.stuck_threshold_s ? (
-          <span className="agent-threshold"> · threshold {Math.round(agent.stuck_threshold_s / 60)}m</span>
-        ) : null}
-      </div>
-
-      <div className="agent-row agent-row-3">
-        <span className="agent-label">Action:</span>{" "}
-        {agent.badge === "error" && agent.last_error ? (
-          <span className="agent-action agent-action-error">{agent.last_error}</span>
-        ) : (
-          <span className="agent-action">{action}</span>
-        )}
-        {summary ? (
-          <span className="authored-tag" title="Text a model wrote">
-            authored: {summary}
-          </span>
-        ) : null}
-      </div>
-
-      <div className="agent-row agent-row-4">
-        <span className="agent-label">Tool:</span>{" "}
-        {agent.last_tool ? (
-          <span className="agent-tool">
-            {agent.last_tool.tool_name} • {durationMs(agent.last_tool.duration_ms)} •{" "}
-            <span className={`tool-outcome tool-${agent.last_tool.outcome}`}>{agent.last_tool.outcome}</span>
-          </span>
-        ) : (
-          <span className="agent-tool">—</span>
-        )}
-      </div>
-
-      <div className="agent-row agent-row-5">
-        <span className="agent-counters">
-          Failures {agent.failures.length} · Blockers {agent.blockers.length} · Unread steering{" "}
-          {agent.steering.unread}
+        <span className={`tone-${activity.tone}`}>
+          {activity.label} <span aria-hidden="true">{activity.glyph}</span>
         </span>
-        <FeedbackBadge agentKey={agent.agent_key} />
+        <span>{freshnessText(agent, now)}</span>
       </div>
-
-      <div className="agent-row agent-row-6 agent-actions">
-        <button
-          type="button"
-          className="btn btn-text"
-          onClick={onWatch}
-          title="Open this agent's audit timeline"
+      <div className="agent-card-fact">
+        <span title={ownershipText(agent)}>Stage: {ownershipText(agent, true)}</span>
+        <span>· {elapsedText(agent)}</span>
+      </div>
+      <div className="agent-card-action" title={lastSafeAction(agent, now)}>
+        {lastSafeAction(agent, now)}
+      </div>
+      <div className="agent-card-counters">
+        <span aria-label={`Blockers ${blockerCount(agent)}`}>⚑ {blockerCount(agent)}</span>
+        <span aria-label={`Failures ${agent.failures.length}`}>✗ {agent.failures.length}</span>
+        <span aria-label={`Unread steering ${agent.steering.unread}`}>✉ {agent.steering.unread}</span>
+        <span
+          aria-label={`Coverage: lifecycle ${agent.coverage.lifecycle}, tools ${agent.coverage.tools}, outcomes ${agent.coverage.outcomes}`}
         >
-          Open timeline
+          Cov: {coverageText(agent)}
+        </span>
+      </div>
+      <div className="agent-card-events" aria-label="Recent events">
+        {agent.recent_events?.length
+          ? agent.recent_events.slice(0, 3).map((event) => (
+              <span key={event.id} title={eventText(event, now)}>
+                {eventText(event)}
+              </span>
+            ))
+          : "No inline events available"}
+      </div>
+      <div className="agent-actions">
+        <button type="button" className="btn-primary-text" onClick={onWatch}>
+          Watch
         </button>
-        <button type="button" className="btn btn-text" onClick={onFeedback}>
+        <button type="button" className="btn-secondary-text" onClick={onFeedback}>
           Send feedback
         </button>
-        {agent.badge === "stuck" ? (
-          <button type="button" className="btn btn-text" onClick={onNudge}>
+        {nudge ? (
+          <button type="button" className="btn-secondary-text" onClick={onNudge}>
             Nudge
           </button>
         ) : null}

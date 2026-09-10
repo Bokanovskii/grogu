@@ -104,32 +104,34 @@ test.describe("boot and shell", () => {
     await expect(page.locator("a.skip-link:focus")).toBeVisible();
   });
 
-  test("Control room is reachable and shows the seven state badges", async ({ page }) => {
+  test("Control room is reachable and separates lifecycle, activity, and connection", async ({ page }) => {
     await openApp(page);
     await page.locator(".mode-tab-control").click();
     await expect(page.locator(".control-room")).toBeVisible();
-    const cards = page.locator(".agent-card");
-    await expect(cards).toHaveCount(7);
-    // Every badge word from the design appears.
-    for (const word of ["Live", "Idle", "Stuck", "Finished", "Disconnected", "Error", "Waiting"]) {
-      await expect(page.locator(".agent-card", { hasText: word }).first()).toBeVisible();
+    const rows = page.locator("[data-control-agent-row]:visible");
+    await expect(rows).toHaveCount(7);
+    await expect(
+      page.getByRole("heading", { name: "Agent and session topology" }),
+    ).toBeVisible();
+    await expect(page.locator(".cr-topology-node")).toHaveCount(7);
+    for (const word of ["Running", "Finished", "Failed", "Possibly stuck", "Disconnected"]) {
+      await expect(rows.filter({ hasText: word }).first()).toBeVisible();
     }
-    // Provenance footer is present and verbatim.
     await expect(page.locator(".audit-provenance")).toContainText(
-      "Grogu never records prompts, chain-of-thought, or raw tool arguments",
+      "Prompts, model reasoning, tool arguments and tool results are never recorded",
     );
   });
 
   test("Open timeline expands, focuses, and loads the audit panel", async ({ page }) => {
     await openApp(page);
     await page.locator(".mode-tab-control").click();
-    await page.getByRole("button", { name: "Collapse Audit timeline panel" }).click();
-    await expect(page.getByRole("button", { name: "Expand Audit timeline panel" })).toBeVisible();
+    await page.getByRole("button", { name: "Collapse Agent timeline panel" }).click();
+    await expect(page.getByRole("button", { name: "Expand Agent timeline panel" })).toBeVisible();
     await page.route(/\/api\/control\/[^/?]+$/, async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       await route.continue();
     });
-    await page.locator(".agent-card").first().getByRole("button", { name: "Open timeline" }).click();
+    await page.locator("[data-control-agent-row]:visible").first().getByRole("button", { name: "Watch" }).click();
     await expect(page.locator(".panel-right")).toBeVisible();
     await expect(page.getByText("Loading timeline…")).toBeVisible();
     await expect(page.locator(".audit-title")).not.toHaveText("Audit timeline");
@@ -149,13 +151,13 @@ test.describe("boot and shell", () => {
         }),
       });
     });
-    await page.locator(".agent-card").first().getByRole("button", { name: "Open timeline" }).click();
-    await expect(page.getByText("Timeline unavailable.")).toBeVisible();
-    await expect(page.getByText("The registered activity source could not be read.")).toBeVisible();
+    await page.locator("[data-control-agent-row]:visible").first().getByRole("button", { name: "Watch" }).click();
+    await expect(page.getByText("Timeline disconnected.")).toBeVisible();
+    await expect(page.getByText(/Previously observed lifecycle remains unchanged/)).toBeVisible();
     await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
   });
 
-  test("an empty timeline explains why a Live agent can have no events", async ({ page }) => {
+  test("an empty registered timeline is distinct from unavailable", async ({ page }) => {
     await openApp(page);
     await page.locator(".mode-tab-control").click();
     await page.route(/\/api\/control\/[^/?]+$/, async (route) => {
@@ -163,24 +165,36 @@ test.describe("boot and shell", () => {
       const body = await response.json();
       await route.fulfill({
         response,
-        json: { ...body, activity: [] },
+        json: {
+          ...body,
+          activity: [],
+          recent_events: [],
+          events_status: "empty",
+          agent: {
+            ...body.agent,
+            events_status: "empty",
+            event_source_registered: true,
+          },
+        },
       });
     });
-    await page.locator(".agent-card").first().getByRole("button", { name: "Open timeline" }).click();
-    await expect(page.getByText("No detailed events recorded.")).toBeVisible();
-    await expect(page.getByText(/Live badge can come from recent Grogu command activity/)).toBeVisible();
+    await page.locator("[data-control-agent-row]:visible").first().getByRole("button", { name: "Watch" }).click();
+    await expect(page.getByText("No events in the last 24h.")).toBeVisible();
+    await expect(page.getByText("Widen the range to see older activity.")).toBeVisible();
   });
 
   test("feedback scopes name concrete audiences without redundant actions", async ({ page }) => {
     await openApp(page);
     await page.locator(".mode-tab-control").click();
-    await page.locator(".agent-card").first().getByRole("button", { name: "Send feedback" }).click();
-    await expect(page.getByRole("radio", { name: "This agent" })).toBeVisible();
-    await expect(page.getByRole("radio", { name: "All engineers" })).toBeVisible();
-    await expect(page.getByRole("radio", { name: "Everyone on this plan" })).toBeVisible();
-    await expect(page.getByRole("radio", { name: "Engineers on this plan" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Save as draft" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Abandon feedback" })).toHaveCount(0);
+    await page.locator("[data-control-agent-row]:visible").first().getByRole("button", { name: /Feedback/ }).click();
+    const dialog = page.getByRole("dialog", { name: "Send feedback" });
+    const targets = dialog.getByRole("radio");
+    await expect(targets).toHaveCount(3);
+    await expect(targets.nth(0)).toHaveText("This agent");
+    await expect(targets.nth(1)).toHaveText(/^All \w+s on this plan$/);
+    await expect(targets.nth(2)).toHaveText("Everyone on this plan");
+    await expect(dialog.getByRole("button", { name: "Save as draft" })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Abandon feedback" })).toHaveCount(0);
   });
 
   test("mode switching by keyboard preserves the shell", async ({ page }) => {

@@ -20,7 +20,7 @@ export function FeedbackComposerModal({ agentKey, nudge }: { agentKey?: string; 
       <ModalBody>
         <FeedbackComposer
           agent={agent}
-          plan={state.plan}
+          plan={agent?.plan ?? state.plan}
           nudge={nudge}
           onSent={actions.closeOverlay}
           onCancel={actions.closeOverlay}

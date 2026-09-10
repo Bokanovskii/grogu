@@ -1,11 +1,19 @@
-import { useState } from "react";
-import type { AgentRow, FeedbackScope, Role } from "../../api/types";
+import { useMemo, useState } from "react";
+import { ApiFailure } from "../../api/client";
+import type {
+  AgentRow,
+  FeedbackCapability,
+  FeedbackConsequence,
+  FeedbackScope,
+  Role,
+} from "../../api/types";
 import { useControl } from "../../state/control";
 import { useActions } from "../../state/store";
 
-// The feedback composer. Exactly one target scope must be chosen. A binding
-// toggle names, before sending, the gate that will close. Destructive "Abandon
-// feedback" is a plain link far from Send.
+const drafts = new Map<string, string>();
+
+type TargetKind = "agent" | "role" | "plan";
+
 export function FeedbackComposer({
   agent,
   plan,
@@ -22,79 +30,84 @@ export function FeedbackComposer({
   const control = useControl();
   const actions = useActions();
   const role = (agent?.role || "engineer") as Role;
-  const rolePlural: Record<Role, string> = {
-    architect: "architects",
-    designer: "designers",
-    engineer: "engineers",
-    tester: "testers",
-    reviewer: "reviewers",
-    supervisor: "supervisors",
-  };
-  const audience = rolePlural[role];
-
-  type TargetKind = "agent" | "role" | "plan" | "role_plan";
-  const [target, setTarget] = useState<TargetKind>(agent ? "agent" : plan ? "plan" : "role");
+  const audience = `${role}s`;
+  const draftKey = `${plan}:${agent?.agent_key ?? role}`;
+  const [target, setTarget] = useState<TargetKind>(agent ? "agent" : "plan");
   const [binding, setBinding] = useState(false);
-  const [text, setText] = useState(
-    nudge && agent
-      ? `You appear stuck at ${agent.current_action?.tool_name ?? "your last action"}. What would help?`
-      : "",
-  );
+  const [text, setText] = useState(drafts.get(draftKey) ?? "");
+  const [error, setError] = useState<string | null>(null);
 
   const targets: { value: TargetKind; label: string; enabled: boolean }[] = [
     { value: "agent", label: "This agent", enabled: !!agent },
-    { value: "role", label: `All ${audience}`, enabled: true },
+    { value: "role", label: `All ${audience} on this plan`, enabled: true },
     { value: "plan", label: "Everyone on this plan", enabled: !!plan },
-    { value: "role_plan", label: `${audience[0]!.toUpperCase()}${audience.slice(1)} on this plan`, enabled: !!plan },
   ];
-  const prompt: Record<TargetKind, string> = {
-    agent: "What should this agent know?",
-    role: `What should all ${audience} know?`,
-    plan: "What should everyone on this plan know?",
-    role_plan: `What should ${audience} on this plan know?`,
-  };
 
-  function scopeFor(): FeedbackScope {
-    if (target === "agent" && agent)
-      return { kind: "agent", agent_key: agent.agent_key, label: `agent ${agent.agent}` };
-    if (target === "plan") return { kind: "plan", plan, label: `everyone on plan ${plan}` };
-    if (target === "role_plan") return { kind: "role_plan", role, plan, label: `${audience} on ${plan}` };
-    return { kind: "role", role, label: `all ${audience}` };
-  }
-
+  const capability = useMemo(
+    () =>
+      findCapability(
+        control.snapshot?.feedback_capabilities ?? [],
+        target,
+        plan,
+        role,
+      ),
+    [control.snapshot?.feedback_capabilities, plan, role, target],
+  );
+  const bindingAllowed = capability?.binding === true;
+  const activeBinding = binding && bindingAllowed;
+  const scope = scopeFor(target, agent, plan, role, audience);
   const canSend = text.trim().length > 0;
 
   async function send() {
-    const scope = scopeFor();
+    setError(null);
     try {
-      await control.sendFeedback(scope, text.trim(), binding);
-      actions.toast(`Feedback sent to ${scope.label}.`, "success", {
-        label: "View ledger",
-        event: "noop",
-      });
-      actions.live(`Feedback sent to ${scope.label}.`);
+      const response = await control.sendFeedback(
+        scope,
+        text.trim(),
+        activeBinding,
+      );
+      const receiptPlan = response.record.plan ?? plan;
+      const receiptTarget =
+        agent && target === "agent" ? agent.role || agent.agent : scope.label;
+      actions.toast(
+        `Feedback sent to ${receiptTarget} on ${receiptPlan}.`,
+        "success",
+        { label: "View ledger", event: "noop" },
+      );
+      actions.live(`Feedback saved for ${receiptTarget} on ${receiptPlan}.`);
+      drafts.delete(draftKey);
       setText("");
       setBinding(false);
       onSent?.();
-    } catch {
-      actions.toast("Could not send feedback.", "danger");
+    } catch (failure) {
+      const status = failure instanceof ApiFailure ? failure.status : 0;
+      const message =
+        status > 0
+          ? `Feedback was not saved: the workspace server returned ${status}. Nothing was sent. Try again, or record it from the terminal with grogu plan steer.`
+          : "Feedback was not saved: the workspace server could not be reached. Nothing was sent. Try again, or record it from the terminal with grogu plan steer.";
+      setError(message);
+      actions.live(message);
     }
   }
 
   return (
     <div className="feedback-composer">
       <div className="fc-target" role="radiogroup" aria-label="Feedback target">
-        {targets.map((t) => (
+        {targets.map((item) => (
           <button
-            key={t.value}
+            key={item.value}
             type="button"
             role="radio"
-            aria-checked={target === t.value}
-            disabled={!t.enabled}
-            className={`segmented-item${target === t.value ? " is-active" : ""}`}
-            onClick={() => setTarget(t.value)}
+            aria-checked={target === item.value}
+            disabled={!item.enabled}
+            className={`segmented-item${target === item.value ? " is-active" : ""}`}
+            onClick={() => {
+              setTarget(item.value);
+              setBinding(false);
+              setError(null);
+            }}
           >
-            {t.label}
+            {item.label}
           </button>
         ))}
       </div>
@@ -103,8 +116,16 @@ export function FeedbackComposer({
         className="fc-textarea"
         rows={3}
         value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder={prompt[target]}
+        autoFocus
+        onChange={(event) => {
+          setText(event.target.value);
+          drafts.set(draftKey, event.target.value);
+        }}
+        placeholder={
+          nudge
+            ? "What should this agent know about the current blocker?"
+            : "What should this scope know?"
+        }
         aria-label="Feedback message"
       />
 
@@ -112,28 +133,92 @@ export function FeedbackComposer({
         <label className="switch">
           <input
             type="checkbox"
-            checked={binding}
-            onChange={(e) => setBinding(e.target.checked)}
+            checked={activeBinding}
+            disabled={!bindingAllowed}
+            onChange={(event) => setBinding(event.target.checked)}
           />
           <span className="switch-track" aria-hidden="true" />
-          <span className="switch-label">{binding ? "Binding · closes the next gate" : "Advisory"}</span>
+          <span className="switch-label">
+            {activeBinding ? "Binding" : "Advisory"}
+          </span>
         </label>
-        {binding ? (
-          <p className="fc-binding-explain">
-            The target's next gate stays blocked until they acknowledge this. You can cancel or
-            replace it any time.
-          </p>
-        ) : null}
+        <p className="fc-consequence">
+          {activeBinding && capability
+            ? bindingConsequence(capability.consequence, plan)
+            : bindingAllowed
+              ? `Advisory. Saved for ${scope.label}. It does not close any gate.`
+              : `Advisory. Saved for ${scope.label}. It does not close any gate. Binding is unavailable for this target.`}
+        </p>
       </div>
 
+      {error ? (
+        <p className="fc-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
       <div className="fc-footer">
-        <button type="button" className="btn btn-text" onClick={() => onCancel?.()}>
+        <button type="button" className="btn btn-text" onClick={onCancel}>
           Cancel
         </button>
-        <button type="button" className="btn btn-primary" disabled={!canSend} onClick={() => void send()}>
-          {binding ? "Send as binding" : "Send"}
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!canSend}
+          onClick={() => void send()}
+        >
+          {activeBinding ? "Send as binding" : "Send"}
         </button>
       </div>
     </div>
   );
+}
+
+function scopeFor(
+  target: TargetKind,
+  agent: AgentRow | null,
+  plan: string,
+  role: Role,
+  audience: string,
+): FeedbackScope {
+  if (target === "agent" && agent) {
+    return {
+      kind: "agent",
+      agent_key: agent.agent_key,
+      label: `${agent.role || "agent"} ${agent.agent}`,
+    };
+  }
+  if (target === "plan") {
+    return { kind: "plan", plan, label: `everyone on ${plan}` };
+  }
+  return { kind: "role", role, label: `${audience} on ${plan}` };
+}
+
+function findCapability(
+  capabilities: FeedbackCapability[],
+  target: TargetKind,
+  plan: string,
+  role: Role,
+): FeedbackCapability | undefined {
+  const scope = target;
+  return capabilities.find(
+    (capability) =>
+      capability.plan === plan &&
+      capability.scope === scope &&
+      (scope !== "role" || capability.role === role),
+  );
+}
+
+function bindingConsequence(
+  consequence: FeedbackConsequence,
+  plan: string,
+): string {
+  if (consequence.requires_replan || consequence.release === "replan") {
+    return `Binding. Requires replan for ${plan}; release follows the recorded replan consequence.`;
+  }
+  const gates = consequence.gates.map((gate) => `${gate} gate`).join(", ");
+  if (consequence.release === "acknowledgement_or_withdrawal") {
+    return `Binding. Closes the ${gates || "recorded gate"} for ${plan} until acknowledgement or withdrawal.`;
+  }
+  return `Binding. Applies the recorded ${gates || "gate"} consequence for ${plan}.`;
 }

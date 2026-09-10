@@ -200,6 +200,12 @@ export function buildInitialState() {
     agent("a-6", "designer", "", "p-fixture-heavy", "error", now - 90_000, { action: "budget exceeded", error: "budget exceeded", errcode: "budget_exceeded", rev: "r0031" }),
     agent("a-7", "engineer", "integration", "p-fixture-heavy", "waiting", now - 60_000, { action: "awaiting feedback", rev: "r0031", unread: 1 }),
   ];
+  for (const a of agents) {
+    a.session_key = `session-${a.agent_key}`;
+    a.root_session_key = "session-a-4";
+    a.parent_agent_key = a.agent_key === "a-4" ? null : "a-4";
+    a.lineage_status = a.agent_key === "a-4" ? "root" : "recorded";
+  }
 
   // Feedback (5) with delivery states + gate bindings.
   const feedback = [

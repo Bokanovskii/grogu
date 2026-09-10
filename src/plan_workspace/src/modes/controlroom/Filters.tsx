@@ -1,127 +1,223 @@
-import type { AgentBadge, AgentRow, Role } from "../../api/types";
+import type {
+  Activity,
+  AgentRow,
+  Connection,
+  Lifecycle,
+  Role,
+} from "../../api/types";
 import { Chip } from "../../shell/ui";
-import { BADGE_META } from "./badges";
-import { type ControlFilters, distinct, type FreshBucket } from "./controlFilters";
+import {
+  ACTIVITY_META,
+  CONNECTION_LABEL,
+  LIFECYCLE_META,
+  blockerCount,
+  waitsOnUser,
+} from "./presentation";
+import {
+  type AttentionFilter,
+  type ControlFilters,
+  distinct,
+} from "./controlFilters";
 
-const ROLES: Role[] = ["architect", "designer", "engineer", "tester", "reviewer", "supervisor"];
-const STATES: AgentBadge[] = [
-  "live",
-  "idle",
-  "stuck",
+const ROLES: Role[] = [
+  "architect",
+  "designer",
+  "engineer",
+  "tester",
+  "reviewer",
+  "supervisor",
+];
+const LIFECYCLES: Lifecycle[] = [
+  "registered",
+  "running",
   "finished",
-  "disconnected",
-  "error",
-  "waiting",
+  "failed",
+  "cancelled",
+  "unknown",
 ];
-const FRESH: { value: FreshBucket; label: string }[] = [
-  { value: "live", label: "Live · <60 s" },
-  { value: "idle", label: "Idle · 1–5 m" },
-  { value: "stale", label: "Stale · 5–15 m" },
-  { value: "dead", label: "Dead · >15 m" },
+const ACTIVITIES: Activity[] = [
+  "active",
+  "quiet",
+  "possibly_stuck",
+  "blocked",
+  "unknown",
+];
+const CONNECTIONS: Connection[] = ["live", "stale", "disconnected", "unknown"];
+const ATTENTION: { value: AttentionFilter; label: string }[] = [
+  { value: "waiting", label: "Waiting on you" },
+  { value: "blockers", label: "Blockers" },
+  { value: "failures", label: "Failures" },
+  { value: "unread", label: "Unread steering" },
 ];
 
-function toggle<T>(list: T[], v: T): T[] {
-  return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
+function toggle<T>(list: T[], value: T): T[] {
+  return list.includes(value)
+    ? list.filter((item) => item !== value)
+    : [...list, value];
 }
 
 export function Filters({
   agents,
   filters,
+  waitingKeys,
   onChange,
 }: {
   agents: AgentRow[];
   filters: ControlFilters;
-  onChange: (f: ControlFilters) => void;
+  waitingKeys: Set<string>;
+  onChange: (filters: ControlFilters) => void;
 }) {
-  const roleCount = (r: Role) => agents.filter((a) => a.role === r).length;
-  const plans = distinct(agents.map((a) => a.plan).filter(Boolean));
-  const workstreams = distinct(agents.map((a) => a.workstream).filter(Boolean));
-  const stateCount = (s: AgentBadge) => agents.filter((a) => a.badge === s).length;
+  const plans = distinct(agents.map((agent) => agent.plan).filter(Boolean));
+  const workstreams = distinct(
+    agents.map((agent) => agent.workstream).filter(Boolean),
+  );
+  const attentionCount = (value: AttentionFilter) =>
+    agents.filter((agent) => {
+      if (value === "waiting") {
+        return waitingKeys.has(agent.agent_key) || waitsOnUser(agent);
+      }
+      if (value === "blockers") return blockerCount(agent) > 0;
+      if (value === "failures") return agent.failures.length > 0;
+      return agent.steering.unread > 0;
+    }).length;
 
   return (
     <div className="cr-filters">
-      <section className="filter-group" aria-label="Filter by role">
-        <h3 className="filter-heading">Roles</h3>
-        <div className="filter-chips">
-          {ROLES.map((r) => (
-            <Chip
-              key={r}
-              tone="neutral"
-              onClick={() => onChange({ ...filters, roles: toggle(filters.roles, r) })}
-              active={filters.roles.includes(r)}
-              count={roleCount(r) || undefined}
-            >
-              {r}
-            </Chip>
-          ))}
-        </div>
-      </section>
+      <FilterGroup title="Role">
+        {ROLES.map((role) => (
+          <Chip
+            key={role}
+            onClick={() =>
+              onChange({ ...filters, roles: toggle(filters.roles, role) })
+            }
+            active={filters.roles.includes(role)}
+            count={agents.filter((agent) => agent.role === role).length || undefined}
+          >
+            {role}
+          </Chip>
+        ))}
+      </FilterGroup>
 
       {plans.length > 0 ? (
-        <section className="filter-group" aria-label="Filter by plan">
-          <h3 className="filter-heading">Plans</h3>
-          <div className="filter-chips">
-            {plans.map((p) => (
-              <Chip
-                key={p}
-                onClick={() => onChange({ ...filters, plans: toggle(filters.plans, p) })}
-                active={filters.plans.includes(p)}
-              >
-                {p}
-              </Chip>
-            ))}
-          </div>
-        </section>
+        <FilterGroup title="Plan">
+          {plans.map((plan) => (
+            <Chip
+              key={plan}
+              onClick={() =>
+                onChange({ ...filters, plans: toggle(filters.plans, plan) })
+              }
+              active={filters.plans.includes(plan)}
+            >
+              {plan}
+            </Chip>
+          ))}
+        </FilterGroup>
       ) : null}
 
       {workstreams.length > 0 ? (
-        <section className="filter-group" aria-label="Filter by workstream">
-          <h3 className="filter-heading">Workstreams</h3>
-          <div className="filter-chips">
-            {workstreams.map((w) => (
-              <Chip
-                key={w}
-                onClick={() => onChange({ ...filters, workstreams: toggle(filters.workstreams, w) })}
-                active={filters.workstreams.includes(w)}
-              >
-                {w}
-              </Chip>
-            ))}
-          </div>
-        </section>
+        <FilterGroup title="Workstream">
+          {workstreams.map((workstream) => (
+            <Chip
+              key={workstream}
+              onClick={() =>
+                onChange({
+                  ...filters,
+                  workstreams: toggle(filters.workstreams, workstream),
+                })
+              }
+              active={filters.workstreams.includes(workstream)}
+            >
+              {workstream}
+            </Chip>
+          ))}
+        </FilterGroup>
       ) : null}
 
-      <section className="filter-group" aria-label="Filter by state">
-        <h3 className="filter-heading">State</h3>
-        <div className="filter-chips">
-          {STATES.map((s) => (
-            <Chip
-              key={s}
-              glyph={BADGE_META[s].glyph}
-              onClick={() => onChange({ ...filters, states: toggle(filters.states, s) })}
-              active={filters.states.includes(s)}
-              count={stateCount(s) || undefined}
-            >
-              {BADGE_META[s].word}
-            </Chip>
-          ))}
-        </div>
-      </section>
+      <FilterGroup title="Lifecycle">
+        {LIFECYCLES.map((lifecycle) => (
+          <Chip
+            key={lifecycle}
+            glyph={LIFECYCLE_META[lifecycle].glyph}
+            onClick={() =>
+              onChange({
+                ...filters,
+                lifecycles: toggle(filters.lifecycles, lifecycle),
+              })
+            }
+            active={filters.lifecycles.includes(lifecycle)}
+          >
+            {LIFECYCLE_META[lifecycle].label}
+          </Chip>
+        ))}
+      </FilterGroup>
 
-      <section className="filter-group" aria-label="Filter by freshness">
-        <h3 className="filter-heading">Freshness</h3>
-        <div className="filter-chips">
-          {FRESH.map((b) => (
-            <Chip
-              key={b.value}
-              onClick={() => onChange({ ...filters, fresh: toggle(filters.fresh, b.value) })}
-              active={filters.fresh.includes(b.value)}
-            >
-              {b.label}
-            </Chip>
-          ))}
-        </div>
-      </section>
+      <FilterGroup title="Activity">
+        {ACTIVITIES.map((activity) => (
+          <Chip
+            key={activity}
+            glyph={ACTIVITY_META[activity].glyph}
+            onClick={() =>
+              onChange({
+                ...filters,
+                activities: toggle(filters.activities, activity),
+              })
+            }
+            active={filters.activities.includes(activity)}
+          >
+            {ACTIVITY_META[activity].label}
+          </Chip>
+        ))}
+      </FilterGroup>
+
+      <FilterGroup title="Freshness">
+        {CONNECTIONS.map((connection) => (
+          <Chip
+            key={connection}
+            onClick={() =>
+              onChange({
+                ...filters,
+                connections: toggle(filters.connections, connection),
+              })
+            }
+            active={filters.connections.includes(connection)}
+          >
+            {CONNECTION_LABEL[connection]}
+          </Chip>
+        ))}
+      </FilterGroup>
+
+      <FilterGroup title="Attention">
+        {ATTENTION.map(({ value, label }) => (
+          <Chip
+            key={value}
+            onClick={() =>
+              onChange({
+                ...filters,
+                attention: toggle(filters.attention, value),
+              })
+            }
+            active={filters.attention.includes(value)}
+            count={attentionCount(value) || undefined}
+          >
+            {label}
+          </Chip>
+        ))}
+      </FilterGroup>
     </div>
+  );
+}
+
+function FilterGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="filter-group" aria-label={`Filter by ${title.toLowerCase()}`}>
+      <h3 className="filter-heading">{title}</h3>
+      <div className="filter-chips">{children}</div>
+    </section>
   );
 }
