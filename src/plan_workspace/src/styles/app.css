@@ -989,6 +989,7 @@ code, pre, kbd { font-family: var(--font-mono); }
 }
 
 .cr-topology-node button {
+  position: relative;
   width: 100%;
   display: grid;
   grid-template-columns: minmax(160px, 1.2fr) minmax(130px, 1fr)
@@ -1011,7 +1012,7 @@ code, pre, kbd { font-family: var(--font-mono); }
 
 .cr-topology-branch {
   position: absolute;
-  transform: translateX(-18px);
+  left: calc(var(--space-4) + var(--tree-depth) * 22px - 10px);
   color: var(--neutral-500);
 }
 

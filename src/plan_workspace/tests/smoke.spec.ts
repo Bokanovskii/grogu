@@ -124,6 +124,17 @@ test.describe("boot and shell", () => {
       page.getByRole("heading", { name: "Agent and session topology" }),
     ).toBeVisible();
     await expect(page.locator(".cr-topology-node")).toHaveCount(7);
+    await expect
+      .poll(() =>
+        page.locator(".cr-topology-branch").evaluateAll((branches) =>
+          branches.every(
+            (branch) =>
+              branch.offsetParent instanceof HTMLButtonElement &&
+              branch.offsetParent.closest(".cr-topology") !== null,
+          ),
+        ),
+      )
+      .toBe(true);
     for (const word of ["Running", "Finished", "Failed", "Possibly stuck", "Disconnected"]) {
       await expect(rows.filter({ hasText: word }).first()).toBeVisible();
     }
