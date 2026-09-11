@@ -118,7 +118,7 @@ _PLACEHOLDER_WORDS = frozenset(
     """your my our the some example examples sample samples dummy fake mock
     placeholder redacted changeme change replace insert fill enter here goes
     todo fixme none null nil undefined empty test testing xxx xxxx yyyy zzzz
-    abc123 secret password token key value string me please""".split()
+    abc123 secret password token key value string me please oauth access""".split()
 )
 
 _PLACEHOLDER_SHAPES = re.compile(
@@ -244,13 +244,19 @@ def scan(text: str, *, path: str = "", personal: bool = True) -> list:
                     Finding(SECRET, label, number, _excerpt(match.group(0)), path)
                 )
         for match in _ASSIGNMENT.finditer(line):
-            if _looks_like_a_real_secret(match.group("value")):
+            value = match.group("value")
+            identifier_value = re.sub(r"\\[nrt]$", "", value)
+            if not match.group("quote") and re.fullmatch(
+                r"[A-Za-z_$][A-Za-z0-9_.$\[\]]*", identifier_value
+            ):
+                continue
+            if _looks_like_a_real_secret(value):
                 findings.append(
                     Finding(
                         SECRET,
                         f"hard-coded {match.group('name')}",
                         number,
-                        _excerpt(match.group("value")),
+                        _excerpt(value),
                         path,
                     )
                 )

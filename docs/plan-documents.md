@@ -73,7 +73,8 @@ a warm cache.
 Edit and inspect history:
 
 ```sh
-grogu plan doc node add <id> --kind task --title "..." --stage implementation
+grogu plan doc node add <id> --kind task --title "..." --stage implementation \
+  [--body-file PATH|-] [--base REV]
 grogu plan doc node set <id> <node-id> [--title T] [--body -] [--attr k=v]
 grogu plan doc node rm <id> <node-id>
 grogu plan doc link <id> <from> <kind> <to>
@@ -113,7 +114,9 @@ grogu plan doc compile <id> [--stage S] [--check]
 Verification checks the immutable log, `HEAD`, materialized partition
 digests, every readable compiler identity, and each compiled artifact against
 the revision declared in its provenance. An unrelated revision does not make
-an unchanged stage artifact stale.
+an unchanged stage artifact stale. Human output prints every partition digest,
+including sealed partitions the role cannot read, so two lint runs can prove an
+unreadable partition stayed byte-identical without exposing its contents.
 
 ## Existing plan and review commands
 

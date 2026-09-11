@@ -429,6 +429,15 @@ class TaskStore:
             raise TaskError(f"{reference!r} matches {len(matches)} tasks: {', '.join(sorted(matches))}")
         return matches[0]
 
+    def current_task(self) -> str:
+        """Return the one task leased by this session, or an empty string."""
+        matches = [
+            task["id"]
+            for task in self.list_tasks()
+            if self.lease_is_mine(self.lease(task["id"]))
+        ]
+        return matches[0] if len(matches) == 1 else ""
+
     # -- reads -------------------------------------------------------------
 
     def load(self, task_id: str) -> dict:

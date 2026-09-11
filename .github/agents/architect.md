@@ -123,6 +123,11 @@ satisfiable. This also means the testing plan carries real weight: it is the
 thing that will catch a plausible-looking implementation that is wrong. Make it
 specific — name the behaviors, the edge cases, the failure modes, and what
 evidence counts as proof. Vague test plans are where this pipeline fails.
+For prose contracts, name a closed list of load-bearing phrases or invariants
+and state when the check terminates. Never require mutation survival for “every
+clause,” “each sentence,” or any other unbounded set: finite tests cannot prove
+that criterion, and repeated defect rounds will only lock wording rather than
+verify behavior.
 
 ## Parallel work
 
