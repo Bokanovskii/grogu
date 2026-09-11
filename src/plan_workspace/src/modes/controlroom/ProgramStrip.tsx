@@ -17,50 +17,63 @@ export function ProgramStrip({
       <h2 id="cr-program-title" className="sr-only">
         Repository program plans
       </h2>
-      <div className="cr-program-strip">
-        {entries.map(([id, plan]) => (
-          <button
-            key={id}
-            type="button"
-            className={`cr-plan-card${selected === id ? " is-selected" : ""}`}
-            aria-pressed={selected === id}
-            onClick={() => onSelect(id)}
-          >
-            <span className="cr-plan-head">
-              <span className="cr-plan-title" title={`${plan.title} (${id})`}>
-                {plan.title}
+      <details className="cr-program-details">
+        <summary>
+          <span>Plans</span>
+          <strong>{entries.length}</strong>
+          <span className="cr-program-current">
+            {selected
+              ? plans[selected]?.title ?? selected
+              : "Browse the repository program"}
+          </span>
+        </summary>
+        <div className="cr-program-strip">
+          {entries.map(([id, plan]) => (
+            <button
+              key={id}
+              type="button"
+              className={`cr-plan-card${selected === id ? " is-selected" : ""}`}
+              aria-pressed={selected === id}
+              onClick={() => onSelect(id)}
+            >
+              <span className="cr-plan-head">
+                <span className="cr-plan-title" title={`${plan.title} (${id})`}>
+                  {plan.title}
+                </span>
               </span>
-            </span>
-            <span className="cr-plan-id" title={id}>
-              Plan {id.slice(-6)}
-            </span>
-            <span className="cr-plan-meta">
-              {plan.status ?? "Status unavailable"}
-              {plan.current_revision ? ` · ${plan.current_revision}` : " · revision unavailable"}
-            </span>
-            <span className="cr-plan-stages">{stageSummary(plan)}</span>
-            <span className="cr-plan-gate">{gateText(plan)}</span>
-            <span className="cr-plan-counts">
-              {countLabel("Defects", plan.open_defects, "open")} ·{" "}
-              {countLabel("Amendments", plan.open_amendments, "open")}
-            </span>
-            <span className="cr-plan-counts">
-              {plan.completion
-                ? `${plan.completion.complete} of ${plan.completion.total} stages complete`
-                : "Stage completion unavailable"}{" "}
-              · {plan.agents} agent{plan.agents === 1 ? "" : "s"} ·{" "}
-              {plan.waiting_on_you == null
-                ? "waiting count unavailable"
-                : `${plan.waiting_on_you} waiting on you`}
-            </span>
-          </button>
-        ))}
-        {entries.length === 0 ? (
-          <div className="cr-plan-unavailable" role="status">
-            Plan summary unavailable.
-          </div>
-        ) : null}
-      </div>
+              <span className="cr-plan-id" title={id}>
+                Plan {id.slice(-6)}
+              </span>
+              <span className="cr-plan-meta">
+                {plan.status ?? "Status unavailable"}
+                {plan.current_revision
+                  ? ` · ${plan.current_revision}`
+                  : " · revision unavailable"}
+              </span>
+              <span className="cr-plan-stages">{stageSummary(plan)}</span>
+              <span className="cr-plan-gate">{gateText(plan)}</span>
+              <span className="cr-plan-counts">
+                {countLabel("Defects", plan.open_defects, "open")} ·{" "}
+                {countLabel("Amendments", plan.open_amendments, "open")}
+              </span>
+              <span className="cr-plan-counts">
+                {plan.completion
+                  ? `${plan.completion.complete} of ${plan.completion.total} stages complete`
+                  : "Stage completion unavailable"}{" "}
+                · {plan.agents} agent{plan.agents === 1 ? "" : "s"} ·{" "}
+                {plan.waiting_on_you == null
+                  ? "waiting count unavailable"
+                  : `${plan.waiting_on_you} waiting on you`}
+              </span>
+            </button>
+          ))}
+          {entries.length === 0 ? (
+            <div className="cr-plan-unavailable" role="status">
+              Plan summary unavailable.
+            </div>
+          ) : null}
+        </div>
+      </details>
     </section>
   );
 }

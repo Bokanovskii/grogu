@@ -40,11 +40,12 @@ export function FlowTopology({
               style={{ "--tree-depth": depth } as React.CSSProperties}
             >
               <button type="button" onClick={() => onSelect(agent)}>
-                <span className="cr-topology-branch" aria-hidden="true">
-                  {depth > 0 ? "↳" : "●"}
-                </span>
+                {depth > 0 ? (
+                  <span className="cr-topology-branch" aria-hidden="true">
+                    ↳
+                  </span>
+                ) : null}
                 <strong>{agent.agent}</strong>
-                <span>{agent.session_key ?? "session unavailable"}</span>
                 <span>
                   {lifecycle.label} · {activity.label}
                 </span>
@@ -52,6 +53,9 @@ export function FlowTopology({
                   {agent.plan_title ?? agent.plan} · {agent.workstream || "root"}
                 </span>
                 <span>{lastSafeAction(agent, now)}</span>
+                <span className="cr-topology-session">
+                  {agent.session_key ?? "session unavailable"}
+                </span>
                 {cyclic ? <span className="tone-danger">Lineage cycle</span> : null}
               </button>
             </li>

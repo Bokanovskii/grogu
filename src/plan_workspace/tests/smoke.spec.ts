@@ -118,12 +118,23 @@ test.describe("boot and shell", () => {
     await openApp(page);
     await page.locator(".mode-tab-control").click();
     await expect(page.locator(".control-room")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Expand Filters panel" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Expand Agent timeline panel" }),
+    ).toBeVisible();
     const rows = page.locator("[data-control-agent-row]:visible");
     await expect(rows).toHaveCount(7);
+    for (const word of ["Running", "Finished", "Failed", "Possibly stuck", "Disconnected"]) {
+      await expect(rows.filter({ hasText: word }).first()).toBeVisible();
+    }
+    await page.getByRole("tab", { name: "Topology", exact: true }).click();
     await expect(
       page.getByRole("heading", { name: "Agent and session topology" }),
     ).toBeVisible();
     await expect(page.locator(".cr-topology-node")).toHaveCount(7);
+    await expect(page.locator(".cr-topology-branch", { hasText: "●" })).toHaveCount(0);
     await expect
       .poll(() =>
         page.locator(".cr-topology-branch").evaluateAll((branches) =>
@@ -135,18 +146,20 @@ test.describe("boot and shell", () => {
         ),
       )
       .toBe(true);
-    for (const word of ["Running", "Finished", "Failed", "Possibly stuck", "Disconnected"]) {
-      await expect(rows.filter({ hasText: word }).first()).toBeVisible();
-    }
+    await page
+      .getByRole("button", { name: "Expand Agent timeline panel" })
+      .click();
     await expect(page.locator(".audit-provenance")).toContainText(
       "Prompts, model reasoning, tool arguments and tool results are never recorded",
     );
+    await page.getByRole("tab", { name: "Document", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Outline" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Comments" })).toBeVisible();
   });
 
   test("Open timeline expands, focuses, and loads the audit panel", async ({ page }) => {
     await openApp(page);
     await page.locator(".mode-tab-control").click();
-    await page.getByRole("button", { name: "Collapse Agent timeline panel" }).click();
     await expect(page.getByRole("button", { name: "Expand Agent timeline panel" })).toBeVisible();
     await page.route(/\/api\/control\/[^/?]+$/, async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -221,6 +234,7 @@ test.describe("boot and shell", () => {
   test("selected-plan filters and timeline drawer never overlap program content", async ({ page }) => {
     await openApp(page);
     await page.locator(".mode-tab-control").click();
+    await page.locator(".cr-program-details > summary").click();
     await page.locator(".cr-plan-card").first().click();
     await expect(page.locator(".cr-active-filters")).toBeVisible();
     const filters = await page.locator(".cr-active-filters").boundingBox();

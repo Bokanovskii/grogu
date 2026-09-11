@@ -63,6 +63,11 @@ export function ControlRoom() {
   const [showSkeleton, setShowSkeleton] = useState(false);
   const [focusIndex, setFocusIndex] = useState(0);
   const [focusedAgent, setFocusedAgent] = useState<string | null>(null);
+  const [surface, setSurface] = useState<"agents" | "topology" | "activity">(
+    "agents",
+  );
+  const [filtersCollapsed, setFiltersCollapsed] = useState(true);
+  const [timelineCollapsed, setTimelineCollapsed] = useState(true);
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
   const returnAgent = useRef<string | null>(null);
 
@@ -115,7 +120,7 @@ export function ControlRoom() {
     returnAgent.current = agent.agent_key;
     setFocusedAgent(agent.agent_key);
     control.selectAgent(agent.agent_key);
-    actions.patchPanels({ rightCollapsed: false });
+    setTimelineCollapsed(false);
     actions.live(`Opened audit timeline for ${agent.role || "agent"} ${agent.agent}`);
     window.setTimeout(() => {
       document.getElementById("control-agents")?.focus();
@@ -208,6 +213,10 @@ export function ControlRoom() {
       leftTitle="Filters"
       right={<AuditDrawer now={now} onEscape={returnFromTimeline} />}
       rightTitle="Agent timeline"
+      leftCollapsed={filtersCollapsed}
+      rightCollapsed={timelineCollapsed}
+      onLeftCollapsedChange={setFiltersCollapsed}
+      onRightCollapsedChange={setTimelineCollapsed}
     >
       <div className="control-room">
         <ScopeBar
@@ -217,10 +226,8 @@ export function ControlRoom() {
           sampledAt={snapshot?.sampled_at ?? snapshot?.fresh_as_of ?? null}
           now={now}
           limits={snapshot?.limits?.length ? snapshot.limits : PRIVACY_LIMITS}
-          density={density}
           activeChips={activeChips}
           onScope={control.setScope}
-          onDensity={(value) => actions.patchPanels({ density: value })}
           onClear={() => setFilters(EMPTY_FILTERS)}
         />
 
@@ -237,11 +244,15 @@ export function ControlRoom() {
           />
         ) : null}
 
-        <FlowTopology
-          agents={agents}
-          topology={snapshot?.topology}
-          now={now}
-          onSelect={openTimeline}
+        <SurfaceBar
+          surface={surface}
+          density={density}
+          agents={agents.length}
+          events={snapshot?.recent_events?.length ?? 0}
+          filtersActive={filtersActive(filters)}
+          onSurface={setSurface}
+          onDensity={(value) => actions.patchPanels({ density: value })}
+          onOpenFilters={() => setFiltersCollapsed(false)}
         />
 
         <BoardBands
@@ -251,7 +262,17 @@ export function ControlRoom() {
           onRetry={() => void control.refresh()}
         />
 
-        <section className="cr-agent-region" aria-labelledby="cr-agents-title">
+        {surface === "topology" ? (
+          <FlowTopology
+            agents={agents}
+            topology={snapshot?.topology}
+            now={now}
+            onSelect={openTimeline}
+          />
+        ) : null}
+
+        {surface === "agents" ? (
+          <section className="cr-agent-region" aria-labelledby="cr-agents-title">
           <h2 id="cr-agents-title" className="cr-agents-title" tabIndex={-1}>
             Agents
             {allAgents.length > 0 ? (
@@ -354,10 +375,11 @@ export function ControlRoom() {
               onAnnounce={actions.live}
             />
           )}
-        </section>
+          </section>
+        ) : null}
 
-        {snapshot ? (
-          <>
+        {snapshot && surface === "activity" ? (
+          <div className="cr-activity-surface">
             <RecentEvents
               events={snapshot.recent_events ?? []}
               status={snapshot.events_status ?? "unavailable"}
@@ -370,7 +392,7 @@ export function ControlRoom() {
               }}
             />
             <UnregisteredSessions snapshot={snapshot} now={now} />
-          </>
+          </div>
         ) : null}
       </div>
     </ModeLayout>
@@ -384,10 +406,8 @@ function ScopeBar({
   sampledAt,
   now,
   limits,
-  density,
   activeChips,
   onScope,
-  onDensity,
   onClear,
 }: {
   repository: string;
@@ -396,10 +416,8 @@ function ScopeBar({
   sampledAt: number | null;
   now: number;
   limits: ControlLimit[];
-  density: "grid" | "list";
   activeChips: { label: string; clear: () => void }[];
   onScope: (scope: ControlScope) => void;
-  onDensity: (density: "grid" | "list") => void;
   onClear: () => void;
 }) {
   return (
@@ -435,18 +453,6 @@ function ScopeBar({
             </ul>
           </div>
         </details>
-        <span className="cr-scope-item cr-density">
-          <span className="cr-scope-label">Density</span>
-          <SegmentedControl
-            ariaLabel="Density"
-            value={density}
-            onChange={onDensity}
-            options={[
-              { value: "list", label: "Rows" },
-              { value: "grid", label: "Cards" },
-            ]}
-          />
-        </span>
       </div>
       {activeChips.length > 0 ? (
         <div className="cr-active-filters" aria-label="Active filters">
@@ -470,6 +476,55 @@ function ScopeBar({
         </div>
       ) : null}
     </header>
+  );
+}
+
+function SurfaceBar({
+  surface,
+  density,
+  agents,
+  events,
+  filtersActive,
+  onSurface,
+  onDensity,
+  onOpenFilters,
+}: {
+  surface: "agents" | "topology" | "activity";
+  density: "grid" | "list";
+  agents: number;
+  events: number;
+  filtersActive: boolean;
+  onSurface: (surface: "agents" | "topology" | "activity") => void;
+  onDensity: (density: "grid" | "list") => void;
+  onOpenFilters: () => void;
+}) {
+  return (
+    <div className="cr-surfacebar">
+      <SegmentedControl
+        ariaLabel="Control room view"
+        value={surface}
+        onChange={onSurface}
+        options={[
+          { value: "agents", label: `Agents · ${agents}` },
+          { value: "topology", label: "Topology" },
+          { value: "activity", label: `Activity · ${events}` },
+        ]}
+      />
+      <button type="button" className="btn-secondary-text" onClick={onOpenFilters}>
+        {filtersActive ? "Edit filters" : "Filters"}
+      </button>
+      {surface === "agents" ? (
+        <SegmentedControl
+          ariaLabel="Density"
+          value={density}
+          onChange={onDensity}
+          options={[
+            { value: "list", label: "Rows" },
+            { value: "grid", label: "Cards" },
+          ]}
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -498,6 +553,10 @@ function BoardBands({
       agent.events_status === "disconnected" ||
       agent.event_source_registered === false,
   );
+  const limitedSources = (snapshot.source_coverage ?? []).filter(
+    (coverage) =>
+      coverage.status !== "available" && coverage.status !== "empty",
+  );
   return (
     <>
       {stalled ? (
@@ -511,27 +570,30 @@ function BoardBands({
           </button>
         </div>
       ) : null}
-      {unavailableAgents.length > 0 ? (
-        <div className="cr-band cr-band-source" role="status">
-          Timeline activity unavailable for {unavailableAgents.length} of{" "}
-          {snapshot.agents.length} agents. Their lifecycle remains independent and
-          Unknown unless a supported run source reported it.
-        </div>
-      ) : null}
-      {snapshot.source_coverage?.some(
-        (coverage) =>
-          coverage.status !== "available" && coverage.status !== "empty",
-      ) ? (
-        <div className="cr-source-summary">
-          Source coverage is limited:{" "}
-          {snapshot.source_coverage
-            .filter(
-              (coverage) =>
-                coverage.status !== "available" && coverage.status !== "empty",
-            )
-            .map((coverage) => `${coverage.source} ${coverage.status.replace(/_/g, " ")}`)
-            .join(" · ")}
-        </div>
+      {unavailableAgents.length > 0 || limitedSources.length > 0 ? (
+        <details className="cr-coverage-band">
+          <summary>
+            Telemetry coverage limited
+            {unavailableAgents.length > 0
+              ? ` · ${unavailableAgents.length} of ${snapshot.agents.length} agents`
+              : ""}
+          </summary>
+          <p>
+            Missing timelines do not imply idle or stopped agents. Lifecycle stays
+            Unknown unless a supported run source reports it.
+          </p>
+          {limitedSources.length > 0 ? (
+            <p>
+              Sources:{" "}
+              {limitedSources
+                .map(
+                  (coverage) =>
+                    `${coverage.source} ${coverage.status.replace(/_/g, " ")}`,
+                )
+                .join(" · ")}
+            </p>
+          ) : null}
+        </details>
       ) : null}
     </>
   );

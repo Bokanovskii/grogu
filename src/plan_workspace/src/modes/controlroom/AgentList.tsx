@@ -174,21 +174,12 @@ export function AgentList({
           </caption>
           <thead>
             <tr>
-              {header("state", "State", "cr-col-state")}
-              {header("activity", "Activity", "cr-col-activity")}
-              {header("freshness", "Fresh", "cr-col-fresh")}
+              {header("state", "Status", "cr-col-status")}
               {header("agent", "Agent", "cr-col-agent")}
               {header("role", "Role", "cr-col-role")}
-              {header("plan", "Plan", "cr-col-plan")}
-              <th scope="col" className="cr-col-stage">Stage</th>
-              {header("workstream", "Workstream", "cr-col-workstream")}
-              {header("revision", "Rev", "cr-col-revision")}
-              {header("elapsed", "Elapsed", "cr-col-elapsed")}
-              <th scope="col" className="cr-col-action">Last safe action</th>
-              {header("blockers", "⚑", "cr-col-counter")}
-              {header("failures", "✗", "cr-col-counter")}
-              {header("unread", "✉", "cr-col-counter")}
-              <th scope="col" className="cr-col-coverage">Cov</th>
+              {header("plan", "Assignment", "cr-col-assignment")}
+              {header("elapsed", "Last activity", "cr-col-action")}
+              {header("blockers", "Attention", "cr-col-attention")}
               <th scope="col" className="cr-col-actions">
                 <span className="sr-only">Actions</span>
               </th>
@@ -221,9 +212,9 @@ export function AgentList({
                   }}
                   onKeyDown={(event) => onRowKey(event, agent, index)}
                 >
-                  <td className="cr-col-state">
+                  <td className="cr-col-status">
                     <StateValue
-                      glyph={lifecycle.glyph}
+                      glyph={lifecycle.glyph === "●" ? "" : lifecycle.glyph}
                       label={lifecycle.label}
                       tone={lifecycle.tone}
                     />
@@ -233,36 +224,28 @@ export function AgentList({
                         agent. Recent Grogu commands are not lifecycle evidence.
                       </span>
                     ) : null}
+                    <span className="cr-cell-meta">
+                      {activity.label} · {freshnessText(agent, now)}
+                    </span>
                   </td>
-                  <td className="cr-col-activity">
-                    <StateValue
-                      glyph={activity.glyph}
-                      label={activity.label}
-                      tone={activity.tone}
-                    />
-                  </td>
-                  <td className="cr-col-fresh">{freshnessText(agent, now)}</td>
                   <td className="cr-col-agent" title={agent.agent}>
                     {agent.agent}
                   </td>
                   <td className="cr-col-role">{agent.role || "—"}</td>
-                  <td className="cr-col-plan" title={`${agent.plan_title ?? agent.plan} (${agent.plan})`}>
-                    {agent.plan_title ?? agent.plan}
-                  </td>
-                  <td className="cr-col-stage" title={ownershipText(agent)}>
-                    {ownershipText(agent, true)}
-                  </td>
-                  <td className="cr-col-workstream" title={agent.workstream}>
-                    {agent.workstream || "—"}
-                  </td>
-                  <td className="cr-col-revision" title={revisionText(agent)}>
-                    {revisionText(agent)}
-                  </td>
-                  <td className="cr-col-elapsed" title={elapsedText(agent)}>
-                    {elapsedText(agent)}
+                  <td
+                    className="cr-col-assignment"
+                    title={`${agent.plan_title ?? agent.plan} (${agent.plan}); ${ownershipText(agent)}; ${revisionText(agent)}`}
+                  >
+                    <span>{agent.plan_title ?? agent.plan}</span>
+                    <span className="cr-cell-meta">
+                      {[agent.workstream, ownershipText(agent, true), revisionText(agent)]
+                        .filter((value) => value && value !== "—")
+                        .join(" · ") || "Assignment unavailable"}
+                    </span>
                   </td>
                   <td className="cr-col-action">
                     <span className="cr-last-action">{lastSafeAction(agent, now)}</span>
+                    <span className="cr-cell-meta">{elapsedText(agent)}</span>
                     {agent.recent_events?.length ? (
                       <span className="cr-inline-events" aria-label="Recent events">
                         {agent.recent_events.slice(0, 3).map((event) => (
@@ -273,20 +256,27 @@ export function AgentList({
                       </span>
                     ) : null}
                   </td>
-                  <td className="cr-col-counter" aria-label={`Blockers ${blockerCount(agent)}`}>
-                    ⚑ {blockerCount(agent)}
-                  </td>
-                  <td className="cr-col-counter" aria-label={`Failures ${agent.failures.length}`}>
-                    ✗ {agent.failures.length}
-                  </td>
-                  <td className="cr-col-counter" aria-label={`Unread steering ${agent.steering.unread}`}>
-                    ✉ {agent.steering.unread}
-                  </td>
                   <td
-                    className="cr-col-coverage"
-                    aria-label={`Coverage: lifecycle ${agent.coverage.lifecycle}, tools ${agent.coverage.tools}, outcomes ${agent.coverage.outcomes}`}
+                    className="cr-col-attention"
+                    aria-label={`Blockers ${blockerCount(agent)}, failures ${agent.failures.length}, unread steering ${agent.steering.unread}; coverage ${coverageText(agent)}`}
                   >
-                    {coverageText(agent)}
+                    {blockerCount(agent) ||
+                    agent.failures.length ||
+                    agent.steering.unread ? (
+                      <span className="cr-attention-counts">
+                        {blockerCount(agent) ? (
+                          <span>⚑ {blockerCount(agent)}</span>
+                        ) : null}
+                        {agent.failures.length ? (
+                          <span>✗ {agent.failures.length}</span>
+                        ) : null}
+                        {agent.steering.unread ? (
+                          <span>✉ {agent.steering.unread}</span>
+                        ) : null}
+                      </span>
+                    ) : (
+                      <span className="cr-cell-meta">Clear</span>
+                    )}
                   </td>
                   <td className="cr-col-actions">
                     <RowActions
@@ -371,7 +361,8 @@ function StateValue({
 }) {
   return (
     <span className={`cr-state-value tone-${tone}`}>
-      <span aria-hidden="true">{glyph}</span> {label}
+      {glyph ? <span aria-hidden="true">{glyph} </span> : null}
+      {label}
     </span>
   );
 }
