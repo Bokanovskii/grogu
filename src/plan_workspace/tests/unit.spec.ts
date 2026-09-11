@@ -4,7 +4,8 @@ import { Allocator } from "../src/lib/ids";
 import { diffLines } from "../src/lib/diff";
 import { boundingBox, computeSnap, rectsIntersect, snapToGrid } from "../src/lib/geometry";
 import { computeImpact, findCycles } from "../src/modes/dependencies/graphAlgo";
-import type { PlanEdge } from "../src/api/types";
+import type { PlanEdge, PlanNode } from "../src/api/types";
+import { geometryForStage } from "../src/modes/canvas/canvasModel";
 
 // These exercise the framework-free logic directly, without a browser.
 
@@ -23,6 +24,43 @@ test.describe("patch engine (RFC 6902 subset)", () => {
     expect((next.nodes["task-1"] as { title: string }).title).toBe("A");
     // original is untouched
     expect(g.nodes["task-2"]).toBeUndefined();
+  });
+
+  test.describe("canvas preview layout", () => {
+    test("unplaced stage nodes receive stable non-overlapping geometry", () => {
+      const node = (id: string, order: number): PlanNode => ({
+        id,
+        kind: "task",
+        stage: "implementation",
+        title: id,
+        body: "",
+        attrs: {},
+        order,
+        created_rev: "r0001",
+        updated_rev: "r0001",
+      });
+      const nodes = {
+        "task-1": node("task-1", 1000),
+        "task-2": node("task-2", 2000),
+        "task-3": node("task-3", 3000),
+      };
+      const edges: Record<string, PlanEdge> = {
+        "edge-1": {
+          id: "edge-1",
+          kind: "depends_on",
+          from: "task-2",
+          to: "task-1",
+          attrs: {},
+          created_rev: "r0001",
+        },
+      };
+      const first = geometryForStage(nodes, edges, "implementation");
+      const second = geometryForStage(nodes, edges, "implementation");
+      expect([...first.entries()]).toEqual([...second.entries()]);
+      expect(first.size).toBe(3);
+      expect(first.get("task-2")!.x).toBeGreaterThan(first.get("task-1")!.x);
+      expect(new Set([...first.values()].map((value) => `${value.x}:${value.y}`)).size).toBe(3);
+    });
   });
 
   test("a failed test aborts the whole patch", () => {

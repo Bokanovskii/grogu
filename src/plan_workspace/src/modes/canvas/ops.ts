@@ -3,6 +3,7 @@ import type { EdgeKind, JsonValue, NodeKind, PatchOp, PlanNode } from "../../api
 import { useActions, useApp } from "../../state/store";
 import { Allocator } from "../../lib/ids";
 import { ri, boundingBox, type Rect } from "../../lib/geometry";
+import { geometryForStage } from "./canvasModel";
 
 // Node/edge values are structurally JSON but carry optional fields TypeScript
 // widens to `| undefined`, which JsonValue excludes. J() narrows the intent:
@@ -23,18 +24,31 @@ export function useCanvasOps() {
       .map((s) => s.id)
       .filter((id) => state.nodes[id]);
 
-  const geomOf = (n: PlanNode): Rect =>
-    n.geometry ? { x: n.geometry.x, y: n.geometry.y, w: n.geometry.w, h: n.geometry.h } : { x: 0, y: 0, w: 240, h: 120 };
+  const previewGeometry = () =>
+    geometryForStage(state.nodes, state.edges, state.stage);
+  const geomOf = (n: PlanNode): Rect => {
+    const geometry = n.geometry ?? previewGeometry().get(n.id);
+    return geometry
+      ? { x: geometry.x, y: geometry.y, w: geometry.w, h: geometry.h }
+      : { x: 0, y: 0, w: 240, h: 120 };
+  };
 
   return {
     /** Persist positions from a drag gesture: one revision, integer geometry. */
     moveNodes(moves: { id: string; x: number; y: number }[], label = "move") {
       const ops: PatchOp[] = [];
+      const preview = previewGeometry();
       for (const m of moves) {
         const n = state.nodes[m.id];
-        if (!n?.geometry) continue;
-        if (ri(m.x) === n.geometry.x && ri(m.y) === n.geometry.y) continue;
-        ops.push({ op: "replace", path: `/nodes/${m.id}/geometry`, value: J({ ...n.geometry, x: ri(m.x), y: ri(m.y) }) });
+        if (!n) continue;
+        const geometry = n.geometry ?? preview.get(m.id);
+        if (!geometry) continue;
+        if (ri(m.x) === geometry.x && ri(m.y) === geometry.y && n.geometry) continue;
+        ops.push({
+          op: n.geometry ? "replace" : "add",
+          path: `/nodes/${m.id}/geometry`,
+          value: J({ ...geometry, x: ri(m.x), y: ri(m.y) }),
+        });
       }
       if (ops.length) void actions.writeGesture(ops, label, "workspace", label);
     },
@@ -45,6 +59,7 @@ export function useCanvasOps() {
     dragCommit(moves: { id: string; x: number; y: number }[]) {
       const ops: PatchOp[] = [];
       const alloc = new Allocator(state.counters);
+      const preview = previewGeometry();
       const regions = Object.values(state.nodes).filter(
         (n) =>
           n.kind === "region" &&
@@ -54,12 +69,18 @@ export function useCanvasOps() {
       );
       for (const m of moves) {
         const n = state.nodes[m.id];
-        if (!n?.geometry || n.kind === "region") continue;
-        if (ri(m.x) !== n.geometry.x || ri(m.y) !== n.geometry.y) {
-          ops.push({ op: "replace", path: `/nodes/${m.id}/geometry`, value: J({ ...n.geometry, x: ri(m.x), y: ri(m.y) }) });
+        if (!n || n.kind === "region") continue;
+        const geometry = n.geometry ?? preview.get(m.id);
+        if (!geometry) continue;
+        if (ri(m.x) !== geometry.x || ri(m.y) !== geometry.y || !n.geometry) {
+          ops.push({
+            op: n.geometry ? "replace" : "add",
+            path: `/nodes/${m.id}/geometry`,
+            value: J({ ...geometry, x: ri(m.x), y: ri(m.y) }),
+          });
         }
-        const cx = m.x + n.geometry.w / 2;
-        const cy = m.y + n.geometry.h / 2;
+        const cx = m.x + geometry.w / 2;
+        const cy = m.y + geometry.h / 2;
         const inside = regions.find(
           (r) => cx >= r.geometry!.x && cx <= r.geometry!.x + r.geometry!.w && cy >= r.geometry!.y && cy <= r.geometry!.y + r.geometry!.h,
         );
@@ -84,8 +105,9 @@ export function useCanvasOps() {
 
     nudge(dx: number, dy: number) {
       const ids = selectedNodeIds();
+      const preview = previewGeometry();
       const moves = ids.map((id) => {
-        const g = state.nodes[id]!.geometry!;
+        const g = state.nodes[id]!.geometry ?? preview.get(id)!;
         return { id, x: g.x + dx, y: g.y + dy };
       });
       this.moveNodes(moves, "nudge");
@@ -182,19 +204,25 @@ export function useCanvasOps() {
     zOrder(dir: "front" | "back" | "forward" | "backward") {
       const ids = selectedNodeIds();
       if (!ids.length) return;
+      const preview = previewGeometry();
       const zs = Object.values(state.nodes)
         .filter((n) => n.geometry)
         .map((n) => n.geometry!.z);
       const maxZ = zs.length ? Math.max(...zs) : 0;
       const minZ = zs.length ? Math.min(...zs) : 0;
       const ops: PatchOp[] = ids.map((id) => {
-        const g = state.nodes[id]!.geometry!;
+        const node = state.nodes[id]!;
+        const g = node.geometry ?? preview.get(id)!;
         let z = g.z;
         if (dir === "front") z = maxZ + 1;
         else if (dir === "back") z = minZ - 1;
         else if (dir === "forward") z = g.z + 1;
         else z = g.z - 1;
-        return { op: "replace", path: `/nodes/${id}/geometry`, value: J({ ...g, z }) };
+        return {
+          op: node.geometry ? "replace" : "add",
+          path: `/nodes/${id}/geometry`,
+          value: J({ ...g, z }),
+        };
       });
       void actions.writeGesture(ops, `z-order ${dir}`, "workspace", `z-order ${dir}`);
     },

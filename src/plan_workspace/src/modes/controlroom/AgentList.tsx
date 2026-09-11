@@ -246,8 +246,8 @@ export function AgentList({
                     {agent.agent}
                   </td>
                   <td className="cr-col-role">{agent.role || "—"}</td>
-                  <td className="cr-col-plan" title={agent.plan_title ?? agent.plan}>
-                    {agent.plan}
+                  <td className="cr-col-plan" title={`${agent.plan_title ?? agent.plan} (${agent.plan})`}>
+                    {agent.plan_title ?? agent.plan}
                   </td>
                   <td className="cr-col-stage" title={ownershipText(agent)}>
                     {ownershipText(agent, true)}
@@ -342,7 +342,7 @@ export function AgentList({
                 />
                 <span>{freshnessText(agent, now)}</span>
                 <span>
-                  {agent.role || "—"} · {agent.plan} · {agent.workstream || "—"}
+                  {agent.role || "—"} · {agent.plan_title ?? agent.plan} · {agent.workstream || "—"}
                 </span>
                 <span>{lastSafeAction(agent, now)}</span>
               </div>

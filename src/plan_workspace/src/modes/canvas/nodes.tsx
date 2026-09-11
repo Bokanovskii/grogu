@@ -4,8 +4,9 @@ import type { PlanNode } from "../../api/types";
 import { useActions } from "../../state/store";
 import { NODE_GLYPH, NODE_LABEL } from "../../lib/selection";
 import { ri } from "../../lib/geometry";
+import { humanTitle } from "../../lib/humanize";
 
-function useGeomWriter(node: PlanNode) {
+function useGeomWriter(node: PlanNode, derived = false) {
   const actions = useActions();
   return (x: number, y: number, w: number, h: number) => {
     const geom = {
@@ -16,7 +17,7 @@ function useGeomWriter(node: PlanNode) {
       z: node.geometry?.z ?? 0,
     };
     void actions.writeGesture(
-      [{ op: "replace", path: `/nodes/${node.id}/geometry`, value: geom }],
+      [{ op: derived ? "add" : "replace", path: `/nodes/${node.id}/geometry`, value: geom }],
       `resize ${node.id}`,
       "workspace",
       `resize ${node.id}`,
@@ -27,9 +28,9 @@ function useGeomWriter(node: PlanNode) {
 // A node rendered as a rounded card sized to its content. Top strip: kind glyph,
 // id (monospace), status chip. Body truncated to three lines with a ⋯ toggle.
 export function CardNode({ data, selected, id }: NodeProps) {
-  const node = (data as { node: PlanNode }).node;
+  const { node, derived } = data as { node: PlanNode; derived?: boolean };
   const [expanded, setExpanded] = useState(false);
-  const writeGeom = useGeomWriter(node);
+  const writeGeom = useGeomWriter(node, derived);
   const status = node.attrs?.["status"];
 
   return (
@@ -53,11 +54,11 @@ export function CardNode({ data, selected, id }: NodeProps) {
         <span className="cv-kind-glyph" aria-hidden="true">
           {NODE_GLYPH[node.kind]}
         </span>
-        <span className="cv-card-id">{node.id}</span>
+        <span className="cv-card-kind">{NODE_LABEL[node.kind]}</span>
         {status ? <span className="cv-card-status">{String(status)}</span> : null}
       </div>
       <div className="cv-card-title" id={`cv-title-${id}`}>
-        {node.title || <span className="doc-untitled">Untitled</span>}
+        {humanTitle(node.title) || <span className="doc-untitled">Untitled plan item</span>}
       </div>
       {node.body ? (
         <div className={`cv-card-body${expanded ? " is-expanded" : ""}`}>{node.body}</div>
@@ -84,8 +85,8 @@ export function CardNode({ data, selected, id }: NodeProps) {
 // annotation shape — as that shape drawn in an inset SVG. Freehand stores a
 // polyline of integer points in attrs.points.
 export function RegionNode({ data, selected, id }: NodeProps) {
-  const node = (data as { node: PlanNode }).node;
-  const writeGeom = useGeomWriter(node);
+  const { node, derived } = data as { node: PlanNode; derived?: boolean };
+  const writeGeom = useGeomWriter(node, derived);
   const shape = (node.attrs?.["shape"] as string) ?? "frame";
   const w = node.geometry?.w ?? 240;
   const h = node.geometry?.h ?? 160;

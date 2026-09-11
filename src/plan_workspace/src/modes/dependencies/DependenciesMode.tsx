@@ -14,12 +14,14 @@ import {
 } from "@xyflow/react";
 import { ModeLayout } from "../../shell/ModeLayout";
 import { readableStage, useActions, useApp } from "../../state/store";
-import { stageLabel, type EdgeKind, type NodeKind } from "../../api/types";
+import { stageLabel, type EdgeKind, type NodeKind, type Stage } from "../../api/types";
 import { NODE_GLYPH, NODE_LABEL, EDGE_GLYPH } from "../../lib/selection";
 import { Chip, SegmentedControl } from "../../shell/ui";
 import { SealedStagePanel, UnwrittenStagePanel } from "../../shell/StatePanels";
 import { dagreLayout } from "./layout";
 import { computeImpact, findCycles } from "./graphAlgo";
+import { HUMAN_EDGE_LABEL, humanTitle, markdownSummary } from "../../lib/humanize";
+import { RightPanel } from "../shared/RightPanel";
 
 const DEP_EDGE_KINDS: EdgeKind[] = ["depends_on", "blocks", "refines", "contains", "validates"];
 const ALL_DISPLAY_KINDS: EdgeKind[] = [...DEP_EDGE_KINDS, "diagram_edge"];
@@ -33,16 +35,15 @@ function DepNode({
     shade: string;
     cycle: boolean;
     direction: "TB" | "LR";
-    body: string;
     id: string;
-    expanded: boolean;
-    onToggle: (id: string) => void;
+    summary: string;
+    stage: Stage;
   };
 }) {
   const horizontal = data.direction === "LR";
   return (
     <div
-      className={`dep-node${data.expanded ? " is-expanded" : ""} dep-shade-${data.shade}${
+      className={`dep-node dep-shade-${data.shade}${
         data.cycle ? " dep-cycle" : ""
       }`}
     >
@@ -56,27 +57,11 @@ function DepNode({
       </span>
       <span className="dep-node-copy">
         <span className="dep-node-label">{data.label}</span>
-        {data.expanded ? (
-          <>
-            <span className="dep-node-meta">
-              {data.id} · {NODE_LABEL[data.kind]}
-            </span>
-            {data.body ? <span className="dep-node-body">{data.body}</span> : null}
-          </>
-        ) : null}
+        <span className="dep-node-summary">{data.summary}</span>
+        <span className="dep-node-meta">
+          {NODE_LABEL[data.kind]} · {stageLabel(data.stage)}
+        </span>
       </span>
-      <button
-        type="button"
-        className="dep-node-expand"
-        aria-label={`${data.expanded ? "Collapse" : "Expand"} ${data.label}`}
-        aria-expanded={data.expanded}
-        onClick={(event) => {
-          event.stopPropagation();
-          data.onToggle(data.id);
-        }}
-      >
-        {data.expanded ? "−" : "+"}
-      </button>
       <Handle
         type="source"
         position={horizontal ? Position.Right : Position.Bottom}
@@ -105,7 +90,6 @@ function DependenciesGraph({
   const actions = useActions();
   const flow = useReactFlow();
   const selectedId = state.selection[0]?.id;
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const kindSet = useMemo(() => new Set(edgeKinds), [edgeKinds]);
   const nodeKindSet = useMemo(() => new Set(nodeKinds), [nodeKinds]);
 
@@ -123,7 +107,7 @@ function DependenciesGraph({
         nodeIds.has(edge.from) &&
         nodeIds.has(edge.to),
     );
-    const arranged = dagreLayout(planNodes, displayEdges, direction, expandedIds);
+    const arranged = dagreLayout(planNodes, displayEdges, direction);
     const impact = selectedId ? computeImpact(selectedId, displayEdges, kindSet) : null;
     const cyc = findCycles(displayEdges, kindSet);
     const cycleNodes = new Set(cyc.flat());
@@ -138,21 +122,14 @@ function DependenciesGraph({
         type: "dep",
         position: arranged.positions[n.id] ?? { x: 0, y: 0 },
         data: {
-          label: n.title || n.id,
+          label: humanTitle(n.title) || "Untitled plan item",
           kind: n.kind,
           shade,
           cycle: cycleNodes.has(n.id),
           direction,
-          body: n.body,
+          summary: markdownSummary(n.body || n.title, 145),
           id: n.id,
-          expanded: expandedIds.has(n.id),
-          onToggle: (id: string) =>
-            setExpandedIds((current) => {
-              const next = new Set(current);
-              if (next.has(id)) next.delete(id);
-              else next.add(id);
-              return next;
-            }),
+          stage: n.stage,
         },
         selected: state.selection.some((s) => s.id === n.id),
         draggable: false,
@@ -164,8 +141,8 @@ function DependenciesGraph({
       source: e.from,
       target: e.to,
       type: e.kind === "diagram_edge" ? "straight" : "smoothstep",
-      label: e.kind.replaceAll("_", " "),
-      labelStyle: { fontSize: 11 },
+      label: HUMAN_EDGE_LABEL[e.kind] ?? "relates to",
+      labelStyle: { fontSize: 11, fontWeight: 600 },
       labelBgPadding: [4, 2],
       labelBgBorderRadius: 3,
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
@@ -186,7 +163,6 @@ function DependenciesGraph({
     direction,
     selectedId,
     state.selection,
-    expandedIds,
   ]);
 
   useEffect(() => {
@@ -196,13 +172,17 @@ function DependenciesGraph({
         .then(() => {
           const viewport = flow.getViewport();
           void flow.setViewport(
-            { ...viewport, y: direction === "LR" ? 96 : 72 },
+            {
+              ...viewport,
+              y: direction === "LR" ? 96 : 72,
+              zoom: Math.max(0.65, viewport.zoom),
+            },
             { duration: 140 },
           );
         });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [flow, direction, state.stage, scope, kindSet, nodeKindSet, expandedIds]);
+  }, [flow, direction, state.stage, scope, kindSet, nodeKindSet]);
 
   return (
     <div className="deps-wrap">
@@ -212,15 +192,10 @@ function DependenciesGraph({
         nodeTypes={depNodeTypes}
         nodesDraggable={false}
         nodesConnectable={false}
-        onNodeClick={(_e, n) => actions.select(n.id, "node")}
-        onNodeDoubleClick={(_e, node) =>
-          setExpandedIds((current) => {
-            const next = new Set(current);
-            if (next.has(node.id)) next.delete(node.id);
-            else next.add(node.id);
-            return next;
-          })
-        }
+        onNodeClick={(_e, n) => {
+          actions.select(n.id, "node");
+          actions.patchPanels({ rightTab: "inspector" });
+        }}
         fitView
         fitViewOptions={{ padding: 0.12, minZoom: 0.65, maxZoom: 1.1 }}
         minZoom={0.1}
@@ -263,11 +238,20 @@ export function DependenciesMode() {
   const state = useApp();
   const actions = useActions();
   const status = readableStage(state.stages, state.stage);
-  const [direction, setDirection] = useState<"TB" | "LR">("LR");
-  const [edgeKinds, setEdgeKinds] = useState<EdgeKind[]>(ALL_DISPLAY_KINDS);
+  const [direction, setDirection] = useState<"TB" | "LR">("TB");
+  const [edgeKinds, setEdgeKinds] = useState<EdgeKind[]>([
+    "depends_on",
+    "blocks",
+    "validates",
+  ]);
   const [scope, setScope] = useState<"stage" | "all">("stage");
   const nodeKinds: NodeKind[] = ["goal", "task", "criterion", "risk", "decision", "directive"];
-  const [visibleNodeKinds, setVisibleNodeKinds] = useState<NodeKind[]>(nodeKinds);
+  const [visibleNodeKinds, setVisibleNodeKinds] = useState<NodeKind[]>([
+    "goal",
+    "task",
+    "risk",
+    "decision",
+  ]);
 
   const kindSet = useMemo(() => new Set(edgeKinds), [edgeKinds]);
   const nodeKindSet = useMemo(() => new Set(visibleNodeKinds), [visibleNodeKinds]);
@@ -310,11 +294,18 @@ export function DependenciesMode() {
   const left = (
     <div className="deps-filter">
       <section className="filter-group">
+        <h3 className="filter-heading">Map detail</h3>
+        <p className="deps-filter-help">
+          Starts with the delivery roadmap. Add supporting criteria, directives,
+          and clarification links only when you need them.
+        </p>
+      </section>
+      <section className="filter-group">
         <h3 className="filter-heading">Edge kinds</h3>
         <div className="filter-chips">
           {ALL_DISPLAY_KINDS.map((k) => (
             <Chip key={k} glyph={EDGE_GLYPH[k]} onClick={() => toggleKind(k)} active={edgeKinds.includes(k)}>
-              {k}
+              {HUMAN_EDGE_LABEL[k] ?? k.replaceAll("_", " ")}
             </Chip>
           ))}
         </div>
@@ -369,7 +360,7 @@ export function DependenciesMode() {
         <ul className="legend-list">
           {ALL_DISPLAY_KINDS.map((k) => (
             <li key={k}>
-              <span aria-hidden="true">{EDGE_GLYPH[k]}</span> {k}
+              <span aria-hidden="true">{EDGE_GLYPH[k]}</span> {HUMAN_EDGE_LABEL[k] ?? k.replaceAll("_", " ")}
             </li>
           ))}
           <li>
@@ -427,7 +418,19 @@ export function DependenciesMode() {
     );
 
   return (
-    <ModeLayout left={left} leftTitle="Filter" right={right} rightTitle="Legend" compact>
+    <ModeLayout
+      left={left}
+      leftTitle="Map filters"
+      right={
+        state.selection.length ? (
+          <RightPanel order={["inspector", "comments", "agents"]} round={1} changesRequested={false} />
+        ) : (
+          right
+        )
+      }
+      rightTitle={state.selection.length ? "Plan item" : "How to read this map"}
+      compact
+    >
       {body}
     </ModeLayout>
   );

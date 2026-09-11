@@ -49,7 +49,7 @@ export function FlowTopology({
                   {lifecycle.label} · {activity.label}
                 </span>
                 <span>
-                  {agent.plan} · {agent.workstream || "root"}
+                  {agent.plan_title ?? agent.plan} · {agent.workstream || "root"}
                 </span>
                 <span>{lastSafeAction(agent, now)}</span>
                 {cyclic ? <span className="tone-danger">Lineage cycle</span> : null}

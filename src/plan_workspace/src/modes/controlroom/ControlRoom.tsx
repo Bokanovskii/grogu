@@ -184,6 +184,7 @@ export function ControlRoom() {
     <div className="cr-left">
       <Filters
         agents={allAgents}
+        plans={snapshot?.plans ?? {}}
         filters={filters}
         waitingKeys={waitingKeys}
         onChange={setFilters}
@@ -202,6 +203,7 @@ export function ControlRoom() {
 
   return (
     <ModeLayout
+      compact
       left={left}
       leftTitle="Filters"
       right={<AuditDrawer now={now} onEscape={returnFromTimeline} />}

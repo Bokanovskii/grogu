@@ -14,15 +14,12 @@ export interface Arranged {
 }
 
 const NODE_W = 248;
-const NODE_H = 76;
-const EXPANDED_W = 360;
-const EXPANDED_H = 164;
+const NODE_H = 124;
 
 export function dagreLayout(
   nodes: PlanNode[],
   edges: PlanEdge[],
   direction: "TB" | "LR",
-  expandedIds: ReadonlySet<string> = new Set(),
 ): Arranged {
   const g = new dagre.graphlib.Graph();
   const connectedIds = new Set(
@@ -45,8 +42,8 @@ export function dagreLayout(
   const ids = new Set(sortedConnected.map((node) => node.id));
   for (const n of sortedConnected) {
     g.setNode(n.id, {
-      width: expandedIds.has(n.id) ? EXPANDED_W : NODE_W,
-      height: expandedIds.has(n.id) ? EXPANDED_H : NODE_H,
+      width: NODE_W,
+      height: NODE_H,
     });
   }
   const sortedEdges = [...edges]
@@ -61,8 +58,8 @@ export function dagreLayout(
   const positions: Record<string, { x: number; y: number }> = {};
   for (const n of sortedConnected) {
     const gn = g.node(n.id);
-    const width = expandedIds.has(n.id) ? EXPANDED_W : NODE_W;
-    const height = expandedIds.has(n.id) ? EXPANDED_H : NODE_H;
+    const width = NODE_W;
+    const height = NODE_H;
     // dagre returns centre coordinates; convert to top-left for xyflow.
     positions[n.id] = {
       x: Math.round(gn.x - width / 2),

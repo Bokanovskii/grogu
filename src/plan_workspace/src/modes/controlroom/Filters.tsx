@@ -3,6 +3,7 @@ import type {
   AgentRow,
   Connection,
   Lifecycle,
+  PlanProgramSummary,
   Role,
 } from "../../api/types";
 import { Chip } from "../../shell/ui";
@@ -58,11 +59,13 @@ function toggle<T>(list: T[], value: T): T[] {
 
 export function Filters({
   agents,
+  plans: planSummaries,
   filters,
   waitingKeys,
   onChange,
 }: {
   agents: AgentRow[];
+  plans: Record<string, PlanProgramSummary>;
   filters: ControlFilters;
   waitingKeys: Set<string>;
   onChange: (filters: ControlFilters) => void;
@@ -108,7 +111,7 @@ export function Filters({
               }
               active={filters.plans.includes(plan)}
             >
-              {plan}
+              <span title={plan}>{planSummaries[plan]?.title ?? plan}</span>
             </Chip>
           ))}
         </FilterGroup>

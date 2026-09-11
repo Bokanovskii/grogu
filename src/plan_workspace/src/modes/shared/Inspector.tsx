@@ -6,6 +6,7 @@ import { NODE_GLYPH, NODE_LABEL, EDGE_GLYPH } from "../../lib/selection";
 import { ri } from "../../lib/geometry";
 import { ago } from "../../lib/format";
 import { Button } from "../../shell/ui";
+import { HUMAN_EDGE_LABEL, humanTitle } from "../../lib/humanize";
 
 function CommitInput({
   value,
@@ -61,8 +62,16 @@ function CommitInput({
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(true);
+function Section({
+  title,
+  children,
+  defaultOpen = true,
+}: {
+  title: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <section className="inspector-section">
       <button type="button" className="inspector-section-head" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
@@ -113,7 +122,7 @@ export function Inspector() {
     const to = state.nodes[edge.to];
     return (
       <div className="inspector">
-        <Section title="Identity">
+        <Section title="Technical identity" defaultOpen={false}>
           <dl className="inspector-dl">
             <dt>id</dt>
             <dd>
@@ -130,7 +139,7 @@ export function Inspector() {
         </Section>
         <Section title="Endpoints">
           <p className="inspector-edge">
-            {from?.title ?? edge.from} → {to?.title ?? edge.to}
+            {humanTitle(from?.title ?? edge.from)} → {humanTitle(to?.title ?? edge.to)}
           </p>
         </Section>
         <div className="inspector-delete">
@@ -194,7 +203,7 @@ export function Inspector() {
 
   return (
     <div className="inspector">
-      <Section title="Identity">
+      <Section title="Technical identity" defaultOpen={false}>
         <dl className="inspector-dl">
           <dt>id</dt>
           <dd>
@@ -247,14 +256,14 @@ export function Inspector() {
             {edgesFrom.map((e) => (
               <li key={e.id}>
                 <button type="button" className="rel-link" onClick={() => actions.select(e.to, "node")}>
-                  {e.kind} → {state.nodes[e.to]?.title ?? e.to}
+                  {HUMAN_EDGE_LABEL[e.kind] ?? e.kind} → {humanTitle(state.nodes[e.to]?.title ?? e.to)}
                 </button>
               </li>
             ))}
             {edgesTo.map((e) => (
               <li key={e.id}>
                 <button type="button" className="rel-link" onClick={() => actions.select(e.from, "node")}>
-                  {state.nodes[e.from]?.title ?? e.from} → {e.kind}
+                  {humanTitle(state.nodes[e.from]?.title ?? e.from)} → {HUMAN_EDGE_LABEL[e.kind] ?? e.kind}
                 </button>
               </li>
             ))}
@@ -280,7 +289,7 @@ export function Inspector() {
         </Section>
       ) : null}
 
-      <Section title="Provenance">
+      <Section title="Provenance" defaultOpen={false}>
         <dl className="inspector-dl">
           <dt>created</dt>
           <dd>
@@ -305,7 +314,7 @@ export function Inspector() {
         </p>
       </Section>
 
-      <Section title="Agent activity">
+      <Section title="Agent activity" defaultOpen={false}>
         {activity.length === 0 ? (
           <p className="inspector-muted">No agent activity on this item in the last 24 hours.</p>
         ) : (

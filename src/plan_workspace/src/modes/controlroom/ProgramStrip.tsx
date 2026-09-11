@@ -27,10 +27,12 @@ export function ProgramStrip({
             onClick={() => onSelect(id)}
           >
             <span className="cr-plan-head">
-              <span className="cr-plan-id">{id}</span>
-              <span className="cr-plan-title" title={plan.title}>
+              <span className="cr-plan-title" title={`${plan.title} (${id})`}>
                 {plan.title}
               </span>
+            </span>
+            <span className="cr-plan-id" title={id}>
+              Plan {id.slice(-6)}
             </span>
             <span className="cr-plan-meta">
               {plan.status ?? "Status unavailable"}

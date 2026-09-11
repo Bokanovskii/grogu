@@ -172,3 +172,23 @@ authority rules permit withdrawing.
 
 All routes use the same loopback cookie, token, Origin, Host, CSP, and no-CORS
 envelope as the plan document API.
+
+## Human plan review modes
+
+The workspace presents the typed graph as a plan, not as storage internals:
+
+* **Document** starts with an executive summary, stage counts and a table of
+  contents. Long technical bodies are summarized until the reviewer chooses
+  **Read deep dive**. Internal graph IDs remain under **Technical details**.
+* **Canvas** derives a stable preview layout for stage content that has not yet
+  been positioned. Moving a card or choosing **Tidy** persists geometry; an
+  empty canvas means the stage has no content, not merely no saved layout.
+* **Dependencies** defaults to the delivery roadmap: goals, tasks, decisions
+  and risks connected by human labels such as **needs**, **blocks** and
+  **checks**. Supporting graph layers are opt-in filters. Selecting a card opens
+  the editable inspector; full prose and technical identity do not crowd the
+  card face.
+
+Human-readable titles are primary throughout the shell. Plan IDs, node IDs,
+hashes, file inventories and provenance remain available for precise review,
+but they are secondary details rather than the main navigation language.

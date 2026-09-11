@@ -1,4 +1,5 @@
 import type { NodeKind, PlanNode, Stage } from "../api/types";
+export { humanTitle } from "./humanize";
 
 // Document-order grouping. The compiler lists Directives first, then the rest
 // in a stable documented order. The reading surface mirrors that order.
@@ -20,20 +21,20 @@ export const SECTION_ORDER: NodeKind[] = [
 ];
 
 export const SECTION_LABEL: Record<NodeKind, string> = {
-  directive: "Directives",
-  goal: "Goals",
-  constraint: "Constraints",
-  invariant: "Invariants",
-  decision: "Decisions",
-  criterion: "Criteria",
-  task: "Tasks",
-  risk: "Risks",
-  question: "Questions",
-  note: "Notes",
-  evidence: "Evidence",
-  reference: "References",
-  diagram: "Diagrams",
-  region: "Regions",
+  directive: "Must-follow instructions",
+  goal: "What this stage delivers",
+  constraint: "Scope and guardrails",
+  invariant: "Rules that must remain true",
+  decision: "Architecture choices",
+  criterion: "Definition of done",
+  task: "Implementation roadmap",
+  risk: "Risks and mitigations",
+  question: "Open decisions",
+  note: "Plan sections",
+  evidence: "Validation evidence",
+  reference: "Sources and references",
+  diagram: "Architecture diagrams",
+  region: "Annotated regions",
   thread: "Threads",
 };
 
@@ -42,6 +43,7 @@ export interface Section {
   label: string;
   nodes: PlanNode[];
 }
+
 
 /** Group a stage's nodes into ordered sections, threads excluded (they render
  * as marks, not body content). Nodes within a section are ordered by `order`. */
