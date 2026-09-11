@@ -2089,10 +2089,27 @@ class PlanShapeTests(unittest.TestCase):
         declined = self.store.summary(plan)["declined_stages"]
         self.assertEqual(declined[grogu_plans.EVALUATION]["why"], "every assertion is exact")
 
-    def test_declining_a_stage_the_plan_has_is_refused(self):
+    def test_an_unwritten_optional_stage_can_be_declined(self):
         plan = self.store.create("shape", evaluation=True)["id"]
-        with self.assertRaises(grogu_plans.PlanError):
-            self.store.decline_stage(plan, grogu_plans.EVALUATION, "changed my mind", role="architect")
+        self.store.decline_stage(
+            plan,
+            grogu_plans.EVALUATION,
+            "the behavior is covered by deterministic tests",
+            role="architect",
+        )
+        summary = self.store.summary(plan)
+        self.assertNotIn(grogu_plans.EVALUATION, summary["stages"])
+        self.assertIn(grogu_plans.EVALUATION, summary["declined_stages"])
+
+    def test_a_written_optional_stage_must_be_reset_before_it_is_declined(self):
+        plan = self.store.create("shape", evaluation=True)["id"]
+        self.store.write_stage(
+            plan, grogu_plans.EVALUATION, "evaluate the built result", role="architect"
+        )
+        with self.assertRaisesRegex(grogu_plans.PlanError, "reset it before declining"):
+            self.store.decline_stage(
+                plan, grogu_plans.EVALUATION, "changed my mind", role="architect"
+            )
 
     def test_review_can_be_required_after_creation_and_closes_the_gate(self):
         plan = self._plan()

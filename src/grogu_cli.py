@@ -7,6 +7,7 @@ import argparse
 import copy
 import dataclasses
 import datetime as dt
+import importlib.util
 import json
 import os
 import re
@@ -46,6 +47,39 @@ import grogu_telemetry
 import grogu_tasks
 import grogu_watch
 import grogu_worktrees
+
+COMMAND_MODULE_DIR = Path(__file__).resolve().parent
+_COMMAND_EXTENSIONS: list[object] | None = None
+
+
+def _command_extensions() -> list[object]:
+    """Load independently owned top-level command modules."""
+    global _COMMAND_EXTENSIONS
+    if _COMMAND_EXTENSIONS is not None:
+        return _COMMAND_EXTENSIONS
+    loaded = []
+    for path in sorted(COMMAND_MODULE_DIR.glob("grogu_command_*.py")):
+        spec = importlib.util.spec_from_file_location(
+            f"_grogu_command_extension_{path.stem}", path
+        )
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if callable(getattr(module, "register", None)):
+            loaded.append(module)
+    _COMMAND_EXTENSIONS = loaded
+    return loaded
+
+
+def _extension_command_names() -> set[str]:
+    names = set()
+    for module in _command_extensions():
+        declared = getattr(module, "COMMANDS", ())
+        if isinstance(declared, str):
+            declared = (declared,)
+        names.update(str(name) for name in declared if str(name))
+    return names
 
 VERSION = "0.1.0"
 MIN_PYTHON = (3, 10)
@@ -1204,13 +1238,15 @@ def task_tell(args: argparse.Namespace) -> int:
 def task_inbox(args: argparse.Namespace) -> int:
     store = task_store(args)
     if args.id is None:
-        counts = store.pending_counts()
-        if args.json:
-            print_json(counts)
+        args.id = store.current_task() or None
+        if args.id is None:
+            counts = store.pending_counts()
+            if args.json:
+                print_json(counts)
+                return 0
+            for task_id, count in sorted(counts.items()):
+                print(f"{task_id}  {count} pending update(s)")
             return 0
-        for task_id, count in sorted(counts.items()):
-            print(f"{task_id}  {count} pending update(s)")
-        return 0
     messages = store.inbox(
         store.resolve(args.id), consume=args.consume, include_delivered=args.all
     )
@@ -1690,6 +1726,22 @@ def _read_body(args: argparse.Namespace) -> str:
         except UnicodeDecodeError:
             raise grogu_plans.PlanError(f"{path} is not text")
     return args.body or ""
+
+
+def _read_named_text(path_value: str, *, label: str) -> str:
+    if path_value == "-":
+        return sys.stdin.read()
+    path = Path(path_value).expanduser()
+    try:
+        return path.read_text(encoding="utf8")
+    except IsADirectoryError:
+        raise grogu_plans.PlanError(f"{path} is a directory, not a file")
+    except FileNotFoundError:
+        raise grogu_plans.PlanError(f"no such file: {path}")
+    except OSError as error:
+        raise grogu_plans.PlanError(f"cannot read {label} from {path}: {error}")
+    except UnicodeDecodeError:
+        raise grogu_plans.PlanError(f"{path} is not text")
 
 
 def plan_new(args: argparse.Namespace) -> int:
@@ -2245,6 +2297,13 @@ def plan_workstream(args: argparse.Namespace) -> int:
         stream = store.drop_workstream(store.resolve(args.id), args.name)
         print(f"dropped workstream {stream['name']}")
         return 0
+    if getattr(args, "replace", False) and not args.path and args.review:
+        stream = store.set_workstream_reviews(
+            store.resolve(args.id), args.name, args.review
+        )
+        reviews = ",".join(stream["required_reviews"]) or "none"
+        print(f"workstream {stream['name']}: reviews={reviews}")
+        return 0
     if not args.path:
         print(
             "grogu: a workstream needs at least one --path glob so parallel "
@@ -2546,10 +2605,21 @@ def plan_review(args: argparse.Namespace) -> int:
 def plan_commission(args: argparse.Namespace) -> int:
     store = plan_store(args)
     plan_id = store.resolve(args.id)
+    if args.brief and args.file:
+        raise grogu_plans.PlanError(
+            "pass the commission once, with --brief or --file"
+        )
+    brief = (
+        _read_named_text(args.file, label="commission")
+        if args.file
+        else (args.brief or "")
+    )
+    if not brief.strip():
+        raise grogu_plans.PlanError("a commission needs --brief or --file")
     manifest = store.commission(
         plan_id,
         args.for_role,
-        args.brief,
+        brief,
         by=getattr(args, "role", "") or "",
         replace=args.replace,
     )
@@ -2588,16 +2658,24 @@ def plan_steer(args: argparse.Namespace) -> int:
         words = words[1:]
     positional = " ".join(words).strip()
     supplied = (getattr(args, "note", "") or "").strip()
-    if positional and supplied:
+    from_file = (
+        _read_named_text(args.file, label="steering").strip()
+        if getattr(args, "file", "")
+        else ""
+    )
+    if sum(bool(value) for value in (positional, supplied, from_file)) > 1:
         print(
-            "grogu: two notes given, one positionally and one with --note; "
-            "pass the note once",
+            "grogu: multiple notes given; pass the note once, positionally, "
+            "with --note, or with --file",
             file=sys.stderr,
         )
         return 2
-    text = positional or supplied
+    text = positional or supplied or from_file
     if not text:
-        print("grogu: nothing to steer with; pass the note as text or --note", file=sys.stderr)
+        print(
+            "grogu: nothing to steer with; pass text, --note, or --file",
+            file=sys.stderr,
+        )
         return 2
     note = store.steer(
         text,
@@ -2848,7 +2926,14 @@ def plan_brief(args: argparse.Namespace) -> int:
                 f"- {item['name']}{where} ({item['bytes']} bytes, "
                 f"from the {item.get('role') or '?'}){reason}"
             )
-        print("  read them under .grogu/plans/<id>/attachments/")
+        print(f"  read them under {brief['attachment_path']}")
+    review = brief.get("design_review") or {}
+    if review.get("verdict") == grogu_plans.CHANGES and args.role in {
+        grogu_plans.ARCHITECT,
+        grogu_plans.ENGINEER,
+    }:
+        print("\n## Design review requires changes\n")
+        print(review.get("notes") or "The designer requested changes.")
     summary = brief.get("summary") or {}
     if summary:
         print(
@@ -2881,13 +2966,49 @@ def plan_brief(args: argparse.Namespace) -> int:
 
 def plan_attach(args: argparse.Namespace) -> int:
     store = plan_store(args)
-    body = _read_body(args)
-    if not body.strip():
+    plan_id = store.resolve(args.id)
+    if args.list:
+        attachments = store.attachments(plan_id)
+        payload = {
+            "plan": plan_id,
+            "path": str(store.plan_dir(plan_id) / "attachments"),
+            "attachments": attachments,
+        }
+        if args.json:
+            print_json(payload)
+        else:
+            print(payload["path"])
+            for item in attachments:
+                print(f"  {item['name']}  {item['bytes']} bytes")
+        return 0
+    if args.file and args.body:
+        print(
+            "grogu: pass the attachment once, with --file or --body",
+            file=sys.stderr,
+        )
+        return 2
+    if args.file and args.file != "-":
+        path = Path(args.file).expanduser()
+        try:
+            raw = path.read_bytes()
+        except IsADirectoryError:
+            raise grogu_plans.PlanError(f"{path} is a directory, not a file")
+        except FileNotFoundError:
+            raise grogu_plans.PlanError(f"no such file: {path}")
+        except OSError as error:
+            raise grogu_plans.PlanError(f"cannot read attachment from {path}: {error}")
+        try:
+            body: str | bytes = raw.decode("utf8")
+        except UnicodeDecodeError:
+            body = raw
+    else:
+        body = sys.stdin.read() if args.file == "-" else (args.body or "")
+    if not body:
         print("nothing to attach: pass --file or --body", file=sys.stderr)
         return 2
     try:
         result = store.attach(
-            args.id,
+            plan_id,
             args.name or (os.path.basename(args.file) if args.file and args.file != "-" else ""),
             body,
             stage=args.stage or "",
@@ -3254,6 +3375,8 @@ def plan_doc_lint(args: argparse.Namespace) -> int:
             f"{result['plan']} {result['head']}: package, log, partitions and "
             f"{len(result['projections'])} readable projection(s) verified"
         )
+        for path, digest in result.get("partition_digests", {}).items():
+            print(f"  {path}: sha256:{digest}")
     return 0
 
 
@@ -3325,7 +3448,15 @@ def plan_doc_node_add(args: argparse.Namespace) -> int:
     node_id = args.node or grogu_plandoc.allocate_id(
         counter_manifest, args.kind, existing_ids=document["nodes"]
     )
-    body = _stdin_value(args.body or "")
+    if args.body and args.body_file:
+        raise grogu_plans.PlanError(
+            "pass the node body once, with --body or --body-file"
+        )
+    body = (
+        _read_named_text(args.body_file, label="node body")
+        if args.body_file
+        else _stdin_value(args.body or "")
+    )
     node = grogu_plandoc.make_node(
         node_id,
         args.kind,
@@ -3338,7 +3469,7 @@ def plan_doc_node_add(args: argparse.Namespace) -> int:
     )
     result = documents.patch(
         role=role,
-        base=document["revision"],
+        base=args.base or document["revision"],
         operations=[{"op": "add", "path": f"/nodes/{node_id}", "value": node}],
         intent=args.intent or f"add {node_id}",
     )
@@ -4170,6 +4301,35 @@ def design_recall(args: argparse.Namespace) -> int:
 def design_template(args: argparse.Namespace) -> int:
     sys.stdout.write(grogu_plans.design_template(" ".join(args.title) if args.title else "<change>"))
     return 0
+
+
+def design_lint(args: argparse.Namespace) -> int:
+    body = _read_body(args)
+    problems = []
+    missing = grogu_plans.missing_design_sections(body)
+    if missing:
+        problems.append("missing required sections: " + ", ".join(missing))
+    unfilled = grogu_plans.unfilled_design_sections(body)
+    if unfilled:
+        problems.append(
+            "sections still contain template instructions: " + ", ".join(unfilled)
+        )
+    hollow = grogu_plans.hollow_design_sections(body)
+    if hollow:
+        problems.append("sections are not testable: " + ", ".join(hollow))
+    vague = grogu_plans.vague_design_terms(body)
+    if vague:
+        problems.append(
+            "adjectives need concrete decisions: " + ", ".join(sorted(vague))
+        )
+    if args.json:
+        print_json({"ok": not problems, "problems": problems})
+    elif problems:
+        for problem in problems:
+            print(f"grogu: {problem}", file=sys.stderr)
+    else:
+        print("design spec passes the stage validators")
+    return 0 if not problems else 3
 
 
 def design_html_template(args: argparse.Namespace) -> int:
@@ -5255,12 +5415,18 @@ def build_parser() -> argparse.ArgumentParser:
         return parser
 
     node_add = node_parser("add")
-    node_add.add_argument("--node", default="")
+    node_add.add_argument(
+        "--node",
+        default="",
+        help="optional kind-prefix numeric id such as note-12; allocated when omitted",
+    )
     node_add.add_argument(
         "--kind", required=True, choices=list(grogu_plandoc_schema.NODE_KINDS)
     )
     node_add.add_argument("--title", required=True)
     node_add.add_argument("--body", default="")
+    node_add.add_argument("--body-file", help="read the body from a file, or - for stdin")
+    node_add.add_argument("--base", default="")
     node_add.add_argument("--stage", choices=("", *grogu_plans.STAGES), default="")
     node_add.add_argument("--attr", action="append", default=[])
     node_add.add_argument("--order", type=int, default=1000)
@@ -5579,7 +5745,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan_gate_parser = plan_subparsers.add_parser(
         "gate", help="may the pipeline enter a stage (exit 3 when blocked)",
-        parents=[plan_common],
+        parents=[plan_common, role_common],
     )
     _plan_id_argument(plan_gate_parser)
     # `plan gate test <id>` is the shape a tester reaches for: the gate, then
@@ -5679,7 +5845,10 @@ def build_parser() -> argparse.ArgumentParser:
     plan_workstream_parser.add_argument(
         "--replace",
         action="store_true",
-        help="redefine a workstream that is already declared but not finished",
+        help=(
+            "redefine unfinished work, or update only --review requirements "
+            "when no --path is supplied"
+        ),
     )
     plan_workstream_parser.add_argument(
         "--drop",
@@ -5849,6 +6018,9 @@ def build_parser() -> argparse.ArgumentParser:
     plan_steer_parser.add_argument(
         "--note", default="", help="the note, if you would rather not quote it positionally"
     )
+    plan_steer_parser.add_argument(
+        "--file", help="read the note from a file, or - for stdin"
+    )
     plan_steer_parser.add_argument("--plan", "--id", dest="id", help="scope to one plan")
     plan_steer_parser.add_argument(
         "--relayed",
@@ -5875,7 +6047,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _plan_id_argument(plan_commission_parser)
     plan_commission_parser.add_argument("for_role", metavar="ROLE", choices=grogu_plans.ROLES)
-    plan_commission_parser.add_argument("--brief", required=True)
+    plan_commission_parser.add_argument("--brief")
+    plan_commission_parser.add_argument(
+        "--file", help="read the commission from a file, or - for stdin"
+    )
     plan_commission_parser.add_argument(
         "--replace", action="store_true", help="overwrite an existing commission"
     )
@@ -5890,6 +6065,10 @@ def build_parser() -> argparse.ArgumentParser:
     plan_attach_parser.add_argument("--name", help="file name (default: the --file basename)")
     plan_attach_parser.add_argument("--file", help="read the artifact from here, or - for stdin")
     plan_attach_parser.add_argument("--body")
+    plan_attach_parser.add_argument(
+        "--list", action="store_true", help="list attached artifacts and their directory"
+    )
+    plan_attach_parser.add_argument("--json", action="store_true")
     plan_attach_parser.add_argument("--stage", choices=list(grogu_plans.STAGES))
     plan_attach_parser.add_argument("--note", help="what this artifact is for")
     plan_attach_parser.add_argument(
@@ -6254,6 +6433,16 @@ def build_parser() -> argparse.ArgumentParser:
     design_template_parser.add_argument("title", nargs="*")
     design_template_parser.set_defaults(handler=design_template)
 
+    design_lint_parser = design_subparsers.add_parser(
+        "lint", help="validate a draft design spec without writing it"
+    )
+    design_lint_parser.add_argument("--body", default="")
+    design_lint_parser.add_argument(
+        "--file", help="read the draft from a file, or - for stdin"
+    )
+    design_lint_parser.add_argument("--json", action="store_true")
+    design_lint_parser.set_defaults(handler=design_lint)
+
     design_html_template_parser = design_subparsers.add_parser(
         "html-template",
         help="print the standing chrome for a standalone HTML report or guide",
@@ -6333,6 +6522,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     worktree_prune_parser.set_defaults(handler=worktree_prune)
 
+    for module in _command_extensions():
+        module.register(subparsers)
     return parser
 
 
@@ -6628,6 +6819,7 @@ GROGU_COMMANDS = frozenset(
         "guard",
         "skill",
     }
+    | _extension_command_names()
 )
 
 

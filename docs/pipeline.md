@@ -123,6 +123,8 @@ attributed to the user — an architect's statement of work put into the user's
 mouth, to the role whose whole job is weighting the user's taste above its own.
 `grogu plan commission <id> designer --brief "..."` is that channel, and it
 arrives in the designer's brief under the architect's name.
+Long commissions and steering notes accept `--file <path>` or `--file -`, so
+shell quoting never becomes part of the plan contract.
 
 A plan carries more than prose. `grogu plan attach <id> --file check.py
 --stage design --note "..."` puts an artifact in the plan directory, names it in
@@ -133,7 +135,9 @@ prose and its examples — and had nowhere to put it, so the tester's only optio
 were to rebuild it or to assert the examples without checking they were mutually
 derivable. Attachments are scanned against the published-destination rules on
 the way in, because unlike a plan body they are usually a file lifted whole out
-of a working directory.
+of a working directory. Binary evidence such as screenshots is preserved
+byte-for-byte; verifier attachments remain text scripts. `grogu plan attach
+<id> --list` prints the resolved attachment directory and its current files.
 
 `.grogu/plans/.gitignore` keeps `manifest.json`, `revisions/` and sealed stages
 out of the index. The manifest carries session ids, actor strings and the full
@@ -183,8 +187,9 @@ deliberate ones, and does not survive a move to a native view or a terminal. Not
 free prose either: "clean, modern, Apple-like" cannot be built, so the engineer
 decides, which is the failure the role exists to prevent.
 
-`grogu design template` prints the required skeleton. Run `grogu plan write
-<id> design --file spec.md --dry-run` before the live write; both commands
+`grogu design template` prints the required skeleton. Run `grogu design lint
+--file spec.md` while drafting, then `grogu plan write <id> design --file
+spec.md --dry-run` before the live write; both commands
 refuse a spec that skips a required section, leans on adjectives, or hands back
 the skeleton with its instructions still in it. That last check was
 added after an architect piped `grogu design template` straight into `plan
@@ -536,6 +541,12 @@ stays shut.
 ## Parallelism is declared, not inferred
 
 The architect declares workstreams with the file globs they own.
+Top-level CLI features can stay disjoint too: a module named
+`src/grogu_command_<family>.py` may export `COMMANDS` and a
+`register(subparsers)` function. Grogu discovers those modules at startup, so
+independent workstreams can add separate command families without both editing
+the central `src/grogu_cli.py` parser.
+
 `grogu plan workstreams --check` refuses overlapping sets, resolving globs
 against the working tree when the files exist. Fan-out happens only along clean,
 independent workstreams, one worktree each — literally: `grogu plan

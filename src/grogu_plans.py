@@ -517,7 +517,7 @@ def seal(text: str) -> str:
 def unseal(text: str) -> str:
     lines = [line for line in text.splitlines() if not line.startswith("#")]
     payload = "".join(line.strip() for line in lines)
-    if not payload:
+    if not payload.strip():
         return ""
     try:
         return zlib.decompress(base64.b64decode(payload)).decode("utf8")
@@ -1332,15 +1332,39 @@ _DEPENDENCY_SIGNALS = (
 
 def uncited_dependencies(body: str) -> list:
     """Dependency adoptions in a plan that cite no source."""
-    lowered = body.lower()
-    hits = [
-        re.search(pattern, lowered).group(0)
-        for pattern in _DEPENDENCY_SIGNALS
-        if re.search(pattern, lowered)
-    ]
-    if not hits or re.search(r"https?://", lowered):
-        return []
+    hits = []
+    citation = re.compile(
+        r"(?:https?://|(?:github|npmjs|pypi|crates|pkg\.go)\.(?:com|org)|"
+        r"\bdocs\.[a-z0-9.-]+\.[a-z]{2,}\b)",
+        re.IGNORECASE,
+    )
+    for paragraph in re.split(r"\n\s*\n", body.lower()):
+        for pattern in _DEPENDENCY_SIGNALS:
+            match = re.search(pattern, paragraph)
+            if not match:
+                continue
+            prefix = paragraph[max(0, match.start() - 48) : match.start()]
+            if re.search(r"\b(?:no|not|without|avoid|reject)\b[^.!?]{0,40}$", prefix):
+                continue
+            if citation.search(paragraph):
+                continue
+            hits.append(match.group(0))
     return hits
+
+
+def unbounded_prose_checks(body: str) -> list[str]:
+    """Testing-plan phrases that describe an open-ended prose test."""
+    patterns = (
+        r"\bevery (?:clause|sentence|line|word)\b",
+        r"\beach (?:clause|sentence|line|word)\b",
+        r"\bany (?:wording|word|sentence) change\b",
+        r"\ball (?:possible )?mutations\b",
+    )
+    return [
+        re.search(pattern, body, re.IGNORECASE).group(0)
+        for pattern in patterns
+        if re.search(pattern, body, re.IGNORECASE)
+    ]
 
 
 DESIGN_TEMPLATE = """# {title} — design
@@ -1776,7 +1800,8 @@ class PlanStore:
     """Plan artifacts, the stage gates, and the review loop for one repository."""
 
     def __init__(self, root: Optional[Path] = None) -> None:
-        self.root = primary_worktree(Path(root or repository_root()).expanduser().resolve())
+        self.checkout_root = Path(root or repository_root()).expanduser().resolve()
+        self.root = primary_worktree(self.checkout_root)
         self.store = self.root / STORE_DIRNAME
         self.plans_dir = self.store / PLANS_DIRNAME
         self.state_dir = self.store / "state"
@@ -2205,9 +2230,17 @@ class PlanStore:
         with self.locked():
             manifest = self.load(plan_id)
             if stage in manifest.get("stages", []):
-                raise PlanError(
-                    f"plan {plan_id} already has a {stage} stage; supersede the plan instead"
-                )
+                if manifest.get("stage_written", {}).get(stage):
+                    raise PlanError(
+                        f"plan {plan_id} already has a written {stage} stage; "
+                        "reset it before declining it"
+                    )
+                manifest["stages"] = [
+                    item for item in manifest.get("stages", []) if item != stage
+                ]
+                manifest.setdefault("stage_state", {}).pop(stage, None)
+                manifest.setdefault("stage_written", {}).pop(stage, None)
+                manifest.setdefault("stage_writers", {}).pop(stage, None)
             manifest.setdefault("declined_stages", {})[stage] = {
                 "why": why.strip(),
                 "at": now(),
@@ -2709,6 +2742,13 @@ class PlanStore:
                 )
             revision = 0
             warnings: list = []
+            if stage == TESTING and unbounded_prose_checks(body):
+                warnings.append(
+                    "the testing plan uses an open-ended prose criterion ("
+                    + ", ".join(unbounded_prose_checks(body))
+                    + "). Replace it with a closed, named list of assertions "
+                    "and an explicit termination rule."
+                )
             if changed and previous:
                 revision = self._keep_revision(
                     plan_id, stage, previous, manifest, plain_bytes=len(previous_text)
@@ -3657,8 +3697,27 @@ class PlanStore:
             raise PlanError("an amendment needs a claim")
         with self.locked():
             manifest = self.load(plan_id)
+            normalized_claim = " ".join(claim.lower().split())
+            if kind == KIND_AMENDMENT:
+                duplicate = next(
+                    (
+                        item
+                        for item in manifest.get("amendments", [])
+                        if item.get("kind", KIND_AMENDMENT) == KIND_AMENDMENT
+                        and " ".join(str(item.get("claim", "")).lower().split())
+                        == normalized_claim
+                        and item.get("status") == PENDING
+                    ),
+                    None,
+                )
+                if duplicate is not None:
+                    return duplicate
             rounds = manifest.get("rounds", 0)
-            cap = manifest.get("max_rounds", DEFAULT_MAX_ROUNDS)
+            configured_cap = manifest.get("max_rounds", DEFAULT_MAX_ROUNDS)
+            cap = max(
+                configured_cap,
+                len(manifest.get("workstreams", [])) * 2,
+            )
             if kind == KIND_AMENDMENT:
                 rounds += 1
                 if rounds > cap:
@@ -4115,6 +4174,38 @@ class PlanStore:
             manifest.get("workstream_state", {}).pop(name, None)
             self._save(manifest, "workstream_dropped", workstream=name)
             return existing
+
+    def set_workstream_reviews(
+        self, plan_id: str, name: str, reviews: list[str]
+    ) -> dict:
+        """Correct review requirements without reopening completed work."""
+        declared = _required_reviews(reviews)
+        with self.locked():
+            manifest = self.load(plan_id)
+            stream = next(
+                (
+                    item
+                    for item in manifest.get("workstreams", [])
+                    if item.get("name") == name
+                ),
+                None,
+            )
+            if stream is None:
+                raise PlanError(f"plan {plan_id} has no workstream {name!r}")
+            if stream.get("reviews"):
+                raise PlanError(
+                    f"workstream {name!r} already has recorded reviews; "
+                    "review requirements can only change before review begins"
+                )
+            stream["required_reviews"] = declared
+            stream["review"] = declared[0] if len(declared) == 1 else ""
+            self._save(
+                manifest,
+                "workstream_reviews_changed",
+                workstream=name,
+                reviews=declared,
+            )
+            return stream
 
     # -- workstream worktrees ------------------------------------------
 
@@ -4746,7 +4837,8 @@ class PlanStore:
             ) != COMPLETE:
                 raise PlanError(
                     "the implementation is not marked complete, so there is "
-                    "nothing settled to sign off on yet"
+                    "nothing settled to sign off on yet. The engineer must run "
+                    f"`grogu plan complete {plan_id} implementation` first."
                 )
             history = manifest.setdefault("design_reviews", [])
             review = {
@@ -5464,7 +5556,7 @@ class PlanStore:
         self,
         plan_id: str,
         name: str,
-        body: str,
+        body: str | bytes,
         *,
         stage: str = "",
         role: str = "",
@@ -5492,11 +5584,18 @@ class PlanStore:
         clean = os.path.basename(name.strip())
         if not clean or clean.startswith("."):
             raise PlanError("an attachment needs a plain file name")
-        if not body.strip():
+        payload = body.encode("utf8") if isinstance(body, str) else bytes(body)
+        if not payload.strip():
             raise PlanError(f"{clean} is empty; there is nothing to attach")
-        leaks = grogu_privacy.blocking(
-            grogu_privacy.scan(body, path=clean),
-            destination=grogu_privacy.PUBLISHED,
+        if verifier and not isinstance(body, str):
+            raise PlanError("a verifier must be a text script")
+        leaks = (
+            grogu_privacy.blocking(
+                grogu_privacy.scan(body, path=clean),
+                destination=grogu_privacy.PUBLISHED,
+            )
+            if isinstance(body, str)
+            else []
         )
         if leaks:
             raise PlanError(
@@ -5511,7 +5610,7 @@ class PlanStore:
             directory.mkdir(parents=True, exist_ok=True)
             target = directory / clean
             replaced = target.exists()
-            target.write_text(body, encoding="utf8")
+            target.write_bytes(payload)
             records = [
                 item
                 for item in manifest.setdefault("attachments", [])
@@ -5523,18 +5622,18 @@ class PlanStore:
                     "stage": stage,
                     "role": role or actor(),
                     "note": note.strip(),
-                    "bytes": len(body.encode("utf8")),
+                    "bytes": len(payload),
                     "at": now(),
                     "verifier": bool(verifier),
                 }
             )
             manifest["attachments"] = records
-            self._save(manifest, "attached", note=f"{clean} ({len(body)} bytes)")
+            self._save(manifest, "attached", note=f"{clean} ({len(payload)} bytes)")
             return {
                 "plan": plan_id,
                 "name": clean,
                 "path": str(target),
-                "bytes": len(body.encode("utf8")),
+                "bytes": len(payload),
                 "replaced": replaced,
             }
 
@@ -5557,9 +5656,16 @@ class PlanStore:
         if not paths:
             return []
         try:
+            checkout = self.checkout_root
+            if checkout != self.root:
+                for relative in paths:
+                    source = self.root / relative
+                    target = checkout / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
             inside = subprocess.run(
                 ["git", "rev-parse", "--is-inside-work-tree"],
-                cwd=self.root,
+                cwd=checkout,
                 capture_output=True,
                 text=True,
             )
@@ -5567,7 +5673,7 @@ class PlanStore:
                 return []
             added = subprocess.run(
                 ["git", "add", "--", *paths],
-                cwd=self.root,
+                cwd=checkout,
                 capture_output=True,
                 text=True,
             )
@@ -5621,10 +5727,17 @@ class PlanStore:
             lines.append("")
         steering = manifest.get("steering", [])
         if steering:
-            lines.append("## Corrections from the user")
+            lines.append("## Steering")
             lines.append("")
             for note in steering:
-                lines.append(f"- {note.get('text', '')}")
+                source = (
+                    "the harness"
+                    if note.get("automatic")
+                    else "the user"
+                    if note.get("from") in ("", None, "user")
+                    else f"the {note.get('from')}"
+                )
+                lines.append(f"- **From {source}:** {note.get('text', '')}")
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
@@ -6027,6 +6140,7 @@ class PlanStore:
                 principles = grogu_design.DesignStore().recall(limit=25)
             except Exception:
                 principles = []
+        manifest = self.load(plan_id) if plan_id else {}
         return {
             "role": role,
             "plan": plan_id,
@@ -6036,12 +6150,16 @@ class PlanStore:
             "has_overlay": bool(overlay),
             "steering": steering,
             "commission": (
-                (self.load(plan_id).get("commissions", {}) or {}).get(role, {})
+                (manifest.get("commissions", {}) or {}).get(role, {})
                 if plan_id
                 else {}
             ),
             "design_principles": principles,
             "attachments": self.attachments(plan_id) if plan_id else [],
+            "attachment_path": (
+                str(self.plan_dir(plan_id) / "attachments") if plan_id else ""
+            ),
+            "design_review": manifest.get("design_review") if plan_id else None,
             "summary": self.summary(plan_id) if plan_id else {},
         }
 
@@ -7435,6 +7553,12 @@ class PlanDocumentStore:
             **integrity,
             "plan": self.plan_id,
             "role": effective,
+            "partition_digests": {
+                relative: hashlib.sha256(
+                    grogu_plandoc_revision.safe_read(self.package / relative)
+                ).hexdigest()
+                for relative in sorted(self._PARTITION_PATHS.values())
+            },
             "projections": projections,
             "recoveries": list(self.last_recovery),
         }
@@ -8295,6 +8419,13 @@ class PlanDocumentStore:
             self.plan_id, stage, role=effective, record=False
         )
         warnings = []
+        if stage == TESTING and unbounded_prose_checks(body):
+            warnings.append(
+                "the testing plan uses an open-ended prose criterion ("
+                + ", ".join(unbounded_prose_checks(body))
+                + "). Replace it with a closed, named list of assertions "
+                "and an explicit termination rule."
+            )
         with self.plans.locked():
             latest = self.plans.load(self.plan_id)
             revision_number = 0
