@@ -7,6 +7,7 @@ import type { EdgeKind, PlanEdge, PlanNode, Stage } from "../../api/types";
 // units, no relative-coordinate drift).
 
 export type FlowNodeData = { node: PlanNode } & Record<string, unknown>;
+export type CanvasGeometry = { x: number; y: number; w: number; h: number; z: number };
 
 export function nodeType(n: PlanNode): "region" | "card" {
   return n.kind === "region" ? "region" : "card";
@@ -14,23 +15,27 @@ export function nodeType(n: PlanNode): "region" | "card" {
 
 export function toFlowNodes(
   nodes: Record<string, PlanNode>,
+  edges: Record<string, PlanEdge>,
   selectedIds: Set<string>,
   stage: Stage,
 ): Node<FlowNodeData>[] {
+  const geometries = geometryForStage(nodes, edges, stage);
   const out: Node<FlowNodeData>[] = [];
   for (const n of Object.values(nodes)) {
-    if (!n.geometry) continue; // only placed nodes appear on the canvas
     if (n.kind === "thread") continue; // threads are marks, not canvas shapes
     if (n.stage !== stage) continue;
+    const geometry = geometries.get(n.id);
+    if (!geometry) continue;
+    const displayNode = n.geometry ? n : { ...n, geometry };
     out.push({
       id: n.id,
       type: nodeType(n),
-      position: { x: n.geometry.x, y: n.geometry.y },
-      width: n.geometry.w,
-      height: n.geometry.h,
-      data: { node: n },
+      position: { x: geometry.x, y: geometry.y },
+      width: geometry.w,
+      height: geometry.h,
+      data: { node: displayNode, derived: !n.geometry },
       selected: selectedIds.has(n.id),
-      zIndex: n.kind === "region" ? -10 + (n.geometry.z ?? 0) : (n.geometry.z ?? 0),
+      zIndex: n.kind === "region" ? -10 + geometry.z : geometry.z,
       draggable: true,
       selectable: true,
     });
@@ -52,10 +57,11 @@ export function toFlowEdges(
 ): Edge[] {
   const out: Edge[] = [];
   for (const e of Object.values(edges)) {
-    // Only render edges whose endpoints are both placed on the canvas.
+    // Render stage-local relationships even before geometry has been saved;
+    // the canvas supplies a deterministic preview layout for unplaced nodes.
     const a = nodes[e.from];
     const b = nodes[e.to];
-    if (!a?.geometry || !b?.geometry) continue;
+    if (!a || !b) continue;
     if (a.stage !== stage || b.stage !== stage) continue;
     if (e.kind === "contains" || e.kind === "anchors") continue; // structural, not drawn as connectors
     out.push({
@@ -71,6 +77,57 @@ export function toFlowEdges(
     });
   }
   return out;
+}
+
+export function geometryForStage(
+  nodes: Record<string, PlanNode>,
+  edges: Record<string, PlanEdge>,
+  stage: Stage,
+): Map<string, CanvasGeometry> {
+  const stageNodes = Object.values(nodes)
+    .filter((node) => node.stage === stage && node.kind !== "thread")
+    .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+  const byId = new Map(stageNodes.map((node) => [node.id, node]));
+  const dependencies = new Map<string, string[]>();
+  for (const edge of Object.values(edges)) {
+    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
+    if (edge.kind !== "depends_on" && edge.kind !== "blocks" && edge.kind !== "refines") {
+      continue;
+    }
+    dependencies.set(edge.from, [...(dependencies.get(edge.from) ?? []), edge.to]);
+  }
+  const rankMemo = new Map<string, number>();
+  const rank = (id: string, path = new Set<string>()): number => {
+    if (rankMemo.has(id)) return rankMemo.get(id)!;
+    if (path.has(id)) return 0;
+    const next = new Set(path).add(id);
+    const value = Math.min(
+      5,
+      1 + Math.max(-1, ...(dependencies.get(id) ?? []).map((dep) => rank(dep, next))),
+    );
+    rankMemo.set(id, value);
+    return value;
+  };
+  const lanes = new Map<number, number>();
+  const result = new Map<string, CanvasGeometry>();
+  for (const [index, node] of stageNodes.entries()) {
+    if (node.geometry) {
+      result.set(node.id, node.geometry);
+      continue;
+    }
+    const hasDependencies = dependencies.size > 0;
+    const column = hasDependencies ? rank(node.id) : index % 3;
+    const row = hasDependencies ? (lanes.get(column) ?? 0) : Math.floor(index / 3);
+    if (hasDependencies) lanes.set(column, row + 1);
+    result.set(node.id, {
+      x: 64 + column * 304,
+      y: 64 + row * 168,
+      w: 248,
+      h: 120,
+      z: 0,
+    });
+  }
+  return result;
 }
 
 /** The plausible target kinds when dropping a connector on empty canvas, keyed

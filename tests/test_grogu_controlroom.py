@@ -162,15 +162,63 @@ class SnapshotShape(unittest.TestCase):
             {
                 "schema_version",
                 "fresh_as_of",
+                "sampled_at",
+                "observed_through",
                 "generation",
                 "limits",
                 "coverage",
+                "source_coverage",
                 "agents",
                 "uncorrelated",
                 "waiting_on_you",
+                "topology",
+                "recent_events",
+                "events_status",
             },
         )
         self.assertEqual(snapshot["schema_version"], 1)
+
+    def test_snapshot_uses_only_explicit_parent_run_lineage(self):
+        room = cr.ControlRoom(
+            now=_FakeClock(), watch_home=Path(self._watch_home.name)
+        )
+        parent = cr.Registration(
+            run_id="run-parent",
+            repository="/tmp/repo",
+            plan="p-1",
+            agent="parent",
+            role="architect",
+            workstream="planning",
+            session_id="private-parent-session",
+            agent_id="parent-agent",
+            registered_at="2026-09-10T20:00:00Z",
+            root_session_id="private-root-session",
+        )
+        child = cr.Registration(
+            run_id="run-child",
+            repository="/tmp/repo",
+            plan="p-1",
+            agent="child",
+            role="engineer",
+            workstream="backend",
+            session_id="private-child-session",
+            agent_id="child-agent",
+            registered_at="2026-09-10T20:01:00Z",
+            parent_run_id="run-parent",
+            root_session_id="private-root-session",
+        )
+        room.register(parent)
+        room.register(child)
+        snapshot = room.snapshot()
+        self.assertEqual(snapshot["topology"]["coverage"], "complete")
+        self.assertEqual(len(snapshot["topology"]["nodes"]), 2)
+        self.assertEqual(len(snapshot["topology"]["edges"]), 1)
+        edge = snapshot["topology"]["edges"][0]
+        self.assertEqual(edge["from"], parent.agent_key)
+        self.assertEqual(edge["to"], child.agent_key)
+        serialized = json.dumps(snapshot)
+        self.assertNotIn("private-child-session", serialized)
+        self.assertNotIn("private-root-session", serialized)
 
 
 class PrivacyOverAdversarialFixture(unittest.TestCase):
@@ -435,7 +483,7 @@ class PossiblyStuckHeuristic(unittest.TestCase):
             self.assertEqual(row["connection"], "stale")
             self.assertEqual(row["activity"], "possibly_stuck")
 
-    def test_readable_source_without_new_events_does_not_stay_live(self):
+    def test_readable_source_without_new_events_keeps_observer_live(self):
         clock = _FakeClock(initial=_epoch("2026-09-05T09:00:02Z"))
         room = self._make_room(now=clock)
         with tempfile.TemporaryDirectory() as directory:
@@ -463,7 +511,7 @@ class PossiblyStuckHeuristic(unittest.TestCase):
             clock.advance(cr.CONNECTION_DISCONNECTED_SECONDS + 1)
             self.assertEqual(
                 _find_row(room.snapshot(), registration.agent_key)["connection"],
-                "disconnected",
+                "live",
             )
 
     def test_a_source_one_only_registration_can_still_be_labelled_active(self):
@@ -856,7 +904,7 @@ class TooManyRegisteredSourcesRefused(unittest.TestCase):
         self._watch_home = tempfile.TemporaryDirectory()
         self.addCleanup(self._watch_home.cleanup)
 
-    def test_the_32_source_cap_is_enforced(self):
+    def test_the_32_source_cap_keeps_registration_with_limited_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory) / "session-state"
             base.mkdir()
@@ -875,18 +923,26 @@ class TooManyRegisteredSourcesRefused(unittest.TestCase):
                     registered_at="", events_path=str(path),
                 )
                 room.register(registration)
-            # The 33rd fails.
+            # The 33rd remains visible, but its event source is not opened.
             overflow_dir = base / "session-overflow"
             overflow_dir.mkdir()
             path = overflow_dir / "events.jsonl"
             path.write_text("", encoding="utf8")
-            with self.assertRaises(ValueError):
-                room.register(cr.Registration(
-                    run_id="r-of", repository="/x", plan="p",
-                    agent="of", role="engineer", workstream="w",
-                    session_id="session-overflow", agent_id="aid-of",
-                    registered_at="", events_path=str(path),
-                ))
+            overflow = cr.Registration(
+                run_id="r-of", repository="/x", plan="p",
+                agent="of", role="engineer", workstream="w",
+                session_id="session-overflow", agent_id="aid-of",
+                registered_at="", events_path=str(path),
+            )
+            room.register(overflow)
+            row = _find_row(room.snapshot(), overflow.agent_key)
+            self.assertEqual(row["events_status"], "unavailable")
+            session_coverage = next(
+                item
+                for item in row["source_coverage"]
+                if item["source"] == "session_events"
+            )
+            self.assertEqual(session_coverage["reason"], "source_limit")
 
 
 class ObjectRefsAuthorized(unittest.TestCase):
@@ -1015,10 +1071,9 @@ class WatchKeyingByPlanAndAgent(unittest.TestCase):
         row = _find_row(snapshot, registration.agent_key)
         self.assertEqual(row["grogu_commands"]["calls"], 1)
         self.assertEqual(len(snapshot["uncorrelated"]), 1)
-        self.assertEqual(
-            snapshot["uncorrelated"][0]["repository"],
-            "/tmp/repo-b",
-        )
+        repository = snapshot["uncorrelated"][0]["repository"]
+        self.assertRegex(repository, r"^repo-[0-9a-f]{16}$")
+        self.assertNotIn("/tmp/repo-b", json.dumps(snapshot))
 
 
 class SampleThrottleIsEnforced(unittest.TestCase):

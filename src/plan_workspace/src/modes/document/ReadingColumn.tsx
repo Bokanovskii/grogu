@@ -1,11 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PlanNode } from "../../api/types";
 import { useActions, useApp } from "../../state/store";
 import { NODE_GLYPH, NODE_LABEL } from "../../lib/selection";
 import { Markdown } from "../../lib/markdown";
-import { activeDirectives, sectionsForStage } from "../../lib/sections";
+import { activeDirectives, humanTitle, sectionsForStage } from "../../lib/sections";
 import { deriveThreads, THREAD_KIND_META } from "../shared/threads";
 import { NewThreadComposer } from "../shared/NewThreadComposer";
+import { stageLabel } from "../../api/types";
+import { markdownSummary } from "../../lib/humanize";
+
+const DEEP_DIVE_THRESHOLD = 280;
 
 function NodeBlock({
   node,
@@ -21,10 +25,15 @@ function NodeBlock({
   const [titleDraft, setTitleDraft] = useState(node.title);
   const [bodyDraft, setBodyDraft] = useState(node.body);
   const [composing, setComposing] = useState(false);
+  const [expanded, setExpanded] = useState(node.body.length <= DEEP_DIVE_THRESHOLD);
   const selected = state.selection.some((s) => s.id === node.id);
 
   useEffect(() => setTitleDraft(node.title), [node.title]);
   useEffect(() => setBodyDraft(node.body), [node.body]);
+  useEffect(
+    () => setExpanded(node.body.length <= DEEP_DIVE_THRESHOLD),
+    [node.id, node.body.length],
+  );
 
   const threads = deriveThreads(state.nodes).filter((t) => t.anchorNode === node.id);
 
@@ -65,7 +74,7 @@ function NodeBlock({
       id={`doc-node-${node.id}`}
       ref={(el) => registerRef(node.id, el)}
       className={`doc-node doc-node-${node.kind}${selected ? " is-selected" : ""}`}
-      aria-label={`${NODE_LABEL[node.kind]} ${node.id}`}
+      aria-label={node.title || NODE_LABEL[node.kind]}
       onClick={() => actions.select(node.id, "node")}
     >
       <div className="doc-node-head">
@@ -73,8 +82,11 @@ function NodeBlock({
           {NODE_GLYPH[node.kind]}
         </span>
         <span className="doc-node-kind">{NODE_LABEL[node.kind]}</span>
-        <span className="doc-node-id">{node.id}</span>
         {node.attrs?.["status"] ? <span className="doc-node-status chip chip-neutral">{String(node.attrs["status"])}</span> : null}
+        <details className="doc-node-meta" onClick={(event) => event.stopPropagation()}>
+          <summary>Technical details</summary>
+          <code>{node.kind} · {node.id}</code>
+        </details>
         <button
           type="button"
           className="doc-node-comment"
@@ -110,7 +122,7 @@ function NodeBlock({
           onDoubleClick={() => setEditingTitle(true)}
           tabIndex={0}
         >
-          {node.title || <span className="doc-untitled">Untitled</span>}
+          {humanTitle(node.title) || <span className="doc-untitled">Untitled section</span>}
         </h3>
       )}
 
@@ -131,9 +143,35 @@ function NodeBlock({
             }
           }}
         />
-      ) : node.body ? (
+      ) : node.body && expanded ? (
         <div className="doc-body" onDoubleClick={() => setEditingBody(true)}>
           <Markdown text={node.body} />
+          {node.body.length > DEEP_DIVE_THRESHOLD ? (
+            <button
+              type="button"
+              className="doc-deep-dive"
+              onClick={(event) => {
+                event.stopPropagation();
+                setExpanded(false);
+              }}
+            >
+              Collapse deep dive
+            </button>
+          ) : null}
+        </div>
+      ) : node.body ? (
+        <div className="doc-summary">
+          <p>{markdownSummary(node.body, 320)}</p>
+          <button
+            type="button"
+            className="doc-deep-dive"
+            onClick={(event) => {
+              event.stopPropagation();
+              setExpanded(true);
+            }}
+          >
+            Read deep dive
+          </button>
         </div>
       ) : (
         <p className="doc-body-empty" onDoubleClick={() => setEditingBody(true)}>
@@ -179,6 +217,23 @@ export function ReadingColumn({
   const lastOffsets = useRef<string>("");
   const sections = sectionsForStage(state.nodes, state.stage);
   const leadDirectives = activeDirectives(state.nodes, state.role || "reviewer");
+  const overview = useMemo(() => {
+    const all = sections.flatMap((section) => section.nodes);
+    const purpose =
+      all.find((node) => node.kind === "goal") ??
+      all.find((node) => node.kind === "decision") ??
+      all[0];
+    return {
+      purpose: purpose
+        ? markdownSummary(purpose.body || purpose.title, 260)
+        : "No stage summary is available yet.",
+      sections: all.length,
+      tasks: all.filter((node) => node.kind === "task").length,
+      criteria:
+        all.filter((node) => node.kind === "criterion").length ||
+        all.filter((node) => /acceptance|definition of done/i.test(node.title)).length,
+    };
+  }, [sections]);
 
   const registerRef = (id: string, el: HTMLElement | null) => {
     nodeEls.current[id] = el;
@@ -207,6 +262,44 @@ export function ReadingColumn({
   return (
     <div className="reading-column" ref={containerRef}>
       <div className="reading-inner">
+        {sections.length || leadDirectives.length ? (
+          <section className="doc-overview" aria-labelledby="doc-overview-title">
+            <div>
+              <span className="doc-overview-kicker">{stageLabel(state.stage)} plan</span>
+              <h1 id="doc-overview-title">{state.title}</h1>
+              <p>{overview.purpose}</p>
+            </div>
+            <dl>
+              <div><dt>Plan sections</dt><dd>{overview.sections}</dd></div>
+              <div><dt>Delivery steps</dt><dd>{overview.tasks}</dd></div>
+              <div><dt>Acceptance checks</dt><dd>{overview.criteria}</dd></div>
+            </dl>
+            <nav aria-label="Plan table of contents">
+              <strong>In this stage</strong>
+              <ul>
+                {sections
+                  .filter((section) => section.kind !== "directive")
+                  .flatMap((section) =>
+                    section.kind === "note"
+                      ? section.nodes.map((node) => (
+                          <li key={node.id}>
+                            <a href={`#doc-node-${node.id}`}>
+                              {humanTitle(node.title) || "Untitled section"}
+                            </a>
+                          </li>
+                        ))
+                      : [
+                          <li key={section.kind}>
+                            <a href={`#doc-section-${section.kind}`}>
+                              {section.label} <span>{section.nodes.length}</span>
+                            </a>
+                          </li>,
+                        ],
+                  )}
+              </ul>
+            </nav>
+          </section>
+        ) : null}
         {leadDirectives.length ? (
           <section className="doc-section doc-section-directives" aria-label="Directives">
             <h2 className="doc-section-title">Directives</h2>
@@ -219,7 +312,12 @@ export function ReadingColumn({
         {sections
           .filter((s) => s.kind !== "directive")
           .map((section) => (
-            <section key={section.kind} className="doc-section" aria-label={section.label}>
+            <section
+              id={`doc-section-${section.kind}`}
+              key={section.kind}
+              className="doc-section"
+              aria-label={section.label}
+            >
               <h2 className="doc-section-title">{section.label}</h2>
               {section.nodes.map((n) => (
                 <NodeBlock key={n.id} node={n} registerRef={registerRef} />

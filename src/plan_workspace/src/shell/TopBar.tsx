@@ -1,5 +1,4 @@
 import { useApp } from "../state/store";
-import { NODE_LABEL } from "../lib/selection";
 import { stageLabel } from "../api/types";
 
 // The identity strip (visually the top 48px row). It is static text — the
@@ -12,7 +11,7 @@ export function TopBar() {
   const state = useApp();
   const sel = state.selection[0];
   const selNode = sel ? state.nodes[sel.id] : undefined;
-  const selLabel = selNode ? `${NODE_LABEL[selNode.kind]} ${selNode.id}` : sel ? sel.id : "—";
+  const selLabel = selNode?.title || (sel ? "Selected item" : "—");
 
   return (
     <div className="topbar" role="presentation">
@@ -20,13 +19,11 @@ export function TopBar() {
         ◉ Grogu
       </span>
       <nav className="breadcrumb" aria-label="Location">
-        <span className="crumb-static crumb-plan">
-          {state.plan || "— no plan selected —"}
+        <span className="crumb-static crumb-plan" title={state.plan || undefined}>
+          {state.title || "— no plan selected —"}
         </span>
         {state.plan ? (
           <>
-            <span className="crumb-sep" aria-hidden="true">·</span>
-            <span className="crumb-static crumb-title">{state.title}</span>
             <span className="crumb-sep" aria-hidden="true">·</span>
             <span className="crumb-static">{stageLabel(state.stage)}</span>
             <span className="crumb-sep" aria-hidden="true">·</span>

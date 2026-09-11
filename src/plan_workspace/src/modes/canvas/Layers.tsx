@@ -1,6 +1,7 @@
 import { useApp, useActions } from "../../state/store";
 import { NODE_GLYPH } from "../../lib/selection";
 import type { PlanNode } from "../../api/types";
+import { humanTitle } from "../../lib/humanize";
 
 // The Layers panel: frames (regions) and their contained nodes, then loose
 // nodes. Selection mirrors and drives the canvas. This is the accessible
@@ -11,7 +12,6 @@ export function Layers() {
 
   const placed = Object.values(state.nodes).filter(
     (node) =>
-      node.geometry &&
       node.kind !== "thread" &&
       node.stage === state.stage,
   );
@@ -54,7 +54,7 @@ export function Layers() {
           <span className="layer-glyph" aria-hidden="true">
             {NODE_GLYPH[n.kind]}
           </span>
-          <span className="layer-title">{n.title || n.id}</span>
+          <span className="layer-title">{humanTitle(n.title) || "Untitled plan item"}</span>
           {n.attrs?.["status"] ? <span className="layer-status">{String(n.attrs["status"])}</span> : null}
         </button>
       </li>
@@ -71,7 +71,7 @@ export function Layers() {
           </li>
         ))}
         {loose.map((n) => row(n, 0))}
-        {placed.length === 0 ? <li className="inspector-muted layer-empty">Nothing on the canvas yet.</li> : null}
+        {placed.length === 0 ? <li className="inspector-muted layer-empty">This stage has no plan items yet.</li> : null}
       </ul>
     </nav>
   );

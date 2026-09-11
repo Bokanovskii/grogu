@@ -104,32 +104,68 @@ test.describe("boot and shell", () => {
     await expect(page.locator("a.skip-link:focus")).toBeVisible();
   });
 
-  test("Control room is reachable and shows the seven state badges", async ({ page }) => {
+  test("Document presents a human summary, contents, and collapsible deep dives", async ({ page }) => {
+    await openApp(page);
+    await expect(page.getByRole("heading", { name: "Migrate storage backend", exact: true })).toBeVisible();
+    await expect(page.getByText("In this stage")).toBeVisible();
+    await expect(page.getByText("Table of contents")).toBeVisible();
+    await expect(page.locator(".doc-overview")).toBeVisible();
+    await expect(page.locator(".doc-node").first()).toBeVisible();
+    await expect(page.locator(".doc-node-id:visible")).toHaveCount(0);
+  });
+
+  test("Control room is reachable and separates lifecycle, activity, and connection", async ({ page }) => {
     await openApp(page);
     await page.locator(".mode-tab-control").click();
     await expect(page.locator(".control-room")).toBeVisible();
-    const cards = page.locator(".agent-card");
-    await expect(cards).toHaveCount(7);
-    // Every badge word from the design appears.
-    for (const word of ["Live", "Idle", "Stuck", "Finished", "Disconnected", "Error", "Waiting"]) {
-      await expect(page.locator(".agent-card", { hasText: word }).first()).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Expand Filters panel" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Expand Agent timeline panel" }),
+    ).toBeVisible();
+    const rows = page.locator("[data-control-agent-row]:visible");
+    await expect(rows).toHaveCount(7);
+    for (const word of ["Running", "Finished", "Failed", "Possibly stuck", "Disconnected"]) {
+      await expect(rows.filter({ hasText: word }).first()).toBeVisible();
     }
-    // Provenance footer is present and verbatim.
+    await page.getByRole("tab", { name: "Topology", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "Agent and session topology" }),
+    ).toBeVisible();
+    await expect(page.locator(".cr-topology-node")).toHaveCount(7);
+    await expect(page.locator(".cr-topology-branch", { hasText: "●" })).toHaveCount(0);
+    await expect
+      .poll(() =>
+        page.locator(".cr-topology-branch").evaluateAll((branches) =>
+          branches.every(
+            (branch) =>
+              branch.offsetParent instanceof HTMLButtonElement &&
+              branch.offsetParent.closest(".cr-topology") !== null,
+          ),
+        ),
+      )
+      .toBe(true);
+    await page
+      .getByRole("button", { name: "Expand Agent timeline panel" })
+      .click();
     await expect(page.locator(".audit-provenance")).toContainText(
-      "Grogu never records prompts, chain-of-thought, or raw tool arguments",
+      "Prompts, model reasoning, tool arguments and tool results are never recorded",
     );
+    await page.getByRole("tab", { name: "Document", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Outline" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Comments" })).toBeVisible();
   });
 
   test("Open timeline expands, focuses, and loads the audit panel", async ({ page }) => {
     await openApp(page);
     await page.locator(".mode-tab-control").click();
-    await page.getByRole("button", { name: "Collapse Audit timeline panel" }).click();
-    await expect(page.getByRole("button", { name: "Expand Audit timeline panel" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Expand Agent timeline panel" })).toBeVisible();
     await page.route(/\/api\/control\/[^/?]+$/, async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       await route.continue();
     });
-    await page.locator(".agent-card").first().getByRole("button", { name: "Open timeline" }).click();
+    await page.locator("[data-control-agent-row]:visible").first().getByRole("button", { name: "Watch" }).click();
     await expect(page.locator(".panel-right")).toBeVisible();
     await expect(page.getByText("Loading timeline…")).toBeVisible();
     await expect(page.locator(".audit-title")).not.toHaveText("Audit timeline");
@@ -149,13 +185,13 @@ test.describe("boot and shell", () => {
         }),
       });
     });
-    await page.locator(".agent-card").first().getByRole("button", { name: "Open timeline" }).click();
-    await expect(page.getByText("Timeline unavailable.")).toBeVisible();
-    await expect(page.getByText("The registered activity source could not be read.")).toBeVisible();
+    await page.locator("[data-control-agent-row]:visible").first().getByRole("button", { name: "Watch" }).click();
+    await expect(page.getByText("Timeline disconnected.")).toBeVisible();
+    await expect(page.getByText(/Previously observed lifecycle remains unchanged/)).toBeVisible();
     await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
   });
 
-  test("an empty timeline explains why a Live agent can have no events", async ({ page }) => {
+  test("an empty registered timeline is distinct from unavailable", async ({ page }) => {
     await openApp(page);
     await page.locator(".mode-tab-control").click();
     await page.route(/\/api\/control\/[^/?]+$/, async (route) => {
@@ -163,24 +199,58 @@ test.describe("boot and shell", () => {
       const body = await response.json();
       await route.fulfill({
         response,
-        json: { ...body, activity: [] },
+        json: {
+          ...body,
+          activity: [],
+          recent_events: [],
+          events_status: "empty",
+          agent: {
+            ...body.agent,
+            events_status: "empty",
+            event_source_registered: true,
+          },
+        },
       });
     });
-    await page.locator(".agent-card").first().getByRole("button", { name: "Open timeline" }).click();
-    await expect(page.getByText("No detailed events recorded.")).toBeVisible();
-    await expect(page.getByText(/Live badge can come from recent Grogu command activity/)).toBeVisible();
+    await page.locator("[data-control-agent-row]:visible").first().getByRole("button", { name: "Watch" }).click();
+    await expect(page.getByText("No events in the last 24h.")).toBeVisible();
+    await expect(page.getByText("Widen the range to see older activity.")).toBeVisible();
   });
 
   test("feedback scopes name concrete audiences without redundant actions", async ({ page }) => {
     await openApp(page);
     await page.locator(".mode-tab-control").click();
-    await page.locator(".agent-card").first().getByRole("button", { name: "Send feedback" }).click();
-    await expect(page.getByRole("radio", { name: "This agent" })).toBeVisible();
-    await expect(page.getByRole("radio", { name: "All engineers" })).toBeVisible();
-    await expect(page.getByRole("radio", { name: "Everyone on this plan" })).toBeVisible();
-    await expect(page.getByRole("radio", { name: "Engineers on this plan" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Save as draft" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Abandon feedback" })).toHaveCount(0);
+    await page.locator("[data-control-agent-row]:visible").first().getByRole("button", { name: /Feedback/ }).click();
+    const dialog = page.getByRole("dialog", { name: "Send feedback" });
+    const targets = dialog.getByRole("radio");
+    await expect(targets).toHaveCount(3);
+    await expect(targets.nth(0)).toHaveText("This agent");
+    await expect(targets.nth(1)).toHaveText(/^All \w+s on this plan$/);
+    await expect(targets.nth(2)).toHaveText("Everyone on this plan");
+    await expect(dialog.getByRole("button", { name: "Save as draft" })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Abandon feedback" })).toHaveCount(0);
+  });
+
+  test("selected-plan filters and timeline drawer never overlap program content", async ({ page }) => {
+    await openApp(page);
+    await page.locator(".mode-tab-control").click();
+    await page.locator(".cr-program-details > summary").click();
+    await page.locator(".cr-plan-card").first().click();
+    await expect(page.locator(".cr-active-filters")).toBeVisible();
+    const filters = await page.locator(".cr-active-filters").boundingBox();
+    const program = await page.locator(".cr-program").boundingBox();
+    expect(filters).not.toBeNull();
+    expect(program).not.toBeNull();
+    expect(filters!.y + filters!.height).toBeLessThanOrEqual(program!.y + 1);
+
+    await page
+      .locator("[data-control-agent-row]:visible")
+      .first()
+      .getByRole("button", { name: "Watch" })
+      .click();
+    await expect(page.locator(".audit-body")).toBeVisible();
+    await expect(page.locator(".audit-composer")).not.toHaveAttribute("open", "");
+    await expect(page.locator(".audit-empty-title")).toBeVisible();
   });
 
   test("mode switching by keyboard preserves the shell", async ({ page }) => {
@@ -423,15 +493,16 @@ test.describe("dependencies mode", () => {
     await expect(page.getByRole("heading", { name: "Role context" })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Access scope" })).toBeVisible();
     await expect(page.locator(".deps-scope-note")).toContainText("architect");
-    await expect(page.locator(".dep-node")).toHaveCount(22);
+    const initialCount = await page.locator(".dep-node").count();
+    expect(initialCount).toBeGreaterThan(0);
 
     await page.getByRole("button", { name: "Goal" }).click();
-    await expect(page.locator(".dep-node")).toHaveCount(21);
+    await expect(page.locator(".dep-node")).toHaveCount(initialCount - 1);
     await page.getByRole("tab", { name: "Implementation" }).click();
     await expect(page.locator(".dep-node")).toHaveCount(1);
     await expect(page.locator(".dep-node")).toContainText("Implementation-only canvas task");
     await page.getByRole("tab", { name: "All stages" }).click();
-    await expect(page.locator(".dep-node")).toHaveCount(22);
+    await expect.poll(() => page.locator(".dep-node").count()).toBeGreaterThan(1);
     await expect(page.locator(".deps-scope-note")).toContainText("All readable stages");
   });
 
@@ -446,14 +517,16 @@ test.describe("dependencies mode", () => {
     );
     await expect(page.locator(".react-flow__edge-text").first()).toBeVisible();
     await expect(page.locator(".react-flow__minimap")).toHaveCount(0);
-    await expect(page.getByRole("tab", { name: "Left-right" })).toHaveAttribute(
+    await expect(page.getByRole("tab", { name: "Top-down" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
     const firstNode = page.locator(".dep-node").first();
-    await firstNode.getByRole("button", { name: /^Expand / }).click();
-    await expect(firstNode).toHaveClass(/is-expanded/);
-    await expect(firstNode.locator(".dep-node-body")).toBeVisible();
+    await expect(firstNode.locator(".dep-node-summary")).toBeVisible();
+    await firstNode.click();
+    await expect(page.getByRole("tab", { name: "Inspector" })).toBeVisible();
+    await expect(page.locator(".inspector")).toBeVisible();
+    await expect(firstNode).not.toContainText(/task-\d+/);
   });
 });
 

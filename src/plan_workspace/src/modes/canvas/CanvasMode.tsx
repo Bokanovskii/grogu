@@ -69,7 +69,7 @@ function CanvasInner() {
     () =>
       new Set(
         state.selection
-          .filter((selection) => Boolean(state.nodes[selection.id]?.geometry))
+          .filter((selection) => Boolean(state.nodes[selection.id]))
           .map((selection) => selection.id),
       ),
     [state.nodes, state.selection],
@@ -84,12 +84,18 @@ function CanvasInner() {
   useEffect(() => {
     if (draggingRef.current) return;
     hydratingSelectionRef.current = true;
-    setNodes(toFlowNodes(state.nodes, selectedIds, state.stage));
+    const next = toFlowNodes(state.nodes, state.edges, selectedIds, state.stage);
+    setNodes(next);
+    if (next.length) {
+      window.requestAnimationFrame(() => {
+        void rf.fitView({ duration: 180, padding: 0.16 });
+      });
+    }
     const frame = window.requestAnimationFrame(() => {
       hydratingSelectionRef.current = false;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [state.revision, state.nodes, state.stage, selectedIds, setNodes]);
+  }, [state.revision, state.nodes, state.edges, state.stage, selectedIds, setNodes, rf]);
 
   const onConnect = useCallback<OnConnect>(
     (conn) => {
@@ -276,7 +282,10 @@ function CanvasInner() {
   };
 
   const nodeCount = Object.values(state.nodes).filter(
-    (node) => node.geometry && node.stage === state.stage,
+    (node) => node.kind !== "thread" && node.stage === state.stage,
+  ).length;
+  const previewCount = Object.values(state.nodes).filter(
+    (node) => node.kind !== "thread" && node.stage === state.stage && !node.geometry,
   ).length;
 
   return (
@@ -321,6 +330,14 @@ function CanvasInner() {
           color="var(--canvas-grid)"
         />
         <ContextualToolbar />
+        {previewCount > 0 ? (
+          <Panel position="top-center">
+            <div className="canvas-preview-note" role="status">
+              Showing {previewCount} unplaced plan item{previewCount === 1 ? "" : "s"} in a preview layout.
+              Choose <strong>Tidy</strong> or move a card to save placement.
+            </div>
+          </Panel>
+        ) : null}
         <Panel position="top-left">
           <div className="tool-palette" role="toolbar" aria-label="Canvas tools">
             {TOOLS.map((t) => (

@@ -63,6 +63,10 @@ export function ModeLayout({
   right,
   rightTitle,
   compact = false,
+  leftCollapsed: leftCollapsedOverride,
+  rightCollapsed: rightCollapsedOverride,
+  onLeftCollapsedChange,
+  onRightCollapsedChange,
   children,
 }: {
   left: React.ReactNode;
@@ -70,6 +74,10 @@ export function ModeLayout({
   right: React.ReactNode;
   rightTitle: string;
   compact?: boolean;
+  leftCollapsed?: boolean;
+  rightCollapsed?: boolean;
+  onLeftCollapsedChange?: (collapsed: boolean) => void;
+  onRightCollapsedChange?: (collapsed: boolean) => void;
   children: React.ReactNode;
 }) {
   const { panels } = useApp();
@@ -80,17 +88,27 @@ export function ModeLayout({
   const clampRight = (w: number) => Math.max(rightRange.min, Math.min(rightRange.max, w));
   const leftWidth = clampLeft(panels.leftWidth);
   const rightWidth = clampRight(panels.rightWidth);
+  const leftCollapsed = leftCollapsedOverride ?? panels.leftCollapsed;
+  const rightCollapsed = rightCollapsedOverride ?? panels.rightCollapsed;
+  const setLeftCollapsed = (collapsed: boolean) => {
+    if (onLeftCollapsedChange) onLeftCollapsedChange(collapsed);
+    else actions.patchPanels({ leftCollapsed: collapsed });
+  };
+  const setRightCollapsed = (collapsed: boolean) => {
+    if (onRightCollapsedChange) onRightCollapsedChange(collapsed);
+    else actions.patchPanels({ rightCollapsed: collapsed });
+  };
 
   return (
     <div className={`mode-layout${compact ? " mode-layout-compact" : ""}`}>
-      {panels.leftCollapsed ? (
+      {leftCollapsed ? (
         <div className="panel-rail panel-rail-left">
           <button
             type="button"
             className="rail-expand"
             aria-label={`Expand ${leftTitle} panel`}
             title={`Expand ${leftTitle}`}
-            onClick={() => actions.patchPanels({ leftCollapsed: false })}
+            onClick={() => setLeftCollapsed(false)}
           >
             ›
           </button>
@@ -110,7 +128,7 @@ export function ModeLayout({
                 className="panel-collapse"
                 aria-label={`Collapse ${leftTitle} panel`}
                 title="Collapse"
-                onClick={() => actions.patchPanels({ leftCollapsed: true })}
+                onClick={() => setLeftCollapsed(true)}
               >
                 ‹
               </button>
@@ -131,14 +149,14 @@ export function ModeLayout({
         {children}
       </main>
 
-      {panels.rightCollapsed ? (
+      {rightCollapsed ? (
         <div className="panel-rail panel-rail-right">
           <button
             type="button"
             className="rail-expand"
             aria-label={`Expand ${rightTitle} panel`}
             title={`Expand ${rightTitle}`}
-            onClick={() => actions.patchPanels({ rightCollapsed: false })}
+            onClick={() => setRightCollapsed(false)}
           >
             ‹
           </button>
@@ -164,7 +182,7 @@ export function ModeLayout({
                 className="panel-collapse"
                 aria-label={`Collapse ${rightTitle} panel`}
                 title="Collapse"
-                onClick={() => actions.patchPanels({ rightCollapsed: true })}
+                onClick={() => setRightCollapsed(true)}
               >
                 ›
               </button>

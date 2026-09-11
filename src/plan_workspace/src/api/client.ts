@@ -11,6 +11,7 @@ import type {
   DocResponse,
   FeedbackRecord,
   FeedbackResponse,
+  FeedbackScope,
   HealthResponse,
   Impact,
   LayoutRequest,
@@ -211,6 +212,7 @@ export const api = {
     ),
 
   control: (params: {
+    scope?: "repository_program" | "current_plan";
     plan?: string;
     role?: string;
     workstream?: string;
@@ -218,6 +220,7 @@ export const api = {
     window?: number;
   }) => {
     const q = new URLSearchParams();
+    if (params.scope) q.set("scope", params.scope);
     if (params.plan) q.set("plan", params.plan);
     if (params.role) q.set("role", params.role);
     if (params.workstream) q.set("workstream", params.workstream);
@@ -232,21 +235,30 @@ export const api = {
     request<{ events: import("./types").AuditEvent[] }>(
       `/activity?object=${encodeURIComponent(objectId)}&window=${windowMinutes}`,
     ),
-  listFeedback: () => request<{ feedback: FeedbackRecord[] }>("/feedback"),
-  feedback: (agentKey: string, text: string, binding: boolean, scope: string) =>
+  listFeedback: (plan?: string) => {
+    const query = plan ? `?plan=${encodeURIComponent(plan)}` : "";
+    return request<{ feedback: FeedbackRecord[] }>(`/feedback${query}`);
+  },
+  feedback: (
+    agentKey: string,
+    text: string,
+    binding: boolean,
+    scope: string,
+    plan?: string,
+  ) =>
     request<FeedbackResponse>(`/control/${encodeURIComponent(agentKey)}/feedback`, {
       method: "POST",
-      body: { text, binding, scope },
+      body: { text, binding, scope, plan },
     }),
-  sendScopedFeedback: (scope: unknown, text: string, binding: boolean) =>
+  sendScopedFeedback: (scope: FeedbackScope, text: string, binding: boolean) =>
     request<FeedbackResponse>("/feedback", {
       method: "POST",
       body: { scope, text, binding },
     }),
-  withdrawFeedback: (id: string) =>
+  withdrawFeedback: (id: string, plan?: string) =>
     request<{ ok: boolean }>(`/feedback/${encodeURIComponent(id)}/withdraw`, {
       method: "POST",
-      body: {},
+      body: { plan },
     }),
 
   requestChanges: (note: string) =>

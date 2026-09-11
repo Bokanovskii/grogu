@@ -302,7 +302,7 @@ function initialState(): AppState {
       leftWidth: 280,
       rightWidth: 360,
       rightTab: "comments",
-      density: "grid",
+      density: "list",
     },
     theme: "system",
     contrast: "normal",

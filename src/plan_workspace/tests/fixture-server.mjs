@@ -296,6 +296,21 @@ function controlSnapshot() {
     plans[a.plan] = plans[a.plan] ?? { title: a.plan_title ?? a.plan, agents: 0 };
     plans[a.plan].agents++;
   }
+  const topologyNodes = state.agents.map((a) => ({
+    agent_key: a.agent_key,
+    session_key: a.session_key ?? null,
+    root_session_key: a.root_session_key ?? null,
+    parent_agent_key: a.parent_agent_key ?? null,
+    lineage_status: a.lineage_status ?? "unavailable",
+  }));
+  const topologyEdges = state.agents
+    .filter((a) => a.parent_agent_key)
+    .map((a) => ({
+      id: `spawn-${a.agent_key}`,
+      kind: "spawned",
+      from: a.parent_agent_key,
+      to: a.agent_key,
+    }));
   return {
     fresh_as_of: Date.now(),
     limits: [
@@ -305,6 +320,11 @@ function controlSnapshot() {
     waiting_on_you: waiting,
     agents: state.agents,
     plans,
+    topology: {
+      coverage: "complete",
+      nodes: topologyNodes,
+      edges: topologyEdges,
+    },
   };
 }
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useActions, useApp } from "../../state/store";
 import { NODE_GLYPH } from "../../lib/selection";
-import { sectionsForStage } from "../../lib/sections";
+import { humanTitle, sectionsForStage } from "../../lib/sections";
 import { stageLabel } from "../../api/types";
 
 // The Document-mode outline: stage ▸ sections ▸ node titles. Selection mirrors
@@ -32,7 +32,10 @@ export function Outline() {
 
   return (
     <nav className="outline" aria-label="Document outline">
-      <div className="outline-stage">{stageLabel(state.stage)}</div>
+      <div className="outline-stage">
+        <strong>Table of contents</strong>
+        <span>{stageLabel(state.stage)}</span>
+      </div>
       {sections.length === 0 ? (
         <p className="inspector-muted">This stage has no content yet.</p>
       ) : (
@@ -71,7 +74,7 @@ export function Outline() {
                     <span className="outline-glyph" aria-hidden="true">
                       {NODE_GLYPH[n.kind]}
                     </span>
-                    <span className="outline-title">{n.title || n.id}</span>
+                    <span className="outline-title">{humanTitle(n.title) || "Untitled section"}</span>
                   </button>
                 </li>
               ))}
