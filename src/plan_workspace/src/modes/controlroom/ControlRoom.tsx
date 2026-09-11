@@ -238,7 +238,7 @@ export function ControlRoom() {
         ) : null}
 
         <FlowTopology
-          agents={allAgents}
+          agents={agents}
           topology={snapshot?.topology}
           now={now}
           onSelect={openTimeline}
@@ -404,50 +404,53 @@ function ScopeBar({
 }) {
   return (
     <header className="cr-scopebar">
-      <span className="cr-scope-item">
-        <span className="cr-scope-label">Repository</span>
-        <strong>{repository}</strong>
-      </span>
-      <span className="cr-scope-item">
-        <span className="cr-scope-label">Scope</span>
-        <SegmentedControl
-          ariaLabel="Control room scope"
-          value={scope}
-          onChange={onScope}
-          options={[
-            { value: "repository_program", label: "Repository program" },
-            { value: "current_plan", label: `This plan · ${currentPlan}` },
-          ]}
-        />
-      </span>
-      <span className="cr-sampled">
-        {sampledAt == null ? "Sample time unavailable" : `Sampled ${ago(sampledAt, now)}`}
-      </span>
-      <details className="cr-withheld">
-        <summary>Withheld: {limits.length}</summary>
-        <div className="cr-withheld-popover">
-          <strong>These are never shown, by design:</strong>
-          <ul>
-            {limits.map((limit) => (
-              <li key={`${limit.category}:${limit.detail}`}>{limit.detail}</li>
-            ))}
-          </ul>
-        </div>
-      </details>
-      <span className="cr-scope-item cr-density">
-        <span className="cr-scope-label">Density</span>
-        <SegmentedControl
-          ariaLabel="Density"
-          value={density}
-          onChange={onDensity}
-          options={[
-            { value: "list", label: "Rows" },
-            { value: "grid", label: "Cards" },
-          ]}
-        />
-      </span>
+      <div className="cr-scopebar-main">
+        <span className="cr-scope-item">
+          <span className="cr-scope-label">Repository</span>
+          <strong>{repository}</strong>
+        </span>
+        <span className="cr-scope-item">
+          <span className="cr-scope-label">Scope</span>
+          <SegmentedControl
+            ariaLabel="Control room scope"
+            value={scope}
+            onChange={onScope}
+            options={[
+              { value: "repository_program", label: "Repository program" },
+              { value: "current_plan", label: `This plan · ${currentPlan}` },
+            ]}
+          />
+        </span>
+        <span className="cr-sampled">
+          {sampledAt == null ? "Sample time unavailable" : `Sampled ${ago(sampledAt, now)}`}
+        </span>
+        <details className="cr-withheld">
+          <summary>Withheld: {limits.length}</summary>
+          <div className="cr-withheld-popover">
+            <strong>These are never shown, by design:</strong>
+            <ul>
+              {limits.map((limit) => (
+                <li key={`${limit.category}:${limit.detail}`}>{limit.detail}</li>
+              ))}
+            </ul>
+          </div>
+        </details>
+        <span className="cr-scope-item cr-density">
+          <span className="cr-scope-label">Density</span>
+          <SegmentedControl
+            ariaLabel="Density"
+            value={density}
+            onChange={onDensity}
+            options={[
+              { value: "list", label: "Rows" },
+              { value: "grid", label: "Cards" },
+            ]}
+          />
+        </span>
+      </div>
       {activeChips.length > 0 ? (
-        <span className="cr-active-filters" aria-label="Active filters">
+        <div className="cr-active-filters" aria-label="Active filters">
+          <span className="cr-scope-label">Filtered by</span>
           {activeChips.map((chip) => (
             <span key={chip.label} className="chip chip-neutral">
               {chip.label}
@@ -464,7 +467,7 @@ function ScopeBar({
           <button type="button" className="link-clear" onClick={onClear}>
             Clear all
           </button>
-        </span>
+        </div>
       ) : null}
     </header>
   );

@@ -174,10 +174,10 @@ export function AuditDrawer({
 
       <p className="audit-provenance">{PROVENANCE}</p>
 
-      <div className="audit-composer">
-        <h3 className="audit-composer-title">Send feedback</h3>
+      <details className="audit-composer">
+        <summary className="audit-composer-title">Send feedback</summary>
         <FeedbackComposer agent={agent} plan={agent?.plan ?? state.plan} />
-      </div>
+      </details>
     </div>
   );
 }

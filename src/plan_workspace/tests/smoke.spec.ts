@@ -207,6 +207,27 @@ test.describe("boot and shell", () => {
     await expect(dialog.getByRole("button", { name: "Abandon feedback" })).toHaveCount(0);
   });
 
+  test("selected-plan filters and timeline drawer never overlap program content", async ({ page }) => {
+    await openApp(page);
+    await page.locator(".mode-tab-control").click();
+    await page.locator(".cr-plan-card").first().click();
+    await expect(page.locator(".cr-active-filters")).toBeVisible();
+    const filters = await page.locator(".cr-active-filters").boundingBox();
+    const program = await page.locator(".cr-program").boundingBox();
+    expect(filters).not.toBeNull();
+    expect(program).not.toBeNull();
+    expect(filters!.y + filters!.height).toBeLessThanOrEqual(program!.y + 1);
+
+    await page
+      .locator("[data-control-agent-row]:visible")
+      .first()
+      .getByRole("button", { name: "Watch" })
+      .click();
+    await expect(page.locator(".audit-body")).toBeVisible();
+    await expect(page.locator(".audit-composer")).not.toHaveAttribute("open", "");
+    await expect(page.locator(".audit-empty-title")).toBeVisible();
+  });
+
   test("mode switching by keyboard preserves the shell", async ({ page }) => {
     await openApp(page);
     await page.keyboard.press("Meta+2");
