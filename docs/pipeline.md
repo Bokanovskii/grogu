@@ -183,9 +183,10 @@ deliberate ones, and does not survive a move to a native view or a terminal. Not
 free prose either: "clean, modern, Apple-like" cannot be built, so the engineer
 decides, which is the failure the role exists to prevent.
 
-`grogu design template` prints the required skeleton, and `grogu plan write <id>
-design` refuses a spec that skips a required section, leans on adjectives, or
-hands back the skeleton with its instructions still in it. That last check was
+`grogu design template` prints the required skeleton. Run `grogu plan write
+<id> design --file spec.md --dry-run` before the live write; both commands
+refuse a spec that skips a required section, leans on adjectives, or hands back
+the skeleton with its instructions still in it. That last check was
 added after an architect piped `grogu design template` straight into `plan
 write` and it was accepted: the skeleton has every required heading and uses no
 adjectives, so the one artifact guaranteed to pass every structural check was

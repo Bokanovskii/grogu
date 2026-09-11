@@ -121,6 +121,7 @@ Existing commands remain the compatibility surface:
 
 ```sh
 grogu plan show <id> --stage implementation --role engineer
+grogu plan write <id> implementation --role architect --file plan.md --dry-run
 grogu plan write <id> implementation --role architect --file -
 grogu review list <id>
 grogu review comment <id> --stage implementation --quote "..." --body "..."
@@ -128,8 +129,17 @@ grogu review comment <id> --stage implementation --quote "..." --body "..."
 
 On a package, `PlanStore.write_stage` imports the supplied Markdown into graph
 nodes and then recompiles. It never writes the caller's bytes directly to the
-stage artifact. `PlanStore.read_stage` remains the only stage read and seal
-authority.
+stage artifact. The owning role can replace its stage without reading sealed
+partitions; unrelated stages and relationships are preserved. Package IDs are
+allocated above persisted global high-water marks, and a foreign-stage
+dependency or ID collision refuses the whole write.
+
+Use `--dry-run` to run the same source, design, ownership, collision, scope and
+compiler checks without creating a graph revision. Add `--json` for structured
+preview output. `plan write --base` remains the plaintext stage digest reported
+by `grogu plan writer`; it is not the `rNNNN` document revision accepted by
+`plan doc patch --base`. `PlanStore.read_stage` remains the only stage read and
+seal authority.
 
 Legacy review commands adapt to graph `thread` nodes. Replies, resolution, and
 reopening are graph revisions; `review.json` is retained only as the verbatim

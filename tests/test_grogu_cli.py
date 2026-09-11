@@ -2525,6 +2525,75 @@ class PlanGovernanceCliTests(unittest.TestCase):
             store.write_stage.call_args.kwargs["base"], "sha256:abc"
         )
 
+    def test_plan_write_dry_run_is_forwarded_and_reported(self):
+        args = grogu_cli.build_parser().parse_args(
+            [
+                "plan",
+                "write",
+                "p-demo",
+                "implementation",
+                "--body",
+                "# Implementation\n\nBuild it.\n",
+                "--dry-run",
+            ]
+        )
+        store = mock.Mock()
+        store.resolve.return_value = "p-demo"
+        store.is_document_plan.return_value = True
+        store.write_stage.return_value = {
+            "warnings": [],
+            "dry_run": True,
+            "document_write": {"dry_run": True},
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(grogu_cli, "plan_store", return_value=store),
+            mock.patch("sys.stdout", stdout),
+        ):
+            self.assertEqual(args.handler(args), 0)
+        self.assertTrue(store.write_stage.call_args.kwargs["dry_run"])
+        self.assertIn("would write implementation plan", stdout.getvalue())
+        self.assertIn("dry run: nothing was written", stdout.getvalue())
+
+    def test_plan_write_dry_run_json_is_machine_readable(self):
+        args = grogu_cli.build_parser().parse_args(
+            [
+                "plan",
+                "write",
+                "p-demo",
+                "implementation",
+                "--body",
+                "# Implementation\n\nBuild it.\n",
+                "--dry-run",
+                "--json",
+            ]
+        )
+        store = mock.Mock()
+        store.resolve.return_value = "p-demo"
+        store.is_document_plan.return_value = True
+        store.write_stage.return_value = {
+            "warnings": [],
+            "dry_run": True,
+            "document_write": {
+                "base": "r0001",
+                "changed": ["note-1"],
+                "revision": "r0002",
+                "stages": ["implementation"],
+            },
+            "last_write": {"digest": "sha256:preview"},
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(grogu_cli, "plan_store", return_value=store),
+            mock.patch("sys.stdout", stdout),
+        ):
+            self.assertEqual(args.handler(args), 0)
+        result = json.loads(stdout.getvalue())
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["base"], "r0001")
+        self.assertEqual(result["digest"], "sha256:preview")
+        self.assertEqual(result["stage"], "implementation")
+
     def test_governance_commands_are_exposed(self):
         parser = grogu_cli.build_parser()
         cases = {

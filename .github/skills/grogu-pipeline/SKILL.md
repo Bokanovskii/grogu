@@ -24,6 +24,7 @@ explicit "just do it" from the user always wins.
 ```sh
 grogu plan doc create "<title>" --task <task-id> [--design] [--eval] [--review-required]
 grogu plan brief --role architect --plan <id>
+grogu plan write <id> implementation --role architect --file implementation.md --dry-run
 grogu plan write <id> implementation --role architect --file -
 grogu plan write <id> testing        --role architect --file -
 ```
@@ -85,6 +86,7 @@ cheapest to fix and most expensive to leave.
 grogu plan brief --role designer --plan <id>
 grogu design recall --scope cli|web|ios|macos|api
 grogu design template "<change>"
+grogu plan write <id> design --role designer --file design.md --dry-run
 grogu plan write <id> design --role designer --file -
 ```
 
