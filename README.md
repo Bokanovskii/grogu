@@ -5,6 +5,28 @@ CLI you already have, adds a small amount of shared state around it — task
 tracking, traces, a project catalog, its own mark in the banner — and gets out
 of the way. Copilot's interaction model, permissions and output are unchanged.
 
+## What Grogu adds
+
+- **Autopilot-first launches** with explicit model, context, and reasoning
+  defaults that never override choices you make yourself.
+- **Lease-backed task coordination** so concurrent sessions can claim work,
+  exchange updates, and avoid silently racing each other.
+- **Reusable multi-agent workflows** with durable plans, stage gates, steering,
+  and verification rather than disposable chat-only coordination.
+- **Session traces and a project catalog** for understanding what agents did,
+  where they worked, and how to resume.
+- **Pluggable capability repositories** that add tools and skills without
+  coupling personal services or platform-specific behavior to the harness.
+
+```mermaid
+flowchart LR
+    Developer --> Grogu["Grogu CLI"]
+    Grogu --> Copilot["GitHub Copilot CLI"]
+    Grogu --> Tasks["Task state and leases"]
+    Grogu --> Traces["Traces and project catalog"]
+    Capabilities["Capability repositories"] --> Copilot
+```
+
 ## Requirements
 
 * [GitHub Copilot CLI](https://github.com/github/copilot-cli) on `PATH`
