@@ -86,6 +86,7 @@ class GroguCliTests(unittest.TestCase):
         self.assertNotRegex(result.stdout, r"__[A-Z_]+__")
 
     def test_bare_launch_defaults_to_autopilot(self):
+        self.assertEqual(grogu_cli.DEFAULT_MODEL, "gpt-6.1-sol")
         plugin = ["--plugin-dir", str(ROOT)]
         model_default = [
             "--model", grogu_cli.DEFAULT_MODEL,
@@ -100,6 +101,14 @@ class GroguCliTests(unittest.TestCase):
             grogu_cli.copilot_arguments(["--model", "gpt-5.4"]),
             [*plugin, "--autopilot", "--model", "gpt-5.4"],
         )
+
+    def test_all_agent_sessions_use_the_global_default_model(self):
+        for agent in sorted((ROOT / ".github" / "agents").glob("*.md")):
+            with self.subTest(agent=agent.name):
+                self.assertIn(
+                    f"\nmodel: {grogu_cli.DEFAULT_MODEL}\n",
+                    agent.read_text(encoding="utf-8"),
+                )
 
     def test_launch_preserves_explicit_plugin_directories(self):
         model_default = [

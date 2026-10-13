@@ -825,11 +825,11 @@ class PlanStoreTests(unittest.TestCase):
             plan_id,
             name="api",
             paths=["src/api/**"],
-            model="gpt-5.6-sol",
+            model="gpt-6.1-sol",
             review=grogu_plans.REVIEW_RUBBER_DUCK,
             brief="the rate limiter is the subtle part",
         )
-        self.assertEqual(stream["model"], "gpt-5.6-sol")
+        self.assertEqual(stream["model"], "gpt-6.1-sol")
         self.store.set_stage_state(
             plan_id, grogu_plans.IMPLEMENTATION, grogu_plans.COMPLETE
         )
