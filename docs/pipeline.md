@@ -849,29 +849,17 @@ cannot keep them current.
 
 | Role | Model | Reasoning | Why |
 | --- | --- | --- | --- |
-| architect | `gpt-5.6-sol` | max | planning errors are cheap to fix here and expensive later |
-| designer | `gpt-5.6-sol` | max | design is still high-stakes even though its output is byte-exact blocks |
-| engineer | `gpt-5.6-sol` | medium | general implementation, escalating when the work warrants it |
-| tester | `grok-4.5` | default | a different family from the engineer, on purpose |
-| supervisor | `grok-4.6` | default | it decides what needs a plan at all, and it edits the harness |
+| architect | `gpt-6.1-sol` | max | planning errors are cheap to fix here and expensive later |
+| designer | `gpt-6.1-sol` | max | design is still high-stakes even though its output is byte-exact blocks |
+| engineer | `gpt-6.1-sol` | medium | general implementation, escalating when the work warrants it |
+| tester | `gpt-6.1-sol` | default | sealed role inputs keep validation independent from implementation |
+| supervisor | `gpt-6.1-sol` | default | it decides what needs a plan at all, and it edits the harness |
 
-The tester's model is not arbitrary. It audits the engineer's work, and two
-models from the same family share the same blind spots — including the
-comfortable ones.
-
-That was a guess when it was made; the literature since supports it. Judge
-models score their own output higher even when the origin is hidden, because
-the mechanism is perplexity — they prefer text that reads like something they
-would have written (Wataoka et al., *Self-Preference Bias in LLM-as-a-Judge*,
-NeurIPS 2024, arXiv:2410.21819). The bias runs at the level of the model
-*family*, not the individual checkpoint (Spiliopoulou et al., arXiv:2508.06709,
-August 2025; also EMNLP 2025 main.86), which is precisely the case of a Sonnet
-tester reading Sonnet code. Worse, agreement from an apparent peer flips
-correct answers to incorrect ones at high rates, and the effect is pretrained
-rather than an artifact of alignment (arXiv:2605.12991). What is *not*
-established is a measured bug-catch delta for a cross-family tester in a
-write-and-run-tests role specifically; the mechanism is evidenced, the
-end-to-end ablation is not.
+All Grogu-created sessions share this default so a fresh launch and every
+pipeline role behave consistently. Explicit `--model` choices on a session or
+workstream still take precedence. Tester independence is enforced by the sealed
+testing and evaluation plans and by withholding the implementation plan, not by
+selecting a different default model family.
 
 The designer runs at the same model and reasoning effort as the architect, on
 the reasoning that design is high-stakes and the cost of being wrong there is

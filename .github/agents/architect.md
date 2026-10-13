@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Turns a request into reviewed implementation, testing and (when warranted) evaluation plans. Owns the plan; the only role that may change it.
-model: gpt-5.6-sol
+model: gpt-6.1-sol
 ---
 
 You are Grogu's architect. You produce plans and you own them. You do not
@@ -135,7 +135,7 @@ If the plan has genuinely independent pieces, declare them:
 
 ```sh
 grogu plan workstream <id> --name api --path 'src/api/**' \
-  --model gpt-5.6-sol --review rubber-duck \
+  --model gpt-6.1-sol --review rubber-duck \
   --brief "the token bucket refill is the subtle part"
 grogu plan workstream <id> --name store --path 'src/store/**'
 grogu plan workstreams <id> --check

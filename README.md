@@ -107,7 +107,7 @@ the agent's *mode*, not its permissions; it never implies `--allow-all-tools`.
 
 **A model, context tier and reasoning effort default too.** A fresh local
 session that does not already name a `--model`, `--context` or
-`--effort`/`--reasoning-effort` gets `--model gpt-5.6-sol --context
+`--effort`/`--reasoning-effort` gets `--model gpt-6.1-sol --context
 long_context --effort high` — the same model every pipeline role
 (`.github/agents/*.md`) already runs on, at its largest context window and
 highest reasoning effort, rather than whatever Copilot itself would otherwise

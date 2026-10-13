@@ -1028,7 +1028,7 @@ def autopilot_default_enabled() -> bool:
 # The model every pipeline role already runs on (see `.github/agents/*.md`);
 # a bare launch used to fall through to whatever Copilot itself defaults to,
 # which is a different, weaker model than the one doing the actual work.
-DEFAULT_MODEL = "gpt-5.6-sol"
+DEFAULT_MODEL = "gpt-6.1-sol"
 DEFAULT_MODEL_CONTEXT = "long_context"
 DEFAULT_MODEL_EFFORT = "high"
 

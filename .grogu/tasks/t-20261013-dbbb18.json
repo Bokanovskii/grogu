@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "id": "t-20261013-dbbb18",
+  "title": "Default all Grogu sessions to GPT-6.1 Sol",
+  "body": "Update bare launches, pipeline role defaults, documentation, and focused tests while preserving explicit model overrides.",
+  "status": "review",
+  "priority": "normal",
+  "labels": [],
+  "issue": null,
+  "assignee": "charlie",
+  "created_at": "2026-10-13T23:17:13+00:00",
+  "created_by": "charlie",
+  "updated_at": "2026-10-13T23:21:05+00:00",
+  "revision": 4,
+  "log": [
+    {
+      "at": "2026-10-13T23:17:13+00:00",
+      "by": "charlie",
+      "event": "created",
+      "text": "Default all Grogu sessions to GPT-6.1 Sol"
+    },
+    {
+      "at": "2026-10-13T23:17:14+00:00",
+      "by": "charlie",
+      "event": "claim"
+    },
+    {
+      "at": "2026-10-13T23:17:35+00:00",
+      "by": "charlie",
+      "event": "note",
+      "text": "Mapped bare launch and all five role model pins; preserving explicit model overrides and updating stale cross-family documentation."
+    },
+    {
+      "at": "2026-10-13T23:21:05+00:00",
+      "by": "charlie",
+      "event": "release",
+      "text": "PR #71; verified 498 tests passed with 2 skipped."
+    }
+  ]
+}
